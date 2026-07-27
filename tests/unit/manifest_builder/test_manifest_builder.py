@@ -170,23 +170,17 @@ dependencies = ["depX"]
         zf.writestr("META-INF/mods.toml", toml2)
 
     jars = [jar1, jar2]
-    manifest = manifest_builder.build_manifest(jars, root, "both", mock_logger)
+    manifest = manifest_builder.build_manifest(jars, "both", mock_logger)  # root removed
 
     assert len(manifest) == 2
-    # mod1
     entry1 = next(e for e in manifest if e["id"] == "mod1")
-    assert entry1["file"] == "mods/mod1.jar"
-    assert entry1["side"] == "both"
-    assert entry1["depends"] == []
-    # mod2
+    assert entry1["file"] == "mod1.jar"  # filename only, not path
     entry2 = next(e for e in manifest if e["id"] == "mod2")
-    assert entry2["file"] == "mods/mod2.jar"
-    assert entry2["side"] == "client"
-    assert entry2["depends"] == ["depX"]
+    assert entry2["file"] == "mod2.jar"
 
 
 def test_build_manifest_outside_root(tmp_path, mock_logger):
-    """If jar is outside root, use absolute path."""
+    """If jar is outside root, it still uses only the filename (no path)."""
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -201,10 +195,9 @@ displayName = "Outside"
     with zipfile.ZipFile(jar, 'w') as zf:
         zf.writestr("META-INF/mods.toml", toml)
 
-    manifest = manifest_builder.build_manifest([jar], root, "both", mock_logger)
+    manifest = manifest_builder.build_manifest([jar], "both", mock_logger)
     assert len(manifest) == 1
-    assert manifest[0]["file"] == str(jar)  # absolute path
-    mock_logger.debug.assert_any_call(f"Jar {jar} is outside root, using absolute path")
+    assert manifest[0]["file"] == "mod.jar"  # only filename, not absolute path
 
 # ----------------------------------------------------------------------
 # Tests for main (via integration-like mocks)
@@ -226,6 +219,10 @@ def test_main_success(mock_yaml_dump, mock_build_manifest, mock_find_jars,
     mock_args.root = Path.cwd()
     mock_args.side = "both"
     mock_args.debug = False
+    mock_args.curse = False
+    mock_args.resolve = False
+    mock_args.env_file = None
+    mock_args.no_deduplicate = False
     mock_parser.return_value.parse_args.return_value = mock_args
 
     mock_logger = MagicMock()
@@ -234,16 +231,14 @@ def test_main_success(mock_yaml_dump, mock_build_manifest, mock_find_jars,
     mock_find_jars.return_value = [Path("mods_dir/test.jar")]
     mock_build_manifest.return_value = [{"id": "testmod", "file": "mods/test.jar"}]
 
-    # Run main
     with patch('sys.argv', ['manifest_builder.py']):
         manifest_builder.main()
 
-    # Assert logging and yaml.dump call
     mock_setup_logging.assert_called_once()
     mock_logger.info.assert_any_call("Starting manifest builder")
     mock_yaml_dump.assert_called_once_with(
         {"mods": [{"id": "testmod", "file": "mods/test.jar"}]},
-        ANY,  # file handle – ignore exact object
+        ANY,
         default_flow_style=False,
         sort_keys=False
     )
@@ -262,6 +257,10 @@ def test_main_no_jars(mock_find_jars, mock_get_logger, mock_setup_logging, mock_
     mock_args.root = Path.cwd()
     mock_args.side = "both"
     mock_args.debug = False
+    mock_args.curse = False
+    mock_args.resolve = False
+    mock_args.env_file = None
+    mock_args.no_deduplicate = False
     mock_parser.return_value.parse_args.return_value = mock_args
 
     mock_logger = MagicMock()
@@ -272,4 +271,5 @@ def test_main_no_jars(mock_find_jars, mock_get_logger, mock_setup_logging, mock_
         with pytest.raises(SystemExit) as exc:
             manifest_builder.main()
         assert exc.value.code == 1
+
     mock_logger.error.assert_called_once_with("No .jar files found.")
