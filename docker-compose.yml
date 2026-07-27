@@ -65,6 +65,7 @@ services:
     restart: unless-stopped
 
     volumes:
+      - ./exports.conf:/etc/exports:ro
       - ./www:/exports/www
       - ./sync:/exports/sync
 
