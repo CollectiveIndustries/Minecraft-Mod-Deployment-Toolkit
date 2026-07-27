@@ -1,0 +1,175 @@
+{
+	autofocus_id: "38B98FC8CD067F27"
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "basic_automation"
+	group: ""
+	id: "114DBFCA0BDF15EF"
+	order_index: 3
+	quest_links: [ ]
+	quests: [
+		{
+			id: "7CEC9099C990C79A"
+			rewards: [{
+				count: 4
+				id: "4983DB7F99447DE0"
+				item: "minecraft:budding_amethyst"
+				type: "item"
+			}]
+			tasks: [{
+				count: 256L
+				id: "2D5712429C337419"
+				item: { Count: 256, id: "create:raw_zinc" }
+				type: "item"
+			}]
+			x: -25.5d
+			y: 4.0d
+		}
+		{
+			dependencies: ["62FD55B6A44ACE21"]
+			id: "0C68CD1608721408"
+			rewards: [{
+				id: "263A4955E7122AD8"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "73FE5006D3DCDA6A"
+				item: "create:water_wheel"
+				type: "item"
+			}]
+			x: -25.0d
+			y: -10.5d
+		}
+		{
+			dependencies: [
+				"0C68CD1608721408"
+				"62FD55B6A44ACE21"
+			]
+			id: "1F905CBD074D69B2"
+			rewards: [{
+				id: "4E297092AD6B1C5A"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "27FC99FC1BF5F9FA"
+				item: "create:large_water_wheel"
+				type: "item"
+			}]
+			x: -23.5d
+			y: -11.5d
+		}
+		{
+			dependencies: [
+				"1F905CBD074D69B2"
+				"33606174A0C2A09C"
+				"62FD55B6A44ACE21"
+				"54CFDD133BF6CE36"
+			]
+			icon: "create:mechanical_press"
+			id: "38B98FC8CD067F27"
+			rewards: [
+				{
+					id: "23EDEE323DA506BD"
+					type: "xp_levels"
+					xp_levels: 5
+				}
+				{
+					exclude_from_claim_all: true
+					id: "2BDEB53FD9107426"
+					table_id: 2970132778016102058L
+					type: "choice"
+				}
+			]
+			tasks: [
+				{
+					id: "574C0F27275B4DD1"
+					item: { Count: 2, id: "create:belt_connector" }
+					type: "item"
+				}
+				{
+					id: "334F2D615BB95CB9"
+					item: "create:mechanical_press"
+					type: "item"
+				}
+				{
+					count: 16L
+					id: "5FD744DAC00A205F"
+					item: { Count: 16, id: "create:shaft" }
+					type: "item"
+				}
+				{
+					count: 3L
+					id: "3765FB3B46228B6A"
+					item: { Count: 3, id: "create:encased_chain_drive" }
+					type: "item"
+				}
+				{
+					count: 2L
+					id: "029559ED9304AE2D"
+					item: { Count: 2, id: "create:andesite_funnel" }
+					type: "item"
+				}
+			]
+			title: "auto-press"
+			x: -22.0d
+			y: -12.5d
+		}
+		{
+			id: "33606174A0C2A09C"
+			tasks: [{
+				count: 2L
+				id: "7B5BCE9ABE111A68"
+				item: "create:andesite_casing"
+				type: "item"
+			}]
+			x: -23.0d
+			y: -14.5d
+		}
+		{
+			id: "62FD55B6A44ACE21"
+			tasks: [{
+				id: "554172B749DBA67B"
+				item: "create:shaft"
+				type: "item"
+			}]
+			x: -25.0d
+			y: -13.5d
+		}
+		{
+			id: "54CFDD133BF6CE36"
+			tasks: [{
+				id: "6FCE6F7D9C98D17C"
+				item: "minecraft:iron_block"
+				type: "item"
+			}]
+			x: -21.0d
+			y: -14.5d
+		}
+		{
+			dependencies: ["38B98FC8CD067F27"]
+			id: "0FC09E4D36147C60"
+			rewards: [
+				{
+					id: "3413CD8365FE78F1"
+					item: "create:goggles"
+					type: "item"
+				}
+				{
+					id: "423155F2DDCF3B4D"
+					type: "xp"
+					xp: 100
+				}
+			]
+			tasks: [{
+				id: "3DD37E8138F2AAE3"
+				item: "create:wrench"
+				type: "item"
+			}]
+			x: -19.0d
+			y: -12.5d
+		}
+	]
+	title: "Basic Automation"
+}

@@ -1,0 +1,16 @@
+{
+	id: "0B4E67A7D2F17E38"
+	loot_crate: {
+		color: 16777215
+		drops: {
+			boss: 0
+			monster: 0
+			passive: 0
+		}
+		string_id: "lootr"
+	}
+	loot_size: 1
+	order_index: 0
+	rewards: [ ]
+	title: "lootr"
+}

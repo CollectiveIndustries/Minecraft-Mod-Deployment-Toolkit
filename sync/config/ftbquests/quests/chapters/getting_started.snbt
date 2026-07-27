@@ -1,0 +1,405 @@
+{
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "getting_started"
+	group: ""
+	id: "489CCBB8071527FC"
+	order_index: 0
+	quest_links: [ ]
+	quests: [
+		{
+			id: "652D89B9D8FA2690"
+			rewards: [
+				{
+					id: "2AD002DFA61CA402"
+					item: "biomesoplenty:magic_sapling"
+					type: "item"
+				}
+				{
+					id: "526B641155774150"
+					type: "xp"
+					xp: 500
+				}
+				{
+					id: "30DBE6530A5D2063"
+					item: "ftbquests:book"
+					type: "item"
+				}
+			]
+			tasks: [{
+				count: 10L
+				id: "07BFD5A28567AA4F"
+				item: {
+					Count: 1
+					id: "ftbfiltersystem:smart_filter"
+					tag: {
+						"ftbfiltersystem:filter": "ftbfiltersystem:item_tag(minecraft:logs)"
+					}
+				}
+				title: "Any #minecraft:logs"
+				type: "item"
+			}]
+			x: -18.5d
+			y: -1.0d
+		}
+		{
+			dependencies: ["652D89B9D8FA2690"]
+			id: "3C6CF5F1890FB4BD"
+			rewards: [
+				{
+					id: "0862F1B618FD7FF6"
+					item: "minecraft:pumpkin_seeds"
+					type: "item"
+				}
+				{
+					id: "2D2AD3E657D538A4"
+					item: "minecraft:melon_seeds"
+					type: "item"
+				}
+				{
+					id: "350D46E931599AF5"
+					type: "xp"
+					xp: 100
+				}
+			]
+			tasks: [{
+				count: 14L
+				id: "32904FCF2C49A712"
+				item: {
+					Count: 1
+					id: "ftbfiltersystem:smart_filter"
+					tag: {
+						"ftbfiltersystem:filter": "ftbfiltersystem:item_tag(minecraft:planks)"
+					}
+				}
+				title: "Any #minecraft:planks"
+				type: "item"
+			}]
+			x: -16.5d
+			y: -1.0d
+		}
+		{
+			dependencies: ["3C6CF5F1890FB4BD"]
+			id: "4B9EB9C3BD684D7D"
+			rewards: [
+				{
+					id: "3F7685E1F9406B0C"
+					item: {
+						Count: 1
+						id: "minecraft:leather_boots"
+						tag: {
+							Damage: 0
+						}
+					}
+					type: "item"
+				}
+				{
+					id: "439C9A3FF49A998B"
+					type: "xp"
+					xp: 100
+				}
+			]
+			tasks: [{
+				count: 4L
+				id: "5CC0E357FE2BA601"
+				item: { Count: 4, id: "minecraft:chest" }
+				type: "item"
+			}]
+			x: -16.5d
+			y: -2.5d
+		}
+		{
+			dependencies: ["3C6CF5F1890FB4BD"]
+			id: "4C2E872CDF7448E5"
+			rewards: [
+				{
+					count: 2
+					id: "0A097E6234B8ABCA"
+					item: "minecraft:stick"
+					type: "item"
+				}
+				{
+					id: "38F1924DC7177B44"
+					type: "xp"
+					xp: 100
+				}
+			]
+			tasks: [{
+				id: "5D444DC7F8ADECFE"
+				item: "minecraft:crafting_table"
+				type: "item"
+			}]
+			x: -16.5d
+			y: 0.5d
+		}
+		{
+			dependencies: ["4C2E872CDF7448E5"]
+			id: "1FE475CB81D6613F"
+			rewards: [{
+				id: "0356028AF5247991"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "3465DF34511812C7"
+				item: {
+					Count: 1
+					id: "minecraft:wooden_axe"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -17.5d
+			y: 2.0d
+		}
+		{
+			dependencies: ["4C2E872CDF7448E5"]
+			id: "14250698208A5633"
+			rewards: [{
+				id: "00FDB16E1F509AB4"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "4B506F85DE76A574"
+				item: {
+					Count: 1
+					id: "minecraft:wooden_shovel"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -16.5d
+			y: 2.0d
+		}
+		{
+			dependencies: ["4C2E872CDF7448E5"]
+			id: "37FB6CC32A67790B"
+			rewards: [
+				{
+					id: "6087FCDCF7EF5F91"
+					type: "xp"
+					xp: 100
+				}
+				{
+					count: 10
+					id: "4D26B84BBBD6E3D7"
+					item: "minecraft:torch"
+					type: "item"
+				}
+				{
+					command: "/pmmo admin @p add mining level 1"
+					elevate_perms: true
+					id: "2907EF40CA38F242"
+					type: "command"
+				}
+			]
+			tasks: [{
+				id: "5AD0496412F6EE86"
+				item: {
+					Count: 1
+					id: "minecraft:wooden_pickaxe"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -14.5d
+			y: 2.0d
+		}
+		{
+			dependencies: [
+				"14250698208A5633"
+				"048EC61EB4FE3221"
+			]
+			id: "5F721135ABDDBF53"
+			rewards: [{
+				id: "26BAB60AED2DACA1"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "3B3FFED7E8A57947"
+				item: {
+					Count: 1
+					id: "minecraft:stone_shovel"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -16.5d
+			y: 4.5d
+		}
+		{
+			dependencies: [
+				"37FB6CC32A67790B"
+				"048EC61EB4FE3221"
+			]
+			id: "38CCAAC765A56226"
+			rewards: [{
+				id: "1627970F48C8D1B8"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "3060CDADBDFA1385"
+				item: {
+					Count: 1
+					id: "minecraft:stone_pickaxe"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -14.5d
+			y: 4.5d
+		}
+		{
+			dependencies: [
+				"1FE475CB81D6613F"
+				"048EC61EB4FE3221"
+			]
+			id: "0F9D82F065D632A7"
+			rewards: [{
+				id: "61BCFAB51F9BE9F8"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "3B07C42AEF8DF148"
+				item: {
+					Count: 1
+					id: "minecraft:stone_axe"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -17.5d
+			y: 4.5d
+		}
+		{
+			dependencies: ["37FB6CC32A67790B"]
+			id: "048EC61EB4FE3221"
+			rewards: [{
+				id: "3AC03DBAC224F080"
+				type: "xp"
+				xp: 200
+			}]
+			tasks: [
+				{
+					count: 15L
+					id: "4BF5688D091D0D54"
+					item: { Count: 15, id: "minecraft:cobblestone" }
+					type: "item"
+				}
+				{
+					count: 6L
+					id: "6B72C6986FE78171"
+					item: { Count: 6, id: "minecraft:stick" }
+					type: "item"
+				}
+			]
+			title: "Stone Age"
+			x: -15.5d
+			y: 3.0d
+		}
+		{
+			dependencies: ["4C2E872CDF7448E5"]
+			id: "3ED43A7078C10529"
+			rewards: [{
+				id: "4FDBAAAC52DA7C0B"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [{
+				id: "1B2BF6C74A8FD161"
+				item: {
+					Count: 1
+					id: "minecraft:wooden_hoe"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -18.5d
+			y: 2.0d
+		}
+		{
+			dependencies: [
+				"4C2E872CDF7448E5"
+				"048EC61EB4FE3221"
+			]
+			id: "348AEAA1D946CD80"
+			rewards: [{
+				id: "40AABABA38D5D1A0"
+				type: "xp"
+				xp: 100
+			}]
+			tasks: [
+				{
+					id: "3D505548CA4DB39D"
+					item: "minecraft:furnace"
+					type: "item"
+				}
+				{
+					count: 32L
+					id: "340F18453F357893"
+					item: { Count: 32, id: "minecraft:coal" }
+					type: "item"
+				}
+			]
+			x: -15.0d
+			y: 0.5d
+		}
+		{
+			dependencies: ["3ED43A7078C10529"]
+			id: "2E4927675EBF1EA5"
+			tasks: [{
+				advancement: "minecraft:husbandry/plant_seed"
+				criterion: ""
+				icon: "minecraft:wheat"
+				id: "0939A9BB20E19326"
+				title: "Farming"
+				type: "advancement"
+			}]
+			x: -20.0d
+			y: 3.5d
+		}
+		{
+			id: "2FA2E0A5321536C3"
+			invisible: true
+			rewards: [
+				{
+					id: "0F61E8B6E74AFED6"
+					type: "xp"
+					xp: 750
+				}
+				{
+					command: "/pmmo admin @p add sailing level 10"
+					id: "642D7F218C90C92A"
+					type: "command"
+				}
+			]
+			tasks: [{
+				icon: "biomesoplenty:magic_boat"
+				id: "1BB47152B6203683"
+				item: "biomesoplenty:magic_boat"
+				type: "item"
+			}]
+			x: -12.0d
+			y: -3.5d
+		}
+	]
+	title: "Back to the Basics"
+}

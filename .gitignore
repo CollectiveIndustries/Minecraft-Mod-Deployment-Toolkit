@@ -1,0 +1,85 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# PDM
+.pdm-build/
+.pdm-python
+.pdm.toml
+
+# Logs
+logs/
+*.log
+
+# Cache
+.cache/
+.ruff_cache/
+CurseForgeAPY-Cache.sqlite
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+
+# Testing
+.pytest_cache/
+.pytest
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Minecraft server / world data (do not track)
+server/
+world/
+#bluemap/
+bluemap/web/
+bluemap/data/
+bluemap/config/packs/
+serverconfigs/svmm-player-configs/
+
+# Sync folder – adjust as needed
+# If you want to keep sync/ as source of truth, comment out or remove the next line
+# sync/
+sync/config/worldedit/sessions/
+*.jar
+
+# Trash from sync (if present)
+serverconfigs/.Trash-1000/
+sync/.Trash-1000/
+
+# Other generated or temporary files
+*.bak
+*.tmp
+*.cache
+
+# Docker volumes (if you mount them, but not needed in repo)
+# Not applicable
+
+# Coverage HTML
+htmlcov/
+
+datapacks/*

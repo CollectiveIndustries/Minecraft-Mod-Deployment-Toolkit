@@ -1,0 +1,48 @@
+{
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "storage"
+	group: ""
+	id: "7E82A05A71A8A734"
+	order_index: 5
+	quest_links: [ ]
+	quests: [{
+		id: "49470487A89B4A83"
+		rewards: [
+			{
+				count: 10
+				id: "5A3AEA7A0606DC66"
+				item: "storagedrawers:obsidian_storage_upgrade"
+				type: "item"
+			}
+			{
+				count: 2
+				id: "72A3B8D54F9D9225"
+				item: "storagedrawers:upgrade_template"
+				type: "item"
+			}
+			{
+				id: "646E1B3477CCA1B9"
+				type: "xp"
+				xp: 100
+			}
+		]
+		tasks: [{
+			count: 10L
+			id: "39DC48513456AC06"
+			item: {
+				Count: 1
+				id: "ftbfiltersystem:smart_filter"
+				tag: {
+					"ftbfiltersystem:filter": "ftbfiltersystem:item_tag(storagedrawers:drawers)"
+				}
+			}
+			only_from_crafting: true
+			title: "Any #storagedrawers:drawers"
+			type: "item"
+		}]
+		x: -3.0d
+		y: -0.5d
+	}]
+	title: "Storage"
+}

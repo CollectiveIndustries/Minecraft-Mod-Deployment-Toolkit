@@ -1,0 +1,108 @@
+{
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "copper_age"
+	group: ""
+	id: "4B4B56E1682EF57C"
+	order_index: 1
+	quest_links: [ ]
+	quests: [
+		{
+			id: "5A720BC329EA564E"
+			rewards: [{
+				auto: "enabled"
+				description: "Welcome to the Copper Age"
+				icon: "minecraft:raw_copper"
+				id: "7F1D19AFE98494D2"
+				title: "Copper Age"
+				type: "toast"
+			}]
+			tasks: [{
+				id: "3252A3C02401CEA5"
+				item: "minecraft:raw_copper"
+				type: "item"
+			}]
+			x: -24.5d
+			y: 0.0d
+		}
+		{
+			dependencies: [
+				"348AEAA1D946CD80"
+				"5A720BC329EA564E"
+			]
+			id: "0B1172DCD68034ED"
+			rewards: [{
+				id: "53D15F3ADD4926B4"
+				type: "xp_levels"
+				xp_levels: 5
+			}]
+			tasks: [{
+				count: 5L
+				id: "437FAF28AD84373B"
+				item: { Count: 5, id: "minecraft:copper_ingot" }
+				type: "item"
+			}]
+			x: -23.0d
+			y: 0.0d
+		}
+		{
+			dependencies: ["0B1172DCD68034ED"]
+			id: "72FF428B8E58F1CF"
+			invisible: true
+			rewards: [
+				{
+					auto: "enabled"
+					description: "Diggy Diggy Hole!"
+					icon: {
+						Count: 1
+						id: "create_ironworks:copper_hammer"
+						tag: {
+							Damage: 0
+						}
+					}
+					id: "118ADF4CEE1B4EEF"
+					title: "MC Hammer!"
+					type: "toast"
+				}
+				{
+					id: "35ADB7AE967DC88A"
+					item: {
+						Count: 1
+						id: "minecraft:leather_leggings"
+						tag: {
+							Damage: 0
+						}
+					}
+					type: "item"
+				}
+				{
+					id: "36061022CED3741C"
+					type: "xp"
+					xp: 100
+				}
+				{
+					auto: "enabled"
+					command: "/pmmo admin @p add mining level 2"
+					elevate_perms: true
+					id: "101C9C2A30FBEF06"
+					silent: true
+					type: "command"
+				}
+			]
+			tasks: [{
+				id: "092B4955D6B00C51"
+				item: {
+					Count: 1
+					id: "create_ironworks:copper_hammer"
+					tag: {
+						Damage: 0
+					}
+				}
+				type: "item"
+			}]
+			x: -23.0d
+			y: -2.0d
+		}
+	]
+	title: "Copper Age"
+}

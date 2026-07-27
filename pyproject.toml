@@ -1,0 +1,77 @@
+[project]
+name = "minecraft"
+version = "0.1.0"
+description = "Minecraft Docker network"
+authors = [
+    {name = "Andrew Malone",email = "admmorketh@gmail.com"},
+]
+dependencies = [
+    "mcstatus>=14.0.0",
+    "collective-cores @ git+ssh://git@CollectiveCore/CollectiveIndustries/CollectiveCore.git",
+    "CurseForgeAPy>=1.1.5",
+    ]
+
+
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "MIT"}
+
+[project.scripts]
+deploy-pack = "minecraft.deploy_pack:main"
+build-manifest = "minecraft.manifest_builder:main"
+pull-mods = "minecraft.mod_puller:main"
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.16.0",
+    "pytest-cov>=7.1.0",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pdm.scripts]
+format = "ruff format ."
+lint = "ruff check ."
+lint-fix = "ruff check . --fix"
+tests = "pytest"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+testpaths = ["tests"]
+addopts = [
+#    "-q",
+    "--cov=src",           # measure coverage for all packages
+    "--cov-report=term:skip-covered",        # terminal report
+    "--cov-report=html",        # HTML report (htmlcov/)
+    "--cov-report=json",         # json report (coverage.json)
+    "--cov-fail-under=90",      # fail if below 90%
+    "--no-cov-on-fail",
+]
+log_cli_level = "ERROR"
+log_format = "%%(asctime)s %%(levelname)s %%(message)s"
+log_date_format = "%%Y-%%m-%%d %%H:%%M:%%S"
+cache_dir = ".cache"
+asyncio_mode = "auto"
+
+filterwarnings = [
+]
+
+markers = [
+    "e2e: marks tests as end-to-end (deselect with '-m \"not e2e\"')",
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]
+
+[tool.coverage]
+# Only include the package source, exclude tests
+source = ["src"]
+# Exclude any files you don't want to count (e.g., __init__.py, test helpers)
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.pdm]
+distribution = true

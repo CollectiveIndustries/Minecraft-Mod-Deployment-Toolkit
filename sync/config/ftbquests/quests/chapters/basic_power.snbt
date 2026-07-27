@@ -1,0 +1,26 @@
+{
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "basic_power"
+	group: ""
+	id: "4936D767FE9A5770"
+	order_index: 4
+	quest_links: [ ]
+	quests: [{
+		id: "7DC964931744E70F"
+		rewards: [{
+			id: "53E72DD5914943F5"
+			type: "xp"
+			xp: 100
+		}]
+		tasks: [{
+			count: 12L
+			id: "45F9A6A020F9EDCD"
+			item: { Count: 12, id: "create_new_age:magnetite_block" }
+			type: "item"
+		}]
+		x: -3.5d
+		y: -1.0d
+	}]
+	title: "Basic Power"
+}

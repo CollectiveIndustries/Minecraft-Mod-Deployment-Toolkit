@@ -1,0 +1,55 @@
+{
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "farming"
+	group: ""
+	id: "28E63804EE58761F"
+	order_index: 2
+	quest_links: [ ]
+	quests: [
+		{
+			dependencies: ["2E4927675EBF1EA5"]
+			id: "75C82154499E936D"
+			rewards: [
+				{
+					auto: "enabled"
+					description: "Harvest 128 wheat"
+					id: "6D68EF6F09FDE28C"
+					team_reward: true
+					title: "Apprentice Farmer"
+					type: "toast"
+				}
+				{
+					id: "16B549F77E64C38B"
+					item: "minecraft:composter"
+					type: "item"
+				}
+			]
+			tasks: [{
+				count: 128L
+				id: "6176662EB8AE3DF1"
+				item: { Count: 128, id: "minecraft:wheat" }
+				type: "item"
+			}]
+			x: -24.0d
+			y: -6.0d
+		}
+		{
+			id: "3CA536D779B60FE2"
+			rewards: [{
+				count: 10
+				id: "06EE341974DAC2F8"
+				item: "create:experience_nugget"
+				type: "item"
+			}]
+			tasks: [{
+				id: "53FBA91F3BD9F625"
+				item: "createaddition:seed_oil_bucket"
+				type: "item"
+			}]
+			x: -24.0d
+			y: 4.5d
+		}
+	]
+	title: "Farming"
+}

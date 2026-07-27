@@ -1,0 +1,8 @@
+.git/
+*.log
+*.bak
+temp/
+old_versions/
+.Trash-*
+ftbquests/*
+jei/*

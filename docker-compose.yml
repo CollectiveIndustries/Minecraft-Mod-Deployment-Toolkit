@@ -1,0 +1,80 @@
+services:
+  minecraft:
+    image: itzg/minecraft-server
+    user: "1001:1001"
+    container_name: mc
+
+    stop_grace_period: 2m
+    stop_signal: SIGTERM
+
+    ports:
+      - "25565:25565"
+    environment:
+      EULA: "TRUE"
+      TYPE: "FORGE"
+      VERSION: "1.20.1"
+      FORGE_VERSION: "47.4.10"
+      MEMORY: "6G"
+      JVM_OPTS: "-XX:+UseG1GC"
+    volumes:
+      - ./server:/data
+      - ./world:/data/world
+      - ./datapacks:/data/world/datapacks
+      - ./serverconfigs:/data/world/serverconfig
+      - ./bin:/data/bin
+    restart: unless-stopped
+    networks:
+      - minedock
+
+  bluemap:
+    image: ghcr.io/bluemap-minecraft/bluemap:latest
+    user: "1001:1001"
+    container_name: bluemap
+    restart: unless-stopped
+    command: -r -u -w
+    expose:
+      - "8100"
+    volumes:
+      - ./bluemap/config:/app/config:rw
+      - ./world:/app/world:ro
+      - ./world/DIM-1:/app/world_nether:ro
+      - ./world/DIM1:/app/world_the_end:ro
+      - ./bluemap/data:/app/data
+      - ./bluemap/web:/app/web
+    networks:
+      - minedock
+
+  nginx:
+    image: nginx:stable
+    user: "1001:1001"
+    container_name: mc_proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./www:/usr/share/nginx/www:ro
+    depends_on:
+      - bluemap
+    networks:
+      - minedock
+
+  nfs:
+    image: erichough/nfs-server
+    container_name: nfs
+    privileged: true
+    restart: unless-stopped
+
+    volumes:
+      - ./www:/exports/www
+      - ./sync:/exports/sync
+
+    ports:
+      - "2049:2049"
+
+    networks:
+      - minedock
+
+networks:
+  minedock:
+    driver: bridge

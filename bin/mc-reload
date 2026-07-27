@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euo pipefail
+
+echo "=== Starting mc-reload ==="
+
+ROOT="/home/admiral/minecraft"
+SYNC_DIR="$ROOT/sync"
+SERVER_DIR="$ROOT/server"
+EXCLUDE_FILE="$ROOT/sync/.rsync_exclude"
+
+# ---- Determine command method (use sendCommand if available) ----
+if docker exec mc test -f /usr/local/bin/sendCommand; then
+    CMD="docker exec mc /usr/local/bin/sendCommand"
+    echo "Using sendCommand (no RCON needed)."
+else
+    echo "sendCommand not found; falling back to RCON."
+    RCON_PASSWORD=$(docker exec mc grep "^rcon.password=" /data/server.properties 2>/dev/null | cut -d= -f2- | tr -d '\r\n' | xargs)
+    if [ -z "$RCON_PASSWORD" ]; then
+        echo "ERROR: Could not read rcon.password from /data/server.properties"
+        exit 1
+    fi
+    CMD="docker exec mc rcon-cli --host 127.0.0.1 --port 25575 --password \"$RCON_PASSWORD\""
+    if ! $CMD list &>/dev/null; then
+        echo "ERROR: RCON connection failed. Please check your network configuration."
+        exit 1
+    fi
+fi
+
+# ---- Syncs ----
+echo "Syncing CraftTweaker scripts..."
+rsync -av --delete --exclude-from="$EXCLUDE_FILE" "$SYNC_DIR/scripts/" "$SERVER_DIR/scripts/"
+
+echo "Syncing Reskillable configs..."
+rsync -av --delete --exclude-from="$EXCLUDE_FILE" "$SYNC_DIR/config/reskillable/" "$SERVER_DIR/config/reskillable/"
+
+echo "Syncing KubeJS scripts..."
+rsync -av --delete --exclude-from="$EXCLUDE_FILE" "$SYNC_DIR/kubejs/" "$SERVER_DIR/kubejs/"
+
+# ---- Reload commands ----
+echo "Reloading via console..."
+$CMD "say Reloading scripts and skills in 30 seconds..."
+sleep 30
+$CMD "reload"
+sleep 5
+$CMD "say Scripts reloaded successfully!"
+$CMD "say Reloading Skill Locks..."
+$CMD "skills reload"
+sleep 5
+$CMD "say Skill Locks reloaded successfully!"
+$CMD "say Reloading KubeJS scripts..."
+sleep 5
+$CMD "kubejs reload"
+sleep 5
+$CMD "say KubeJS scripts reloaded successfully!"
+$CMD "say If you encounter any issues, please report them to the modpack developers."
+
+echo "Done."
