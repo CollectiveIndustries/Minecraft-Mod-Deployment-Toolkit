@@ -46,7 +46,6 @@ services:
 
   nginx:
     image: nginx:stable
-    user: "1001:1001"
     container_name: mc_proxy
     restart: unless-stopped
     ports:
