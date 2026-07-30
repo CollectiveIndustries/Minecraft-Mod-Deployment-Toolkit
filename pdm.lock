@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:812d92247853aed745c7f5113f8cb5bf622330fe546dee0b9924193a07913d5a"
+content_hash = "sha256:d171598f4559991b4dc0653249dcc10c94119f27f0ad5fa4279c8c5f31d0326c"
 
 [[metadata.targets]]
 requires_python = ">=3.11"
@@ -139,33 +139,6 @@ files = [
     {file = "asyncmy-0.2.11-cp313-cp313-win32.whl", hash = "sha256:29536a08bf8c96437188ae4080fdd09c5a82cbe93794d0996cd0dd238f632664"},
     {file = "asyncmy-0.2.11-cp313-cp313-win_amd64.whl", hash = "sha256:f095af7b980505158609ca0bcdd0d14d1e48893e43fc1856c7cecfd9439f498c"},
     {file = "asyncmy-0.2.11.tar.gz", hash = "sha256:c3d65d959dde62c911e39ecd1ad0f1339a5e6929fc411d48cfc2f82846190bf4"},
-]
-
-[[package]]
-name = "attrs"
-version = "26.1.0"
-requires_python = ">=3.9"
-summary = "Classes Without Boilerplate"
-groups = ["default"]
-files = [
-    {file = "attrs-26.1.0-py3-none-any.whl", hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"},
-    {file = "attrs-26.1.0.tar.gz", hash = "sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32"},
-]
-
-[[package]]
-name = "cattrs"
-version = "26.1.0"
-requires_python = ">=3.10"
-summary = "Composable complex class support for attrs and dataclasses."
-groups = ["default"]
-dependencies = [
-    "attrs>=25.4.0",
-    "exceptiongroup>=1.1.1; python_version < \"3.11\"",
-    "typing-extensions>=4.14.0",
-]
-files = [
-    {file = "cattrs-26.1.0-py3-none-any.whl", hash = "sha256:d1e0804c42639494d469d08d4f26d6b9de9b8ab26b446db7b5f8c2e97f7c3096"},
-    {file = "cattrs-26.1.0.tar.gz", hash = "sha256:fa239e0f0ec0715ba34852ce813986dfed1e12117e209b816ab87401271cdd40"},
 ]
 
 [[package]]
@@ -643,22 +616,6 @@ files = [
 ]
 
 [[package]]
-name = "curseforgeapy"
-version = "1.1.5"
-requires_python = ">=3.7"
-summary = "A wrapper for the Eternal (CurseForge) API"
-groups = ["default"]
-dependencies = [
-    "jsonpickle>=3.0.0",
-    "requests-cache>=0.9.7",
-    "requests>=2.26.0",
-]
-files = [
-    {file = "CurseForgeAPy-1.1.5-py3-none-any.whl", hash = "sha256:d8bb1c84a83ce566cbd90e132fbc680292491c0d88f0755cb5fc0a901f9421dc"},
-    {file = "CurseForgeAPy-1.1.5.tar.gz", hash = "sha256:75d949129fc535594aee445cf99b608804a3051b13a211f8f4a97b8f536bdc60"},
-]
-
-[[package]]
 name = "dnspython"
 version = "2.8.0"
 requires_python = ">=3.10"
@@ -689,17 +646,6 @@ groups = ["dev"]
 files = [
     {file = "iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12"},
     {file = "iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730"},
-]
-
-[[package]]
-name = "jsonpickle"
-version = "4.1.2"
-requires_python = ">=3.8"
-summary = "jsonpickle encodes/decodes any Python object to/from JSON"
-groups = ["default"]
-files = [
-    {file = "jsonpickle-4.1.2-py3-none-any.whl", hash = "sha256:7ffe34426bc797684dbf1dc84185558bd864cd25b1ff5fb01b7405e392d0a937"},
-    {file = "jsonpickle-4.1.2.tar.gz", hash = "sha256:8afed18aa189fd81e2e833b426bb4af485594921f0b1d36c2001fc5637a2f210"},
 ]
 
 [[package]]
@@ -885,17 +831,6 @@ groups = ["default", "dev"]
 files = [
     {file = "packaging-26.2-py3-none-any.whl", hash = "sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e"},
     {file = "packaging-26.2.tar.gz", hash = "sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661"},
-]
-
-[[package]]
-name = "platformdirs"
-version = "4.11.0"
-requires_python = ">=3.10"
-summary = "A small Python package for determining appropriate platform-specific dirs, e.g. a `user data dir`."
-groups = ["default"]
-files = [
-    {file = "platformdirs-4.11.0-py3-none-any.whl", hash = "sha256:360ccded2b7fce0af0ff80cc8f5942a1c5d99b0e856033acb030bfc634709e74"},
-    {file = "platformdirs-4.11.0.tar.gz", hash = "sha256:0555d18370482847566ffabcaa53ad7c6c1c29f195989ae1ed634a05f76ea1e0"},
 ]
 
 [[package]]
@@ -1138,25 +1073,6 @@ files = [
 ]
 
 [[package]]
-name = "requests-cache"
-version = "1.3.3"
-requires_python = ">=3.8"
-summary = "A persistent cache for python requests"
-groups = ["default"]
-dependencies = [
-    "attrs>=21.2",
-    "cattrs>=22.2",
-    "platformdirs>=2.5",
-    "requests>=2.22",
-    "url-normalize>=2.0",
-    "urllib3>=1.25.5",
-]
-files = [
-    {file = "requests_cache-1.3.3-py3-none-any.whl", hash = "sha256:c8df20ff874ebfc026959e3874e6c12bd6724934cdb10925915908453d4b17e4"},
-    {file = "requests_cache-1.3.3.tar.gz", hash = "sha256:79b72d5ac5143992d1836ad78f4d8e65666061dd44e220548caab3723089826b"},
-]
-
-[[package]]
 name = "rich"
 version = "15.0.0"
 requires_python = ">=3.9.0"
@@ -1214,24 +1130,11 @@ name = "typing-extensions"
 version = "4.16.0"
 requires_python = ">=3.9"
 summary = "Backported and Experimental Type Hints for Python 3.9+"
-groups = ["default", "dev"]
+groups = ["dev"]
+marker = "python_version < \"3.13\""
 files = [
     {file = "typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"},
     {file = "typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5"},
-]
-
-[[package]]
-name = "url-normalize"
-version = "3.0.0"
-requires_python = ">=3.10"
-summary = "URL normalization for Python"
-groups = ["default"]
-dependencies = [
-    "idna>=3.3",
-]
-files = [
-    {file = "url_normalize-3.0.0-py3-none-any.whl", hash = "sha256:95234bd359f86831c1fd87c248877f2a6887db2f3b5087120083f2fffcba4889"},
-    {file = "url_normalize-3.0.0.tar.gz", hash = "sha256:0552cbf2831a32a28994a13d29bca58a60e10ff6c0380e343ec6d1c2a0d232d8"},
 ]
 
 [[package]]

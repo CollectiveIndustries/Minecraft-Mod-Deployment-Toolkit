@@ -3,6 +3,7 @@
 mod_puller.py - Pull mods from CurseForge according to manifest.yaml,
 placing each file exactly where the manifest says.
 Uses ConfigCore and LoggingCore; API key from .env (loaded by ConfigCore).
+Supports direct download via project_id/file_id, with slug/version fallback.
 """
 
 import sys
@@ -13,8 +14,8 @@ import yaml
 
 # Import collective-cores
 from ConfigCore import ConfigManager
-from CurseForgeAPy import CurseForgeAPI
 from LoggingCore import get_logger, setup_logging
+
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -38,33 +39,119 @@ def load_manifest(path: Path):
     return data.get("mods", [])
 
 
-def get_mod_file_url(client, slug, version, minecraft_version):
-    """Return (download_url, filename) for the given slug and version."""
-    # Search for mod
-    results = client.searchMods(432, searchFilter=slug)  # 432 = Minecraft
-    if not results.data:
-        raise ValueError(f"Mod '{slug}' not found")
-    mod = results.data[0]
+def curseforge_request(endpoint, api_key, method="GET", params=None, json_data=None):
+    """Make a request to the CurseForge API with proper headers."""
+    headers = {
+        "x-api-key": api_key,
+        "Accept": "application/json",
+    }
+    if json_data is not None:
+        headers["Content-Type"] = "application/json"
+    url = f"https://api.curseforge.com{endpoint}"
+    resp = requests.request(method, url, headers=headers, params=params, json=json_data, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
 
-    # Get files
-    files = client.getModFiles(mod.id)
-    for file in files.data:
-        # Check version match (flexible)
-        if version not in file.displayName and version not in file.fileName:
-            continue
-        # Check Minecraft version compatibility
-        mc_versions = [gv.versionString for gv in file.gameVersions if gv.gameId == 432]
-        if minecraft_version not in mc_versions:
-            continue
-        # Get download URL
-        dl = client.getModFileDownloadUrl(mod.id, file.id)
-        return dl.data.downloadUrl, file.fileName
-    raise ValueError(f"No file found for '{slug}' version '{version}' on MC {minecraft_version}")
+
+def get_download_url_by_ids(project_id: int, file_id: int, api_key: str) -> str:
+    """Get download URL directly using project_id and file_id."""
+    resp = curseforge_request(
+        f"/v1/mods/{project_id}/files/{file_id}/download-url",
+        api_key
+    )
+    return resp["data"]
+
+
+def get_mod_file_url_by_slug(client, slug: str, version: str, minecraft_version: str, api_key: str):
+    """
+    Fallback: search by slug, fetch files, find matching file.
+    Uses raw API calls (not wrapper).
+    """
+    # 1. Search by slug
+    search_resp = curseforge_request(
+        "/v1/mods/search",
+        api_key,
+        params={"gameId": 432, "slug": slug, "pageSize": 1}
+    )
+    data = search_resp.get("data", [])
+    if not data:
+        # Try searchFilter as last resort
+        search_resp = curseforge_request(
+            "/v1/mods/search",
+            api_key,
+            params={"gameId": 432, "searchFilter": slug, "pageSize": 1}
+        )
+        data = search_resp.get("data", [])
+        if not data:
+            raise ValueError(f"Mod with slug '{slug}' not found")
+    mod = data[0]
+    mod_id = mod["id"]
+
+    # 2. Get all files (paginated)
+    all_files = []
+    page_size = 100
+    index = 0
+    max_pages = 5
+    for _ in range(max_pages):
+        try:
+            resp = curseforge_request(
+                f"/v1/mods/{mod_id}/files",
+                api_key,
+                params={"pageSize": page_size, "index": index}
+            )
+            page = resp.get("data", [])
+            if not page:
+                break
+            all_files.extend(page)
+            pagination = resp.get("pagination", {})
+            total = pagination.get("totalCount", 0)
+            if index + page_size >= total:
+                break
+            index += page_size
+        except Exception:
+            break
+
+    if not all_files:
+        raise ValueError(f"No files found for mod '{slug}'")
+
+    # 3. Filter by Minecraft version (1.20.1)
+    filtered = [f for f in all_files if any("1.20.1" in gv or "1.20" in gv for gv in f.get("gameVersions", []))]
+    if not filtered:
+        filtered = all_files  # fallback to all
+
+    # 4. Try to match by version string in fileName or displayName
+    matched = None
+    for f in filtered:
+        fname = f.get("fileName", "")
+        display = f.get("displayName", "")
+        if version in fname or version in display:
+            matched = f
+            break
+
+    # 5. If not found, try exact filename match (case-insensitive)
+    if not matched:
+        jar_name = f"{slug}.jar"  # approximate
+        for f in filtered:
+            if f.get("fileName", "").lower() == jar_name.lower():
+                matched = f
+                break
+
+    # 6. Fallback to latest file (if any)
+    if not matched and filtered:
+        sorted_files = sorted(filtered, key=lambda f: f.get("fileDate", ""), reverse=True)
+        matched = sorted_files[0]
+
+    if not matched:
+        raise ValueError(f"No matching file for '{slug}' version '{version}' on MC {minecraft_version}")
+
+    # 7. Get download URL
+    download_url = get_download_url_by_ids(mod_id, matched["id"], api_key)
+    return download_url, matched["fileName"]
 
 
 def download_file(url, output_path):
     """Download file from url to output_path."""
-    response = requests.get(url, stream=True)
+    response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, 'wb') as f:
@@ -85,10 +172,19 @@ def main():
     # 2. Build ConfigManager
     mgr = ConfigManager()
 
-    # Load .env file first (if exists) - this provides CF_API_KEY
-    env_file = Path(".env")
-    if env_file.is_file():
-        mgr.file(env_file)   # ConfigCore parses .env syntax
+    # Load .env from config.d/.env first, then current directory
+    env_candidates = [
+        config_dir / ".env",
+        Path(".env"),
+    ]
+    loaded_env = False
+    for env_file in env_candidates:
+        if env_file.is_file():
+            mgr.file(env_file)   # ConfigCore parses .env syntax
+            loaded_env = True
+            break
+    if not loaded_env:
+        print("WARNING: No .env file found. Checked: " + ", ".join(str(p) for p in env_candidates), file=sys.stderr)
 
     # Load the main config file (TOML/YAML)
     if config_path is not None:
@@ -140,10 +236,7 @@ def main():
 
     logger.info(f"Found {len(mods)} mod entries")
 
-    # 6. Initialize CurseForge client
-    client = CurseForgeAPI(api_key)
-
-    # 7. Process each mod
+    # 6. Process each mod
     for entry in mods:
         mod_id = entry.get("id")
         source = entry.get("source", "local")
@@ -167,14 +260,34 @@ def main():
             continue
 
         elif source == "curseforge":
+            # Try to use project_id and file_id first (fast and reliable)
+            project_id = entry.get("project_id")
+            file_id = entry.get("file_id")
+            if project_id and file_id:
+                try:
+                    logger.info(f"Processing {mod_id} using project_id={project_id}, file_id={file_id}...")
+                    download_url = get_download_url_by_ids(project_id, file_id, api_key)
+                    if target_path.exists():
+                        logger.info(f"  File already exists: {target_path}")
+                        continue
+                    logger.info(f"  Downloading from {download_url}")
+                    download_file(download_url, target_path)
+                    logger.info(f"  Downloaded to {target_path}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"Direct download failed for {mod_id} (project_id={project_id}, file_id={file_id}): {e}")
+                    # Fall through to slug/version method
+
+            # Fallback: use slug and version
             slug = entry.get("slug")
             version = entry.get("version")
             if not slug or not version:
                 logger.warning(f"Mod {mod_id} missing slug/version, skipping")
                 continue
             try:
-                logger.info(f"Processing {mod_id} ({slug}) version {version}...")
-                download_url, _filename = get_mod_file_url(client, slug, version, minecraft_version)
+                logger.info(f"Processing {mod_id} ({slug}) version {version} via search...")
+                download_url, filename = get_mod_file_url_by_slug(slug, version, minecraft_version, api_key)
+                # Note: filename might differ from file_rel; we keep target_path as specified in manifest
                 if target_path.exists():
                     logger.info(f"  File already exists: {target_path}")
                     continue

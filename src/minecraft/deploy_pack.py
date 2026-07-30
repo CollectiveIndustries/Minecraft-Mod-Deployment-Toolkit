@@ -8,6 +8,9 @@ Configuration is read from:
   - Default: ./config.d/deploy_pack.{toml,yaml,yml}
   - Override via --config-dir <path>
   - Override via environment variable DEPLOYPACK_CONFIG_DIR
+
+The manifest (config.d/manifest.yaml) is used to determine which mods belong to each side.
+Mod files are expected to be in the modpack directory (output_root from mod_puller.py).
 """
 
 import argparse
@@ -20,6 +23,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import yaml
 from ConfigCore import ConfigManager
 from LoggingCore import get_logger, setup_logging
 
@@ -35,6 +39,31 @@ def find_config_file(config_dir: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+# ----------------------------------------------------------------------
+# Manifest helpers
+# ----------------------------------------------------------------------
+def load_manifest(manifest_path: Path):
+    """Load YAML manifest from path."""
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
+    with manifest_path.open() as f:
+        data = yaml.safe_load(f)
+    return data.get("mods", [])
+
+
+def filter_mods_by_side(mods, target_side):
+    """
+    Return list of mod entries where 'side' is 'both' or matches target_side.
+    target_side: 'client' or 'server'
+    """
+    result = []
+    for entry in mods:
+        side = entry.get("side", "both").lower()
+        if side == "both" or side == target_side:
+            result.append(entry)
+    return result
 
 
 # ----------------------------------------------------------------------
@@ -78,7 +107,6 @@ def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger):
         for file in files:
             full_path = Path(root) / file
             rel_path = rel_root / file
-            # Check exclusions
             excluded = False
             for pattern in exclude_patterns:
                 if fnmatch.fnmatch(str(rel_path), pattern):
@@ -127,6 +155,7 @@ def main():
 
     # Determine mode
     mode = "client" if args.client else "server"   # default to server
+    target_side = "client" if mode == "client" else "server"
 
     # Determine config directory (CLI > env > default)
     config_dir = Path(args.config_dir) if args.config_dir else \
@@ -162,6 +191,10 @@ def main():
     www_dir = get_path("www_dir", "/home/minecraft/minecraft/www")
     exclude_file = get_path("exclude_file", "/home/minecraft/nfs/sync/.rsync_exclude")
     output_filename = config.get("output_filename", "minecraft_client_{date}.zip")
+    modpack_dir = get_path("modpack_dir", "./modpack")  # where mod_puller puts files
+
+    # Manifest location
+    manifest_path = config_dir / "manifest.yaml"
 
     # MultiMC settings (only used in client mode)
     multimc_base = config.get("multimc_base")
@@ -193,10 +226,23 @@ def main():
     logger.info(f"  sync_root    = {sync_root}")
     logger.info(f"  live_server  = {live_server}")
     logger.info(f"  www_dir      = {www_dir}")
+    logger.info(f"  modpack_dir  = {modpack_dir}")
     logger.info(f"  exclude_file = {exclude_file}")
     if mode == "client":
         logger.info(f"  multimc_base= {multimc_base}")
         logger.info(f"  instance_name= {instance_name}")
+
+    # Load manifest
+    try:
+        all_mods = load_manifest(manifest_path)
+        logger.info(f"Loaded {len(all_mods)} mods from manifest")
+    except Exception as e:
+        logger.error(f"Failed to load manifest: {e}")
+        sys.exit(1)
+
+    # Filter mods by target side
+    side_mods = filter_mods_by_side(all_mods, target_side)
+    logger.info(f"Filtered to {len(side_mods)} mods for side '{target_side}'")
 
     # Build the client pack (staging)
     try:
@@ -204,13 +250,47 @@ def main():
             staging = Path(tmpdir)
             logger.info("Copying files to staging...")
 
-            subdirs = ["mods", "config", "scripts", "kubejs", "config/ftbquests"]
+            # Create mods directory
+            mods_dir = staging / "mods"
+            mods_dir.mkdir(parents=True, exist_ok=True)
+
+            # Copy mods from modpack_dir based on manifest
+            copied_count = 0
+            for entry in side_mods:
+                file_rel = entry.get("file")
+                if not file_rel:
+                    logger.warning(f"Mod {entry.get('id')} has no 'file' field, skipping")
+                    continue
+                src_file = modpack_dir / file_rel
+                if src_file.is_file():
+                    dest_file = mods_dir / file_rel
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_file, dest_file)
+                    copied_count += 1
+                    logger.debug(f"Copied mod: {file_rel}")
+                else:
+                    logger.warning(f"Mod file not found: {src_file} (expected for {entry.get('id')})")
+
+            logger.info(f"Copied {copied_count}/{len(side_mods)} mod files")
+
+            # Copy config, scripts, kubejs, ftbquests from sync/live directories
+            # (these are not part of the manifest; we copy them as before)
+            subdirs = ["config", "scripts", "kubejs", "config/ftbquests"]
             for sub in subdirs:
                 (staging / sub).mkdir(parents=True, exist_ok=True)
 
-            copy_directory_contents(sync_root / "client", staging / "mods", logger)
+            # Copy config from sync_root/config
             copy_directory_contents(sync_root / "config", staging / "config", logger)
+
+            # Copy scripts from sync_root/scripts (if exists)
+            scripts_src = sync_root / "scripts"
+            if scripts_src.is_dir():
+                copy_directory_contents(scripts_src, staging / "scripts", logger)
+
+            # Copy kubejs from live_server/kubejs
             copy_directory_contents(live_server / "kubejs", staging / "kubejs", logger)
+
+            # Copy ftbquests from live_server/config/ftbquests
             copy_directory_contents(live_server / "config" / "ftbquests",
                                     staging / "config" / "ftbquests", logger)
 
