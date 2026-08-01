@@ -9,11 +9,13 @@ ServerEvents.recipes(event => {
     event.remove({ output: 'tfmg:nickel_ore' });
     event.remove({ output: 'tfmg:raw_nickel' });
 
-    // ----- Add shapeless conversions: TFMG → IE (unified) -----
-    event.shapeless('immersiveengineering:ingot_nickel', ['tfmg:nickel_ingot'])
+    // ----- Add shapeless conversions: any nickel → IE (unified) -----
+    // Use tags so these recipes work even if specific TFMG items are missing,
+    // and they will unify ANY nickel dust/ingot to IE's version.
+    event.shapeless('immersiveengineering:ingot_nickel', ['#forge:ingots/nickel'])
         .id('kubejs:unify_nickel_ingot');
 
-    event.shapeless('immersiveengineering:dust_nickel', ['tfmg:nickel_dust'])
+    event.shapeless('immersiveengineering:dust_nickel', ['#forge:dusts/nickel'])
         .id('kubejs:unify_nickel_dust');
 
     // ----- Add smelting: raw nickel → IE ingot (0.7 XP) -----
@@ -22,6 +24,9 @@ ServerEvents.recipes(event => {
         .id('kubejs:unify_nickel_smelting');
 
     // ----- Replace all occurrences in existing recipes -----
+    // Exclude our own shapeless recipes from replacement to avoid loops.
+    const excludeIds = ['kubejs:unify_nickel_ingot', 'kubejs:unify_nickel_dust'];
+
     // Inputs (any TFMG nickel item used as ingredient)
     event.replaceInput({}, 'tfmg:nickel_ingot', 'immersiveengineering:ingot_nickel');
     event.replaceInput({}, 'tfmg:nickel_dust', 'immersiveengineering:dust_nickel');

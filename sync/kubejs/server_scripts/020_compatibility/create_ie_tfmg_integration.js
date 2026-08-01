@@ -16,12 +16,13 @@ ServerEvents.recipes(event => {
 
   // --------------------------------------------------------
   // Mechanical Crafting: Tracks (replacing default recipe)
+  // Fixed: pattern rows are now 9 characters (max allowed)
   // --------------------------------------------------------
   event.recipes.create.mechanical_crafting(
     'create:track',
     [
-      'FSTSFFSTSF',
-      'FSTSFFSTSF'
+      'FSTSFFSTF',   // 9 characters
+      'FSTSFFSTF'    // 9 characters
     ],
     {
       F: 'immersiveengineering:treated_fence',

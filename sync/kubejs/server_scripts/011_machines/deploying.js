@@ -20,8 +20,7 @@ ServerEvents.recipes(event => {
     // Smooth Stone via Deployer (stone + sandpaper)
     event.recipes.create.deploying(
         'minecraft:smooth_stone',
-        ['minecraft:stone', 'create:sandpaper']   // two items
+        ['minecraft:stone', '#create:sandpaper']
     )
-    .keepHeldItem()                                // sandpaper is NOT consumed
-    .id('kubejs:smooth_stone_deploy');
+     .id('kubejs:smooth_stone_deploy');
 });
