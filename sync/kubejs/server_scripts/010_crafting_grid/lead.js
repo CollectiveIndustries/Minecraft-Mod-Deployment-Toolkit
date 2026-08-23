@@ -1,7 +1,5 @@
 ServerEvents.recipes(event => {
-
-  // Remove vanilla lead recipe
-  event.remove({ output: 'minecraft:lead' })
+  console.info("=== 010_crafting_grid/lead Recipe script loaded ===");  
 
   // Add new rod-based recipe
   event.shaped('2x minecraft:lead', [

@@ -11,7 +11,7 @@
 	#Range: > 1
 	maximum_blocks_to_break = 100
 	#The blocks that are allowed to be vein-mined
-	block_white_list = ["#forge:ores"]
+	block_white_list = ["#forge:ores", "minecraft:andesite"]
 	#The blocks that will not be veinmined, even if they're part of the whitelist
 	block_black_list = ["minecraft:ancient_debris"]
 	#Whether or not to stop the vein mining when the tool is about to break

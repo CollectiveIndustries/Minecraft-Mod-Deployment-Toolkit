@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 020_compatibility/create_ie_tfmg_integration Recipe script loaded ===");
 
   // --------------------------------------------------------
   // Filling: Treated Wood + Creosote → Hardened Planks

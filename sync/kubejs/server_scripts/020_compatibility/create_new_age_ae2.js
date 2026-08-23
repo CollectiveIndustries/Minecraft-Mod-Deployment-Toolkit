@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 020_compatibility/create_new_age_ae2 Recipe script loaded ===");
 
   // Certus Quartz → Charged Certus Quartz (4,000 FE)
   event.custom({

@@ -2,10 +2,11 @@
 """
 mod_puller.py - Pull mods from CurseForge according to manifest.yaml,
 placing each file exactly where the manifest says.
-Uses ConfigCore and LoggingCore; API key from .env (loaded by ConfigCore).
+Uses ConfigCore and LoggingCore; API key from .env (loaded by python-dotenv).
 Supports direct download via project_id/file_id, with slug/version fallback.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,8 +15,8 @@ import yaml
 
 # Import collective-cores
 from ConfigCore import ConfigManager
+from dotenv import load_dotenv
 from LoggingCore import get_logger, setup_logging
-
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -62,7 +63,7 @@ def get_download_url_by_ids(project_id: int, file_id: int, api_key: str) -> str:
     return resp["data"]
 
 
-def get_mod_file_url_by_slug(client, slug: str, version: str, minecraft_version: str, api_key: str):
+def get_mod_file_url_by_slug(slug: str, version: str, minecraft_version: str, api_key: str):
     """
     Fallback: search by slug, fetch files, find matching file.
     Uses raw API calls (not wrapper).
@@ -172,18 +173,15 @@ def main():
     # 2. Build ConfigManager
     mgr = ConfigManager()
 
-    # Load .env from config.d/.env first, then current directory
-    env_candidates = [
-        config_dir / ".env",
-        Path(".env"),
-    ]
-    loaded_env = False
+    # Load .env files using python-dotenv (they will be added to os.environ)
+    env_loaded = False
+    env_candidates = [config_dir / ".env", Path(".env")]
     for env_file in env_candidates:
         if env_file.is_file():
-            mgr.file(env_file)   # ConfigCore parses .env syntax
-            loaded_env = True
+            load_dotenv(dotenv_path=env_file)
+            env_loaded = True
             break
-    if not loaded_env:
+    if not env_loaded:
         print("WARNING: No .env file found. Checked: " + ", ".join(str(p) for p in env_candidates), file=sys.stderr)
 
     # Load the main config file (TOML/YAML)
@@ -197,9 +195,10 @@ def main():
     config = mgr.load()
 
     # 3. Extract required settings
-    api_key = config.get("CF_API_KEY") or config.get("api_key")
+    # First try config (from file or MODPULLER_ prefixed env), then raw environment variable CF_API_KEY
+    api_key = config.get("CF_API_KEY") or config.get("api_key") or os.getenv("CF_API_KEY")
     if not api_key:
-        print("ERROR: CF_API_KEY not found in .env or config. Aborting.", file=sys.stderr)
+        print("ERROR: CF_API_KEY not found in .env, config, or environment. Aborting.", file=sys.stderr)
         sys.exit(1)
 
     output_root = Path(config.get("output_root", "./modpack"))

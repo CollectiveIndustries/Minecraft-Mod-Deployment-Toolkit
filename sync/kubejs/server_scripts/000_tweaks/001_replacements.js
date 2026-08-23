@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 001_replacements Recipe script loaded ===");
 
   event.replaceInput(
     { output: 'create:rose_quartz' },   // Only recipes producing Rose Quartz

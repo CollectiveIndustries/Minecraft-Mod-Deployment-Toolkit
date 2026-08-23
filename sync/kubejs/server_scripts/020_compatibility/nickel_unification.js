@@ -2,12 +2,7 @@
 // Removes all TFMG nickel items and replaces them with IE counterparts
 
 ServerEvents.recipes(event => {
-
-    // ----- Remove all recipes that output TFMG nickel items -----
-    event.remove({ output: 'tfmg:nickel_ingot' });
-    event.remove({ output: 'tfmg:nickel_dust' });
-    event.remove({ output: 'tfmg:nickel_ore' });
-    event.remove({ output: 'tfmg:raw_nickel' });
+    console.info("=== 020_compatibility/nickel_unification Recipe script loaded ===");
 
     // ----- Add shapeless conversions: any nickel → IE (unified) -----
     // Use tags so these recipes work even if specific TFMG items are missing,

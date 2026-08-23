@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 011_machines/furnace Recipe script loaded ===");
   // ----- Rotten Flesh → Leather (furnace) -----
   event.smelting('minecraft:leather', 'minecraft:rotten_flesh')
     .xp(1.5)

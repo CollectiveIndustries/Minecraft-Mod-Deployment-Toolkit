@@ -15,7 +15,7 @@ services:
       VERSION: "1.20.1"
       FORGE_VERSION: "47.4.10"
       MEMORY: "6G"
-      JVM_OPTS: "-XX:+UseG1GC"
+      JVM_OPTS: "-XX:+UseG1GC -Dfml.maxPacketSize=8388608"
     volumes:
       - ./server:/data
       - ./world:/data/world

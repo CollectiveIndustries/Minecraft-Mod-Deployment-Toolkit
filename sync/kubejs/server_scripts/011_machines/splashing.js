@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 011_machines/splashing Recipe script loaded ===");
 
   // Sand → Gold Nugget (15%) + Clay Ball (25%)
   event.recipes.create.splashing(

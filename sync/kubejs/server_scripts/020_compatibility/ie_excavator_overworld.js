@@ -1,5 +1,6 @@
 // Immersive Engineering Excavator Mineral Deposits (Overworld)
 ServerEvents.recipes(event => {
+  console.info("=== 020_compatibility/ie_excavator_overworld Recipe script loaded ===");
 
   // Lithium Pegmatite
   event.custom({

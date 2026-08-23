@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 011_machines/milling Recipe script loaded ===");
 
   // Andesite → Andesite Alloy (25%), Gravel (5%), Cobblestone (25%)
   event.recipes.create.milling(

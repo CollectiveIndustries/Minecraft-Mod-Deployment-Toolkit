@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 011_machines/cutting Recipe script loaded ===");
 
   // Melon → 9 slices + 2 seeds guaranteed + 1 extra seed (25% chance)
   event.recipes.create.cutting(

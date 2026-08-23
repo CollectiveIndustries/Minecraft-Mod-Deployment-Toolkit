@@ -75,6 +75,9 @@ sync/.Trash-1000/
 *.bak
 *.tmp
 *.cache
+*.zip
+www/*
+
 
 # Docker volumes (if you mount them, but not needed in repo)
 # Not applicable

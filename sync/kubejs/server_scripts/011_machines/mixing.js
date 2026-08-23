@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 011_machines/mixing Recipe script loaded ===");
 
   // Red Alloy (heated) – Copper Ingot + 4 Redstone → Red Alloy Ingot
   event.recipes.create.mixing(

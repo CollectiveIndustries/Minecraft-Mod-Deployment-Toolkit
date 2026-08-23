@@ -1,5 +1,6 @@
 // kubejs/server_scripts/020_compatibility/minecraft_storagedrawers.js
 ServerEvents.recipes(event => {
+  console.info("=== 020_compatibility/minecraft_storagedrawers Recipe script loaded ===");
 
   // Copper Hopper: 2 Copper Ingots + any Full Drawer → 2 Hoppers
   event.shaped(

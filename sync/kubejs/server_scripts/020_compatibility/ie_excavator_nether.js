@@ -1,5 +1,6 @@
 // Immersive Engineering Excavator Mineral Deposit (Nether Sulfur)
 ServerEvents.recipes(event => {
+  console.info("=== 020_compatibility/ie_excavator_nether Recipe script loaded ===");
 
   event.custom({
     type: 'immersiveengineering:mineral_mix',

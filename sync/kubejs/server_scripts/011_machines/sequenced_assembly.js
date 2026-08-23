@@ -4,6 +4,7 @@
 // Texture created by Bigdog0408
 
 ServerEvents.recipes(event => {
+  console.info("=== 011_machines/sequenced_assembly Recipe script loaded ===");
 
   // Remove crafting table chain
   event.remove({ output: 'minecraft:chain' })

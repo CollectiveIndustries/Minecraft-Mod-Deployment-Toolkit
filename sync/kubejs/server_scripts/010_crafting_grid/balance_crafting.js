@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+  console.info("=== 010_crafting_grid/balance_crafting Recipe script loaded ===");
 
   // Craftable Saddle
   event.shaped(

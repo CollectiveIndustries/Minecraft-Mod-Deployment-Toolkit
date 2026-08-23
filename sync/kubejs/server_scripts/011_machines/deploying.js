@@ -1,4 +1,5 @@
 ServerEvents.recipes(event => {
+    console.info("=== 011_machines/deploying Recipe script loaded ===");
     // Tag: all modded stripped logs (same as CT)
     const logs = '#create:modded_stripped_wood';
 

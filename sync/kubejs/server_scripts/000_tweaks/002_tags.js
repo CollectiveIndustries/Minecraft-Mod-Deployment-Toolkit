@@ -1,6 +1,7 @@
 const STRIPPED_REGEX = /:stripped_.*_(log|wood)$/;
 
 ServerEvents.tags('item', event => {
+  console.info("=== 002_tags Recipe script loaded ===");
 
   // ----- Existing: automatically add all stripped logs to forge:stripped_logs -----
   const existing = new Set(
