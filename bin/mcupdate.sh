@@ -6,7 +6,7 @@ SYNC="$ROOT/sync"
 LIVE="$ROOT/server"
 
 
-EXCLUDE="$SYNC/.rsync_exclude"
+EXCLUDE="$ROOT/.rsync_exclude"
 
 echo "[1/4] Ensuring server is stopped..."
 docker compose stop minecraft
