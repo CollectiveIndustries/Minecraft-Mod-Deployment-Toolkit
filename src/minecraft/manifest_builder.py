@@ -10,13 +10,11 @@ and file_id (implies --curse).
 """
 
 import argparse
+import re
 import sys
 import tomllib
 import zipfile
-import zlib
-import re
 from pathlib import Path
-from typing import Dict, Tuple, Optional, List
 
 import requests
 import yaml
@@ -24,7 +22,6 @@ import yaml
 # Import collective-cores
 from ConfigCore import ConfigManager
 from LoggingCore import get_core, get_logger, setup_logging
-
 
 # ----------------------------------------------------------------------
 # Slug correction mapping: metadata modid -> correct CurseForge slug
@@ -34,52 +31,43 @@ SLUG_CORRECTIONS = {
     # FTB mods
     "ftbessentials": "ftb-essentials",
     "ftblibrary": "ftb-library",
-    "ftbteams": "ftb-teams-forge",           # corrected
-    "ftbquests": "ftb-quests-forge",         # corrected
-    "ftbchunks": "ftb-chunks-forge",         # corrected
+    "ftbteams": "ftb-teams-forge",  # corrected
+    "ftbquests": "ftb-quests-forge",  # corrected
+    "ftbchunks": "ftb-chunks-forge",  # corrected
     "ftbfiltersystem": "ftb-filter-system",
     "ftbxmodcompat": "ftb-xmod-compat",
-
     # Compass mods
     "naturescompass": "natures-compass",
     "explorerscompass": "explorers-compass",
-
     # Essentials
     "inventoryessentials": "inventory-essentials",
-
     # Sophisticated
     "sophisticatedcore": "sophisticated-core",
     "sophisticatedbackpacks": "sophisticated-backpacks",
-
     # Libs
     "resourcefullib": "resourceful-lib",
-    "forgeconfigscreens": "config-menus-forge",   # corrected
+    "forgeconfigscreens": "config-menus-forge",  # corrected
     "puzzleslib": "puzzles-lib",
     "anvianslib": "anvians-lib",
-
     # Create addons & related
     "createaddition": "create-addition",
     "create-new-age": "create-new-age",
-    "create-hypertube": "hypertubes",             # corrected
+    "create-hypertube": "hypertubes",  # corrected
     "create-unbreakable": "create-unbreakable-tools",  # corrected
-    "create-decoration": "create-deco",           # corrected
+    "create-decoration": "create-deco",  # corrected
     "create-ultimate-factory": "create-ultimate-factory",
-    "create": "create",                           # already correct
-
+    "create": "create",  # already correct
     # JEI / JEP
     "jeimultiblocks": "jei-multiblocks",
     "justenoughprofessions": "just-enough-professions-jep",  # corrected
-
     # Storage
     "storagedrawers": "storage-drawers",
     "storagedrawersextra": "storage-drawers-extra",
-
     # Villages/underground
     "underground-village": "underground-villages-stoneholm",  # corrected
-
     # Misc
     "morerelics": "more-relics",
-    "bits-n-bobs": "create-bits-n-bobs",          # corrected
+    "bits-n-bobs": "create-bits-n-bobs",  # corrected
     "ceilingtorch": "ceiling-torch",
     "lighty": "lighty",
     "collective": "collective",
@@ -99,7 +87,6 @@ SLUG_CORRECTIONS = {
     "jadeaddons": "jade-addons",
     "createsweetsandtreets": "create-sweets-and-treats",
     "svmm": "server-side-vein-miner",
-
     # Additions from latest corrections
     "mininggadgets": "mining-gadgets",
     "inventory-sorter": "inventory-sorter",
@@ -123,7 +110,7 @@ def find_jars(directories, logger):
 def extract_metadata(jar_path, logger):
     """Extract mod metadata from the jar's META-INF/mods.toml."""
     try:
-        with zipfile.ZipFile(jar_path, 'r') as zf:
+        with zipfile.ZipFile(jar_path, "r") as zf:
             toml_path = None
             for candidate in ["META-INF/mods.toml", "META-INF/neoforge.mods.toml"]:
                 if candidate in zf.namelist():
@@ -178,7 +165,9 @@ def curseforge_request(endpoint, api_key, method="GET", params=None, json_data=N
     if json_data is not None:
         headers["Content-Type"] = "application/json"
     url = f"https://api.curseforge.com{endpoint}"
-    resp = requests.request(method, url, headers=headers, params=params, json=json_data, timeout=30)
+    resp = requests.request(
+        method, url, headers=headers, params=params, json=json_data, timeout=30
+    )
     resp.raise_for_status()
     return resp.json()
 
@@ -194,7 +183,7 @@ def fetch_all_files(mod_id, api_key, logger):
             resp = curseforge_request(
                 f"/v1/mods/{mod_id}/files",
                 api_key,
-                params={"pageSize": page_size, "index": index}
+                params={"pageSize": page_size, "index": index},
             )
             page = resp.get("data", [])
             if not page:
@@ -206,7 +195,7 @@ def fetch_all_files(mod_id, api_key, logger):
                 break
             index += page_size
         except Exception as e:
-            logger.debug(f"Could not fetch files page {index//page_size}: {e}")
+            logger.debug(f"Could not fetch files page {index // page_size}: {e}")
             break
     return all_files
 
@@ -217,7 +206,7 @@ def find_mod_by_slug(slug, api_key, logger):
         resp = curseforge_request(
             "/v1/mods/search",
             api_key,
-            params={"gameId": 432, "slug": slug, "pageSize": 1}
+            params={"gameId": 432, "slug": slug, "pageSize": 1},
         )
         data = resp.get("data", [])
         if data:
@@ -258,13 +247,17 @@ def resolve_by_search_direct(jars, logger, api_key):
         if corrected_slug != original_slug:
             mod = find_mod_by_slug(corrected_slug, api_key, logger)
             if mod:
-                logger.debug(f"Found mod by corrected slug '{corrected_slug}': {mod['name']} (id={mod['id']}) for {jar_name}")
+                logger.debug(
+                    f"Found mod by corrected slug '{corrected_slug}': {mod['name']} (id={mod['id']}) for {jar_name}"
+                )
 
         # 2. Try original slug
         if not mod:
             mod = find_mod_by_slug(original_slug, api_key, logger)
             if mod:
-                logger.debug(f"Found mod by original slug '{original_slug}': {mod['name']} (id={mod['id']}) for {jar_name}")
+                logger.debug(
+                    f"Found mod by original slug '{original_slug}': {mod['name']} (id={mod['id']}) for {jar_name}"
+                )
 
         # 3. Last resort: searchFilter with display name (with sanity check)
         if not mod and display_name:
@@ -272,7 +265,7 @@ def resolve_by_search_direct(jars, logger, api_key):
                 resp = curseforge_request(
                     "/v1/mods/search",
                     api_key,
-                    params={"gameId": 432, "searchFilter": display_name, "pageSize": 5}
+                    params={"gameId": 432, "searchFilter": display_name, "pageSize": 5},
                 )
                 candidates = resp.get("data", [])
                 if candidates:
@@ -285,12 +278,16 @@ def resolve_by_search_direct(jars, logger, api_key):
                     if not mod:
                         # Pick the first one that has "forge" in the name? or just first
                         mod = candidates[0]
-                    logger.debug(f"Found mod by display_name: {mod['name']} (id={mod['id']}) for {jar_name}")
+                    logger.debug(
+                        f"Found mod by display_name: {mod['name']} (id={mod['id']}) for {jar_name}"
+                    )
             except Exception as e:
                 logger.debug(f"Display_name search failed: {e}")
 
         if not mod:
-            logger.debug(f"No mod found for {jar_name} (slugs: {original_slug}/{corrected_slug})")
+            logger.debug(
+                f"No mod found for {jar_name} (slugs: {original_slug}/{corrected_slug})"
+            )
             continue
 
         mod_id = mod["id"]
@@ -325,7 +322,7 @@ def resolve_by_search_direct(jars, logger, api_key):
 
         # 2. Extract version from filename and match
         if not matched:
-            version_pattern = re.compile(r'[-_]?(\d+\.\d+(?:\.\d+)?(?:[+.-]\w+)?)[-_]')
+            version_pattern = re.compile(r"[-_]?(\d+\.\d+(?:\.\d+)?(?:[+.-]\w+)?)[-_]")
             match = version_pattern.search(jar_name)
             extracted_version = match.group(1) if match else None
             if extracted_version:
@@ -334,7 +331,9 @@ def resolve_by_search_direct(jars, logger, api_key):
                     display = f.get("displayName", "")
                     if extracted_version in fname or extracted_version in display:
                         matched = f
-                        logger.debug(f"Version match (extracted {extracted_version}): {jar_name} -> file={f['id']}")
+                        logger.debug(
+                            f"Version match (extracted {extracted_version}): {jar_name} -> file={f['id']}"
+                        )
                         break
             # If that fails, try the metadata version
             if not matched and version_from_meta:
@@ -343,7 +342,9 @@ def resolve_by_search_direct(jars, logger, api_key):
                     display = f.get("displayName", "")
                     if version_from_meta in fname or version_from_meta in display:
                         matched = f
-                        logger.debug(f"Meta version match: {jar_name} -> file={f['id']}")
+                        logger.debug(
+                            f"Meta version match: {jar_name} -> file={f['id']}"
+                        )
                         break
 
         # 3. Slug in filename (case‑insensitive)
@@ -352,7 +353,9 @@ def resolve_by_search_direct(jars, logger, api_key):
                 fname = f.get("fileName", "")
                 if original_slug in fname.lower() or corrected_slug in fname.lower():
                     matched = f
-                    logger.debug(f"Slug-in-filename match: {jar_name} -> file={f['id']}")
+                    logger.debug(
+                        f"Slug-in-filename match: {jar_name} -> file={f['id']}"
+                    )
                     break
 
         # 4. Base name match (without .jar)
@@ -368,14 +371,20 @@ def resolve_by_search_direct(jars, logger, api_key):
 
         # 5. Fallback: latest file among filtered (by fileDate)
         if not matched and filtered_files:
-            sorted_files = sorted(filtered_files, key=lambda f: f.get("fileDate", ""), reverse=True)
+            sorted_files = sorted(
+                filtered_files, key=lambda f: f.get("fileDate", ""), reverse=True
+            )
             matched = sorted_files[0]
-            logger.debug(f"Latest-file fallback (MC 1.20.1): {jar_name} -> file={matched['id']} ({matched.get('fileName', 'unknown')})")
+            logger.debug(
+                f"Latest-file fallback (MC 1.20.1): {jar_name} -> file={matched['id']} ({matched.get('fileName', 'unknown')})"
+            )
 
         if matched:
             results[jar] = (mod_id, matched["id"])
         else:
-            logger.warning(f"No matching file found for {jar_name} (mod {mod['name']}, slug {original_slug})")
+            logger.warning(
+                f"No matching file found for {jar_name} (mod {mod['name']}, slug {original_slug})"
+            )
 
     return results
 
@@ -386,12 +395,20 @@ def resolve_curse_ids(jars, logger, api_key):
     """
     # Test API key with a simple search
     try:
-        resp = curseforge_request("/v1/mods/search", api_key, params={"gameId": 432, "searchFilter": "jei", "pageSize": 1})
+        resp = curseforge_request(
+            "/v1/mods/search",
+            api_key,
+            params={"gameId": 432, "searchFilter": "jei", "pageSize": 1},
+        )
         if resp.get("data"):
             first = resp["data"][0]
-            logger.debug(f"API test: found mod '{first['name']}' (id={first['id']}) for 'jei'")
+            logger.debug(
+                f"API test: found mod '{first['name']}' (id={first['id']}) for 'jei'"
+            )
         else:
-            logger.warning("API test: search for 'jei' returned no results – API key may be invalid.")
+            logger.warning(
+                "API test: search for 'jei' returned no results – API key may be invalid."
+            )
     except Exception as e:
         logger.error(f"API test failed: {e}")
 
@@ -401,7 +418,9 @@ def resolve_curse_ids(jars, logger, api_key):
     return results
 
 
-def build_manifest(jars, default_side, logger, curse=False, resolve=False, api_key=None):
+def build_manifest(
+    jars, default_side, logger, curse=False, resolve=False, api_key=None
+):
     """
     Build the manifest list from jar paths, deduplicating by mod id.
     Stores only the filename in the 'file' field.
@@ -415,7 +434,11 @@ def build_manifest(jars, default_side, logger, curse=False, resolve=False, api_k
             logger.debug(f"No metadata found in {jar}, skipping")
             continue
 
-        side = meta["side"] if meta["side"] in ["client", "server", "both"] else default_side
+        side = (
+            meta["side"]
+            if meta["side"] in ["client", "server", "both"]
+            else default_side
+        )
         entry = {
             "id": meta["id"],
             "source": "local",
@@ -454,31 +477,62 @@ def build_manifest(jars, default_side, logger, curse=False, resolve=False, api_k
                 entry["project_id"] = project_id
                 entry["file_id"] = file_id
                 resolved_count += 1
-                logger.debug(f"Resolved {entry['id']}: project_id={project_id}, file_id={file_id}")
+                logger.debug(
+                    f"Resolved {entry['id']}: project_id={project_id}, file_id={file_id}"
+                )
             else:
                 logger.warning(f"Could not resolve CurseForge IDs for {entry['file']}")
         logger.info(f"Resolved {resolved_count}/{len(unique)} mods")
 
-    return sorted([entry for entry, _ in unique.values()], key=lambda x: x["id"].lower())
+    return sorted(
+        [entry for entry, _ in unique.values()], key=lambda x: x["id"].lower()
+    )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build a manifest.yaml from .jar files.")
-    parser.add_argument("--mods", action="append", required=True,
-                        help="Directories to scan for .jar files (can be used multiple times)")
-    parser.add_argument("--manifest", type=Path, default=Path("config.d/manifest.yaml"),
-                        help="Output manifest file (default: config.d/manifest.yaml)")
-    parser.add_argument("--side", default="both", choices=["client", "server", "both"],
-                        help="Default side for mods that don't specify one (default: both)")
+    parser = argparse.ArgumentParser(
+        description="Build a manifest.yaml from .jar files."
+    )
+    parser.add_argument(
+        "--mods",
+        action="append",
+        required=True,
+        help="Directories to scan for .jar files (can be used multiple times)",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path("config.d/manifest.yaml"),
+        help="Output manifest file (default: config.d/manifest.yaml)",
+    )
+    parser.add_argument(
+        "--side",
+        default="both",
+        choices=["client", "server", "both"],
+        help="Default side for mods that don't specify one (default: both)",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--no-deduplicate", action="store_true",
-                        help="Disable deduplication (keep duplicate entries)")
-    parser.add_argument("--curse", action="store_true",
-                        help="Configure entries for CurseForge: add slug and source: curseforge")
-    parser.add_argument("--resolve", action="store_true",
-                        help="Query CurseForge API to fill project_id and file_id (implies --curse)")
-    parser.add_argument("--env-file", type=Path, default=None,
-                        help="Path to .env file (default: checks ./.env and config.d/.env)")
+    parser.add_argument(
+        "--no-deduplicate",
+        action="store_true",
+        help="Disable deduplication (keep duplicate entries)",
+    )
+    parser.add_argument(
+        "--curse",
+        action="store_true",
+        help="Configure entries for CurseForge: add slug and source: curseforge",
+    )
+    parser.add_argument(
+        "--resolve",
+        action="store_true",
+        help="Query CurseForge API to fill project_id and file_id (implies --curse)",
+    )
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help="Path to .env file (default: checks ./.env and config.d/.env)",
+    )
 
     args = parser.parse_args()
 
@@ -490,9 +544,13 @@ def main():
         "color": True,
         "handlers": [
             {"type": "console", "color": True},
-            {"type": "file", "path": "logs/manifest_builder.log",
-             "max_bytes": 10_485_760, "backup_count": 5}
-        ]
+            {
+                "type": "file",
+                "path": "logs/manifest_builder.log",
+                "max_bytes": 10_485_760,
+                "backup_count": 5,
+            },
+        ],
     }
     setup_logging(log_config)
     logger = get_logger(__name__)
@@ -519,7 +577,10 @@ def main():
                 loaded = True
                 break
         if not loaded:
-            logger.error("No .env file found. Checked: " + ", ".join(str(p) for p in env_candidates))
+            logger.error(
+                "No .env file found. Checked: "
+                + ", ".join(str(p) for p in env_candidates)
+            )
             sys.exit(1)
 
         config = mgr.load()
@@ -544,18 +605,19 @@ def main():
 
     logger.info(f"Found {len(jars)} jar files.")
 
-    manifest_entries = build_manifest(jars, args.side, logger,
-                                      curse=args.curse,
-                                      resolve=args.resolve,
-                                      api_key=api_key)
+    manifest_entries = build_manifest(
+        jars, args.side, logger, curse=args.curse, resolve=args.resolve, api_key=api_key
+    )
 
     if not manifest_entries:
         logger.error("No valid mod metadata found.")
         sys.exit(1)
 
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
-    with args.manifest.open('w') as f:
-        yaml.dump({"mods": manifest_entries}, f, default_flow_style=False, sort_keys=False)
+    with args.manifest.open("w") as f:
+        yaml.dump(
+            {"mods": manifest_entries}, f, default_flow_style=False, sort_keys=False
+        )
 
     logger.info(f"Manifest written to {args.manifest}")
     logger.info(f"Total mods: {len(manifest_entries)}")

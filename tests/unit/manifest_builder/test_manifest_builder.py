@@ -2,11 +2,9 @@
 Unit tests for manifest_builder.py.
 """
 
-import sys
-import types
 import zipfile
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, mock_open, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -17,10 +15,11 @@ from minecraft import manifest_builder
 # Fixtures
 # ----------------------------------------------------------------------
 
+
 @pytest.fixture
 def mock_logger():
     """Mock logger returned by get_logger."""
-    with patch('minecraft.manifest_builder.get_logger') as mock_get:
+    with patch("minecraft.manifest_builder.get_logger") as mock_get:
         logger = MagicMock()
         mock_get.return_value = logger
         yield logger
@@ -29,6 +28,7 @@ def mock_logger():
 # ----------------------------------------------------------------------
 # Tests for find_jars
 # ----------------------------------------------------------------------
+
 
 def test_find_jars(tmp_path, mock_logger):
     """find_jars should yield all .jar files recursively."""
@@ -56,12 +56,15 @@ def test_find_jars_missing_dir(tmp_path, mock_logger):
     missing = tmp_path / "missing"
     jars = list(manifest_builder.find_jars([missing], mock_logger))
     assert jars == []
-    mock_logger.warning.assert_called_once_with(f"{missing} is not a directory, skipping")
+    mock_logger.warning.assert_called_once_with(
+        f"{missing} is not a directory, skipping"
+    )
 
 
 # ----------------------------------------------------------------------
 # Tests for extract_metadata
 # ----------------------------------------------------------------------
+
 
 def test_extract_metadata_success(tmp_path, mock_logger):
     """extract_metadata should read mods.toml and return correct data."""
@@ -82,7 +85,7 @@ mandatory = true
 modId = "dep2"
 mandatory = false
 """
-    with zipfile.ZipFile(jar_path, 'w') as zf:
+    with zipfile.ZipFile(jar_path, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml_content)
 
     result = manifest_builder.extract_metadata(jar_path, mock_logger)
@@ -98,7 +101,7 @@ mandatory = false
 def test_extract_metadata_no_toml(tmp_path, mock_logger):
     """extract_metadata should return None if no metadata file found."""
     jar_path = tmp_path / "test.jar"
-    with zipfile.ZipFile(jar_path, 'w') as zf:
+    with zipfile.ZipFile(jar_path, "w") as zf:
         zf.writestr("META-INF/other.txt", "dummy")
 
     result = manifest_builder.extract_metadata(jar_path, mock_logger)
@@ -116,7 +119,7 @@ version = "2.0.0"
 displayName = "NeoForge Mod"
 side = "SERVER"
 """
-    with zipfile.ZipFile(jar_path, 'w') as zf:
+    with zipfile.ZipFile(jar_path, "w") as zf:
         zf.writestr("META-INF/neoforge.mods.toml", toml_content)
 
     result = manifest_builder.extract_metadata(jar_path, mock_logger)
@@ -127,7 +130,7 @@ side = "SERVER"
 def test_extract_metadata_corrupt_toml(tmp_path, mock_logger):
     """extract_metadata should handle corrupt TOML gracefully."""
     jar_path = tmp_path / "test.jar"
-    with zipfile.ZipFile(jar_path, 'w') as zf:
+    with zipfile.ZipFile(jar_path, "w") as zf:
         zf.writestr("META-INF/mods.toml", "this is not toml [")
 
     result = manifest_builder.extract_metadata(jar_path, mock_logger)
@@ -138,6 +141,7 @@ def test_extract_metadata_corrupt_toml(tmp_path, mock_logger):
 # ----------------------------------------------------------------------
 # Tests for build_manifest
 # ----------------------------------------------------------------------
+
 
 def test_build_manifest(tmp_path, mock_logger):
     """build_manifest should build correct entries from jars."""
@@ -154,7 +158,7 @@ version = "1.0"
 displayName = "Mod One"
 side = "BOTH"
 """
-    with zipfile.ZipFile(jar1, 'w') as zf:
+    with zipfile.ZipFile(jar1, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml1)
 
     jar2 = mods_dir / "mod2.jar"
@@ -166,11 +170,13 @@ displayName = "Mod Two"
 side = "CLIENT"
 dependencies = ["depX"]
 """
-    with zipfile.ZipFile(jar2, 'w') as zf:
+    with zipfile.ZipFile(jar2, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml2)
 
     jars = [jar1, jar2]
-    manifest = manifest_builder.build_manifest(jars, "both", mock_logger)  # root removed
+    manifest = manifest_builder.build_manifest(
+        jars, "both", mock_logger
+    )  # root removed
 
     assert len(manifest) == 2
     entry1 = next(e for e in manifest if e["id"] == "mod1")
@@ -192,25 +198,33 @@ modId = "outside_mod"
 version = "1.0"
 displayName = "Outside"
 """
-    with zipfile.ZipFile(jar, 'w') as zf:
+    with zipfile.ZipFile(jar, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml)
 
     manifest = manifest_builder.build_manifest([jar], "both", mock_logger)
     assert len(manifest) == 1
     assert manifest[0]["file"] == "mod.jar"  # only filename, not absolute path
 
+
 # ----------------------------------------------------------------------
 # Tests for main (via integration-like mocks)
 # ----------------------------------------------------------------------
 
-@patch('minecraft.manifest_builder.argparse.ArgumentParser')
-@patch('minecraft.manifest_builder.setup_logging')
-@patch('minecraft.manifest_builder.get_logger')
-@patch('minecraft.manifest_builder.find_jars')
-@patch('minecraft.manifest_builder.build_manifest')
-@patch('minecraft.manifest_builder.yaml.dump')
-def test_main_success(mock_yaml_dump, mock_build_manifest, mock_find_jars,
-                      mock_get_logger, mock_setup_logging, mock_parser):
+
+@patch("minecraft.manifest_builder.argparse.ArgumentParser")
+@patch("minecraft.manifest_builder.setup_logging")
+@patch("minecraft.manifest_builder.get_logger")
+@patch("minecraft.manifest_builder.find_jars")
+@patch("minecraft.manifest_builder.build_manifest")
+@patch("minecraft.manifest_builder.yaml.dump")
+def test_main_success(
+    mock_yaml_dump,
+    mock_build_manifest,
+    mock_find_jars,
+    mock_get_logger,
+    mock_setup_logging,
+    mock_parser,
+):
     """Test main() with successful execution."""
     # Setup mocks
     mock_args = MagicMock()
@@ -231,7 +245,7 @@ def test_main_success(mock_yaml_dump, mock_build_manifest, mock_find_jars,
     mock_find_jars.return_value = [Path("mods_dir/test.jar")]
     mock_build_manifest.return_value = [{"id": "testmod", "file": "mods/test.jar"}]
 
-    with patch('sys.argv', ['manifest_builder.py']):
+    with patch("sys.argv", ["manifest_builder.py"]):
         manifest_builder.main()
 
     mock_setup_logging.assert_called_once()
@@ -240,15 +254,15 @@ def test_main_success(mock_yaml_dump, mock_build_manifest, mock_find_jars,
         {"mods": [{"id": "testmod", "file": "mods/test.jar"}]},
         ANY,
         default_flow_style=False,
-        sort_keys=False
+        sort_keys=False,
     )
     mock_logger.info.assert_any_call("Manifest written to config.d/manifest.yaml")
 
 
-@patch('minecraft.manifest_builder.argparse.ArgumentParser')
-@patch('minecraft.manifest_builder.setup_logging')
-@patch('minecraft.manifest_builder.get_logger')
-@patch('minecraft.manifest_builder.find_jars')
+@patch("minecraft.manifest_builder.argparse.ArgumentParser")
+@patch("minecraft.manifest_builder.setup_logging")
+@patch("minecraft.manifest_builder.get_logger")
+@patch("minecraft.manifest_builder.find_jars")
 def test_main_no_jars(mock_find_jars, mock_get_logger, mock_setup_logging, mock_parser):
     """main() should exit if no jars found."""
     mock_args = MagicMock()
@@ -267,7 +281,7 @@ def test_main_no_jars(mock_find_jars, mock_get_logger, mock_setup_logging, mock_
     mock_get_logger.return_value = mock_logger
     mock_find_jars.return_value = []
 
-    with patch('sys.argv', ['manifest_builder.py']):
+    with patch("sys.argv", ["manifest_builder.py"]):
         with pytest.raises(SystemExit) as exc:
             manifest_builder.main()
         assert exc.value.code == 1
@@ -279,6 +293,7 @@ def test_main_no_jars(mock_find_jars, mock_get_logger, mock_setup_logging, mock_
 # Additional tests for manifest_builder coverage
 # ----------------------------------------------------------------------
 
+
 def test_compute_fingerprint(tmp_path):
     """compute_fingerprint should return CRC32 of file."""
     test_file = tmp_path / "test.bin"
@@ -288,7 +303,7 @@ def test_compute_fingerprint(tmp_path):
     assert result != 0
 
 
-@patch('minecraft.manifest_builder.CurseForgeAPI')
+@patch("minecraft.manifest_builder.CurseForgeAPI")
 def test_resolve_curse_ids_fallback_search(mock_api, tmp_path, mock_logger):
     """resolve_curse_ids should fall back to search when fingerprint fails."""
     jar = tmp_path / "mod.jar"
@@ -298,7 +313,7 @@ modId = "testmod"
 version = "1.0"
 displayName = "Test Mod"
 """
-    with zipfile.ZipFile(jar, 'w') as zf:
+    with zipfile.ZipFile(jar, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml)
 
     mock_client = MagicMock()
@@ -340,7 +355,7 @@ modId = "testmod"
 version = "1.0"
 displayName = "Test Mod"
 """
-    with zipfile.ZipFile(jar, 'w') as zf:
+    with zipfile.ZipFile(jar, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml)
 
     entries = manifest_builder.build_manifest([jar], "both", mock_logger, curse=True)
@@ -350,7 +365,7 @@ displayName = "Test Mod"
     assert entries[0]["id"] == "testmod"
 
 
-@patch('minecraft.manifest_builder.resolve_curse_ids')
+@patch("minecraft.manifest_builder.resolve_curse_ids")
 def test_build_manifest_resolve(mock_resolve, tmp_path, mock_logger):
     """build_manifest should add project_id and file_id when resolve=True."""
     root = tmp_path / "root"
@@ -362,14 +377,13 @@ modId = "testmod"
 version = "1.0"
 displayName = "Test Mod"
 """
-    with zipfile.ZipFile(jar, 'w') as zf:
+    with zipfile.ZipFile(jar, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml)
 
     mock_resolve.return_value = {jar: (123, 456)}
 
     entries = manifest_builder.build_manifest(
-        [jar], "both", mock_logger,
-        curse=True, resolve=True, api_key="fake"
+        [jar], "both", mock_logger, curse=True, resolve=True, api_key="fake"
     )
     assert len(entries) == 1
     assert entries[0]["source"] == "curseforge"
@@ -392,9 +406,9 @@ modId = "testmod"
 version = "1.0"
 displayName = "Test Mod"
 """
-    with zipfile.ZipFile(jar1, 'w') as zf:
+    with zipfile.ZipFile(jar1, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml)
-    with zipfile.ZipFile(jar2, 'w') as zf:
+    with zipfile.ZipFile(jar2, "w") as zf:
         zf.writestr("META-INF/mods.toml", toml)
 
     entries = manifest_builder.build_manifest([jar1, jar2], "both", mock_logger)
@@ -402,16 +416,22 @@ displayName = "Test Mod"
     assert entries[0]["file"] == "mod1.jar"
 
 
-@patch('minecraft.manifest_builder.argparse.ArgumentParser')
-@patch('minecraft.manifest_builder.setup_logging')
-@patch('minecraft.manifest_builder.get_logger')
-@patch('minecraft.manifest_builder.find_jars')
-@patch('minecraft.manifest_builder.build_manifest')
-@patch('minecraft.manifest_builder.yaml.dump')
-@patch('minecraft.manifest_builder.ConfigManager')
-def test_main_with_resolve(mock_cm, mock_yaml_dump, mock_build_manifest,
-                           mock_find_jars, mock_get_logger, mock_setup_logging,
-                           mock_parser):
+@patch("minecraft.manifest_builder.argparse.ArgumentParser")
+@patch("minecraft.manifest_builder.setup_logging")
+@patch("minecraft.manifest_builder.get_logger")
+@patch("minecraft.manifest_builder.find_jars")
+@patch("minecraft.manifest_builder.build_manifest")
+@patch("minecraft.manifest_builder.yaml.dump")
+@patch("minecraft.manifest_builder.ConfigManager")
+def test_main_with_resolve(
+    mock_cm,
+    mock_yaml_dump,
+    mock_build_manifest,
+    mock_find_jars,
+    mock_get_logger,
+    mock_setup_logging,
+    mock_parser,
+):
     """main() should load API key and pass to build_manifest when --resolve."""
     mock_args = MagicMock()
     mock_args.mods = ["mods_dir"]
@@ -436,12 +456,14 @@ def test_main_with_resolve(mock_cm, mock_yaml_dump, mock_build_manifest,
     mock_mgr.file.return_value = mock_mgr
     mock_mgr.env.return_value = mock_mgr
     mock_config = MagicMock()
-    mock_config.get.side_effect = lambda key, default=None: "fake_key" if key in ["CF_API_KEY", "api_key"] else default
+    mock_config.get.side_effect = lambda key, default=None: (
+        "fake_key" if key in ["CF_API_KEY", "api_key"] else default
+    )
     mock_mgr.load.return_value = mock_config
     mock_cm.return_value = mock_mgr
 
-    with patch('pathlib.Path.is_file', return_value=True):
-        with patch('sys.argv', ['manifest_builder.py']):
+    with patch("pathlib.Path.is_file", return_value=True):
+        with patch("sys.argv", ["manifest_builder.py"]):
             manifest_builder.main()
 
     mock_build_manifest.assert_called_once_with(
@@ -450,18 +472,19 @@ def test_main_with_resolve(mock_cm, mock_yaml_dump, mock_build_manifest,
         mock_logger,
         curse=True,
         resolve=True,
-        api_key="fake_key"
+        api_key="fake_key",
     )
     mock_logger.info.assert_any_call("  CurseForge mode: True")
     mock_logger.info.assert_any_call("  Resolve IDs: True")
 
 
-@patch('minecraft.manifest_builder.argparse.ArgumentParser')
-@patch('minecraft.manifest_builder.setup_logging')
-@patch('minecraft.manifest_builder.get_logger')
-@patch('minecraft.manifest_builder.find_jars')
-def test_main_resolve_no_key(mock_find_jars, mock_get_logger, mock_setup_logging,
-                             mock_parser):
+@patch("minecraft.manifest_builder.argparse.ArgumentParser")
+@patch("minecraft.manifest_builder.setup_logging")
+@patch("minecraft.manifest_builder.get_logger")
+@patch("minecraft.manifest_builder.find_jars")
+def test_main_resolve_no_key(
+    mock_find_jars, mock_get_logger, mock_setup_logging, mock_parser
+):
     """main() should exit if --resolve but no API key found."""
     mock_args = MagicMock()
     mock_args.mods = ["mods_dir"]
@@ -478,8 +501,8 @@ def test_main_resolve_no_key(mock_find_jars, mock_get_logger, mock_setup_logging
     mock_logger = MagicMock()
     mock_get_logger.return_value = mock_logger
 
-    with patch('pathlib.Path.is_file', return_value=False):
-        with patch('sys.argv', ['manifest_builder.py']):
+    with patch("pathlib.Path.is_file", return_value=False):
+        with patch("sys.argv", ["manifest_builder.py"]):
             with pytest.raises(SystemExit) as exc:
                 manifest_builder.main()
             assert exc.value.code == 1
@@ -493,12 +516,12 @@ def test_main_resolve_no_key(mock_find_jars, mock_get_logger, mock_setup_logging
 def test_main_no_deduplicate_flag():
     """Test that --no-deduplicate is parsed correctly; we can just check arg presence."""
     # We'll mock the argument parser and ensure the flag is set.
-    with patch('argparse.ArgumentParser.parse_args') as mock_parse:
+    with patch("argparse.ArgumentParser.parse_args") as mock_parse:
         mock_args = MagicMock()
         mock_args.no_deduplicate = True
         mock_parse.return_value = mock_args
 
-        with patch('sys.argv', ['manifest_builder.py', '--no-deduplicate']):
+        with patch("sys.argv", ["manifest_builder.py", "--no-deduplicate"]):
             # We'll just test that the flag is True, not run full main
             parser = manifest_builder.argparse.ArgumentParser()
             args, remaining = parser.parse_known_args()

@@ -22,6 +22,7 @@ from LoggingCore import get_logger, setup_logging
 # Helpers
 # ----------------------------------------------------------------------
 
+
 def find_config_file(config_dir: Path) -> Path | None:
     """Return the first existing config file in config_dir."""
     for ext in [".toml", ".yaml", ".yml"]:
@@ -49,7 +50,9 @@ def curseforge_request(endpoint, api_key, method="GET", params=None, json_data=N
     if json_data is not None:
         headers["Content-Type"] = "application/json"
     url = f"https://api.curseforge.com{endpoint}"
-    resp = requests.request(method, url, headers=headers, params=params, json=json_data, timeout=30)
+    resp = requests.request(
+        method, url, headers=headers, params=params, json=json_data, timeout=30
+    )
     resp.raise_for_status()
     return resp.json()
 
@@ -57,22 +60,21 @@ def curseforge_request(endpoint, api_key, method="GET", params=None, json_data=N
 def get_download_url_by_ids(project_id: int, file_id: int, api_key: str) -> str:
     """Get download URL directly using project_id and file_id."""
     resp = curseforge_request(
-        f"/v1/mods/{project_id}/files/{file_id}/download-url",
-        api_key
+        f"/v1/mods/{project_id}/files/{file_id}/download-url", api_key
     )
     return resp["data"]
 
 
-def get_mod_file_url_by_slug(slug: str, version: str, minecraft_version: str, api_key: str):
+def get_mod_file_url_by_slug(
+    slug: str, version: str, minecraft_version: str, api_key: str
+):
     """
     Fallback: search by slug, fetch files, find matching file.
     Uses raw API calls (not wrapper).
     """
     # 1. Search by slug
     search_resp = curseforge_request(
-        "/v1/mods/search",
-        api_key,
-        params={"gameId": 432, "slug": slug, "pageSize": 1}
+        "/v1/mods/search", api_key, params={"gameId": 432, "slug": slug, "pageSize": 1}
     )
     data = search_resp.get("data", [])
     if not data:
@@ -80,7 +82,7 @@ def get_mod_file_url_by_slug(slug: str, version: str, minecraft_version: str, ap
         search_resp = curseforge_request(
             "/v1/mods/search",
             api_key,
-            params={"gameId": 432, "searchFilter": slug, "pageSize": 1}
+            params={"gameId": 432, "searchFilter": slug, "pageSize": 1},
         )
         data = search_resp.get("data", [])
         if not data:
@@ -98,7 +100,7 @@ def get_mod_file_url_by_slug(slug: str, version: str, minecraft_version: str, ap
             resp = curseforge_request(
                 f"/v1/mods/{mod_id}/files",
                 api_key,
-                params={"pageSize": page_size, "index": index}
+                params={"pageSize": page_size, "index": index},
             )
             page = resp.get("data", [])
             if not page:
@@ -116,7 +118,11 @@ def get_mod_file_url_by_slug(slug: str, version: str, minecraft_version: str, ap
         raise ValueError(f"No files found for mod '{slug}'")
 
     # 3. Filter by Minecraft version (1.20.1)
-    filtered = [f for f in all_files if any("1.20.1" in gv or "1.20" in gv for gv in f.get("gameVersions", []))]
+    filtered = [
+        f
+        for f in all_files
+        if any("1.20.1" in gv or "1.20" in gv for gv in f.get("gameVersions", []))
+    ]
     if not filtered:
         filtered = all_files  # fallback to all
 
@@ -139,11 +145,15 @@ def get_mod_file_url_by_slug(slug: str, version: str, minecraft_version: str, ap
 
     # 6. Fallback to latest file (if any)
     if not matched and filtered:
-        sorted_files = sorted(filtered, key=lambda f: f.get("fileDate", ""), reverse=True)
+        sorted_files = sorted(
+            filtered, key=lambda f: f.get("fileDate", ""), reverse=True
+        )
         matched = sorted_files[0]
 
     if not matched:
-        raise ValueError(f"No matching file for '{slug}' version '{version}' on MC {minecraft_version}")
+        raise ValueError(
+            f"No matching file for '{slug}' version '{version}' on MC {minecraft_version}"
+        )
 
     # 7. Get download URL
     download_url = get_download_url_by_ids(mod_id, matched["id"], api_key)
@@ -155,7 +165,7 @@ def download_file(url, output_path):
     response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, 'wb') as f:
+    with open(output_path, "wb") as f:
         f.writelines(response.iter_content(chunk_size=8192))
 
 
@@ -163,12 +173,16 @@ def download_file(url, output_path):
 # Main
 # ----------------------------------------------------------------------
 
+
 def main():
     # 1. Locate config
     config_dir = Path("config.d")
     config_path = find_config_file(config_dir)
     if config_path is None:
-        print(f"WARNING: No config file found in {config_dir}. Using defaults.", file=sys.stderr)
+        print(
+            f"WARNING: No config file found in {config_dir}. Using defaults.",
+            file=sys.stderr,
+        )
 
     # 2. Build ConfigManager
     mgr = ConfigManager()
@@ -182,7 +196,11 @@ def main():
             env_loaded = True
             break
     if not env_loaded:
-        print("WARNING: No .env file found. Checked: " + ", ".join(str(p) for p in env_candidates), file=sys.stderr)
+        print(
+            "WARNING: No .env file found. Checked: "
+            + ", ".join(str(p) for p in env_candidates),
+            file=sys.stderr,
+        )
 
     # Load the main config file (TOML/YAML)
     if config_path is not None:
@@ -196,9 +214,14 @@ def main():
 
     # 3. Extract required settings
     # First try config (from file or MODPULLER_ prefixed env), then raw environment variable CF_API_KEY
-    api_key = config.get("CF_API_KEY") or config.get("api_key") or os.getenv("CF_API_KEY")
+    api_key = (
+        config.get("CF_API_KEY") or config.get("api_key") or os.getenv("CF_API_KEY")
+    )
     if not api_key:
-        print("ERROR: CF_API_KEY not found in .env, config, or environment. Aborting.", file=sys.stderr)
+        print(
+            "ERROR: CF_API_KEY not found in .env, config, or environment. Aborting.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     output_root = Path(config.get("output_root", "./modpack"))
@@ -212,11 +235,13 @@ def main():
             "color": True,
             "handlers": [
                 {"type": "console", "color": True},
-                {"type": "file",
-                 "path": "logs/mod_puller.log",
-                 "max_bytes": 10_485_760,
-                 "backup_count": 5}
-            ]
+                {
+                    "type": "file",
+                    "path": "logs/mod_puller.log",
+                    "max_bytes": 10_485_760,
+                    "backup_count": 5,
+                },
+            ],
         }
     setup_logging(log_config)
     logger = get_logger(__name__)
@@ -255,7 +280,9 @@ def main():
             if target_path.is_file():
                 logger.info(f"Local file exists: {target_path}")
             else:
-                logger.warning(f"Local file not found: {target_path} - you may need to place it manually")
+                logger.warning(
+                    f"Local file not found: {target_path} - you may need to place it manually"
+                )
             continue
 
         elif source == "curseforge":
@@ -264,7 +291,9 @@ def main():
             file_id = entry.get("file_id")
             if project_id and file_id:
                 try:
-                    logger.info(f"Processing {mod_id} using project_id={project_id}, file_id={file_id}...")
+                    logger.info(
+                        f"Processing {mod_id} using project_id={project_id}, file_id={file_id}..."
+                    )
                     download_url = get_download_url_by_ids(project_id, file_id, api_key)
                     if target_path.exists():
                         logger.info(f"  File already exists: {target_path}")
@@ -274,7 +303,9 @@ def main():
                     logger.info(f"  Downloaded to {target_path}")
                     continue
                 except Exception as e:
-                    logger.warning(f"Direct download failed for {mod_id} (project_id={project_id}, file_id={file_id}): {e}")
+                    logger.warning(
+                        f"Direct download failed for {mod_id} (project_id={project_id}, file_id={file_id}): {e}"
+                    )
                     # Fall through to slug/version method
 
             # Fallback: use slug and version
@@ -284,8 +315,12 @@ def main():
                 logger.warning(f"Mod {mod_id} missing slug/version, skipping")
                 continue
             try:
-                logger.info(f"Processing {mod_id} ({slug}) version {version} via search...")
-                download_url, filename = get_mod_file_url_by_slug(slug, version, minecraft_version, api_key)
+                logger.info(
+                    f"Processing {mod_id} ({slug}) version {version} via search..."
+                )
+                download_url, filename = get_mod_file_url_by_slug(
+                    slug, version, minecraft_version, api_key
+                )
                 # Note: filename might differ from file_rel; we keep target_path as specified in manifest
                 if target_path.exists():
                     logger.info(f"  File already exists: {target_path}")

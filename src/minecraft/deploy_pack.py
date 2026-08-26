@@ -121,7 +121,9 @@ def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger):
     logger.info(f"Copied with exclusions to {dst}")
 
 
-def create_zip_from_staging(staging_dir: Path, output_zip: Path, exclude_patterns: list, logger):
+def create_zip_from_staging(
+    staging_dir: Path, output_zip: Path, exclude_patterns: list, logger
+):
     output_zip.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(staging_dir):
@@ -147,24 +149,38 @@ def main():
     # 1. Parse command-line flags (--server / --client / --config-dir)
     parser = argparse.ArgumentParser(description="Deploy client pack")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--server", action="store_true", help="Server mode: create ZIP (default)")
-    group.add_argument("--client", action="store_true", help="Client mode: deploy to MultiMC instance")
-    parser.add_argument("--config-dir", type=str, default=None,
-                        help="Path to configuration directory (default: config.d)")
+    group.add_argument(
+        "--server", action="store_true", help="Server mode: create ZIP (default)"
+    )
+    group.add_argument(
+        "--client", action="store_true", help="Client mode: deploy to MultiMC instance"
+    )
+    parser.add_argument(
+        "--config-dir",
+        type=str,
+        default=None,
+        help="Path to configuration directory (default: config.d)",
+    )
     args, remaining = parser.parse_known_args()
 
     # Determine mode
-    mode = "client" if args.client else "server"   # default to server
+    mode = "client" if args.client else "server"  # default to server
     target_side = "client" if mode == "client" else "server"
 
     # Determine config directory (CLI > env > default)
-    config_dir = Path(args.config_dir) if args.config_dir else \
-                 Path(os.environ.get("DEPLOYPACK_CONFIG_DIR", "config.d"))
+    config_dir = (
+        Path(args.config_dir)
+        if args.config_dir
+        else Path(os.environ.get("DEPLOYPACK_CONFIG_DIR", "config.d"))
+    )
 
     # Locate config file
     config_path = find_config_file(config_dir)
     if config_path is None:
-        print(f"WARNING: No config file found in {config_dir}. Using defaults.", file=sys.stderr)
+        print(
+            f"WARNING: No config file found in {config_dir}. Using defaults.",
+            file=sys.stderr,
+        )
 
     # Build configuration manager
     mgr = ConfigManager()
@@ -212,11 +228,13 @@ def main():
             "color": True,
             "handlers": [
                 {"type": "console", "color": True},
-                {"type": "file",
-                 "path": "logs/deploy_pack.log",
-                 "max_bytes": 10_485_760,
-                 "backup_count": 5}
-            ]
+                {
+                    "type": "file",
+                    "path": "logs/deploy_pack.log",
+                    "max_bytes": 10_485_760,
+                    "backup_count": 5,
+                },
+            ],
         }
     setup_logging(log_config)
     logger = get_logger(__name__)
@@ -259,7 +277,9 @@ def main():
             for entry in side_mods:
                 file_rel = entry.get("file")
                 if not file_rel:
-                    logger.warning(f"Mod {entry.get('id')} has no 'file' field, skipping")
+                    logger.warning(
+                        f"Mod {entry.get('id')} has no 'file' field, skipping"
+                    )
                     continue
                 src_file = modpack_dir / file_rel
                 if src_file.is_file():
@@ -269,7 +289,9 @@ def main():
                     copied_count += 1
                     logger.debug(f"Copied mod: {file_rel}")
                 else:
-                    logger.warning(f"Mod file not found: {src_file} (expected for {entry.get('id')})")
+                    logger.warning(
+                        f"Mod file not found: {src_file} (expected for {entry.get('id')})"
+                    )
 
             logger.info(f"Copied {copied_count}/{len(side_mods)} mod files")
 
@@ -291,8 +313,11 @@ def main():
             copy_directory_contents(live_server / "kubejs", staging / "kubejs", logger)
 
             # Copy ftbquests from live_server/config/ftbquests
-            copy_directory_contents(live_server / "config" / "ftbquests",
-                                    staging / "config" / "ftbquests", logger)
+            copy_directory_contents(
+                live_server / "config" / "ftbquests",
+                staging / "config" / "ftbquests",
+                logger,
+            )
 
             # Read exclude patterns (once)
             exclude_patterns = get_exclude_patterns(exclude_file, logger)
@@ -310,7 +335,9 @@ def main():
 
             else:  # client mode
                 if not instance_name:
-                    raise ValueError("instance_name must be set in config for client mode")
+                    raise ValueError(
+                        "instance_name must be set in config for client mode"
+                    )
                 target_dir = multimc_base / instance_name / ".minecraft"
                 logger.info(f"Deploying to client instance: {target_dir}")
                 copy_with_exclusions(staging, target_dir, exclude_patterns, logger)

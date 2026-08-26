@@ -27,4 +27,17 @@ ServerEvents.recipes(event => {
   .processingTime(1200)
   .id('kubejs:mixed_crying_obsidian');
 
+// Sawdust + Water → Paper
+// 4x Immersive Engineering sawdust + 250mB water = 1 paper
+
+event.recipes.create.mixing(
+  'minecraft:paper',
+  [
+    '4x immersiveengineering:dust_wood',
+    Fluid.of('minecraft:water', 250)
+  ]
+)
+.processingTime(100)
+.id('kubejs:paper_from_sawdust');
+
 });

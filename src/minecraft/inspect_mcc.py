@@ -9,7 +9,6 @@ import zlib
 from collections import Counter
 from pathlib import Path
 
-
 TAG_END = 0
 TAG_BYTE = 1
 TAG_SHORT = 2
@@ -313,11 +312,7 @@ def main():
             pos = entity.get("Pos")
             uuid = entity.get("UUID")
 
-            print(
-                f"  {size:>12,} bytes  "
-                f"index={idx:<8} "
-                f"type={ident}"
-            )
+            print(f"  {size:>12,} bytes  index={idx:<8} type={ident}")
 
             if pos is not None:
                 print(f"      Pos:  {pos}")
@@ -330,7 +325,8 @@ def main():
         package_count = sum(
             count
             for ident, count in counts.items()
-            if ident in {
+            if ident
+            in {
                 "create:package",
                 "create:package_entity",
                 "create:package_entity_item",

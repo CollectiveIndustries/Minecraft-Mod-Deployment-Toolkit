@@ -15,6 +15,7 @@ from minecraft import deploy_pack
 # Helpers
 # ----------------------------------------------------------------------
 
+
 def write_config_file(config_dir, content):
     """Write a TOML config file."""
     config_file = config_dir / "deploy_pack.toml"
@@ -34,6 +35,7 @@ def create_dummy_files(base_dir, structure):
 # Fixture
 # ----------------------------------------------------------------------
 
+
 @pytest.fixture
 def temp_dirs():
     """Create temporary directories for integration tests."""
@@ -52,8 +54,9 @@ def temp_dirs():
 # Integration tests
 # ----------------------------------------------------------------------
 
-@patch('minecraft.deploy_pack.setup_logging')
-@patch('minecraft.deploy_pack.get_logger')
+
+@patch("minecraft.deploy_pack.setup_logging")
+@patch("minecraft.deploy_pack.get_logger")
 def test_integration_server_mode(mock_get_logger, mock_setup_logging, temp_dirs):
     """
     Integration test for server mode: creates a ZIP from real staging.
@@ -76,19 +79,28 @@ instance_name = "test"
     # - sync_root/client/ contains mod JARs directly
     # - sync_root/config/ contains config files
     # - live_server/kubejs/ and live_server/config/ftbquests/
-    create_dummy_files(sync / "client", {
-        "fake_mod.jar": "dummy mod content",
-        "backup.bak": "should be excluded",
-    })
-    create_dummy_files(sync / "config", {
-        "server.properties": "dummy server properties",
-        "some_other_config.cfg": "dummy config",
-        "options.txt": "client options",  # now from config, not from client
-    })
-    create_dummy_files(live, {
-        "kubejs/startup_scripts/script.js": "// dummy",
-        "config/ftbquests/quests.json": "{}",
-    })
+    create_dummy_files(
+        sync / "client",
+        {
+            "fake_mod.jar": "dummy mod content",
+            "backup.bak": "should be excluded",
+        },
+    )
+    create_dummy_files(
+        sync / "config",
+        {
+            "server.properties": "dummy server properties",
+            "some_other_config.cfg": "dummy config",
+            "options.txt": "client options",  # now from config, not from client
+        },
+    )
+    create_dummy_files(
+        live,
+        {
+            "kubejs/startup_scripts/script.js": "// dummy",
+            "config/ftbquests/quests.json": "{}",
+        },
+    )
     # Create exclude file with patterns
     (config_dir / ".rsync_exclude").write_text("*.bak\n*.tmp\n")
 
@@ -97,7 +109,9 @@ instance_name = "test"
     mock_get_logger.return_value = mock_logger
 
     # Run main() with --server and explicit --config-dir
-    with patch('sys.argv', ['deploy_pack.py', '--server', '--config-dir', str(config_dir)]):
+    with patch(
+        "sys.argv", ["deploy_pack.py", "--server", "--config-dir", str(config_dir)]
+    ):
         deploy_pack.main()
 
     # Verify the ZIP was created
@@ -115,7 +129,7 @@ instance_name = "test"
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
         assert "mods/fake_mod.jar" in names
-        assert "mods/backup.bak" not in names   # excluded
+        assert "mods/backup.bak" not in names  # excluded
         assert "config/server.properties" in names
         assert "config/some_other_config.cfg" in names
         assert "config/options.txt" in names
@@ -126,8 +140,8 @@ instance_name = "test"
     mock_logger.info.assert_any_call("Client pack created successfully.")
 
 
-@patch('minecraft.deploy_pack.setup_logging')
-@patch('minecraft.deploy_pack.get_logger')
+@patch("minecraft.deploy_pack.setup_logging")
+@patch("minecraft.deploy_pack.get_logger")
 def test_integration_client_mode(mock_get_logger, mock_setup_logging, temp_dirs):
     """
     Integration test for client mode: deploys to a MultiMC instance folder.
@@ -152,19 +166,28 @@ instance_name = '{instance_name}'
     write_config_file(config_dir, config_content)
 
     # Populate source directories
-    create_dummy_files(sync / "client", {
-        "fake_mod.jar": "dummy mod",
-        "backup.bak": "should be excluded",
-    })
-    create_dummy_files(sync / "config", {
-        "server.properties": "dummy server properties",
-        "some_other_config.cfg": "dummy config",
-        "options.txt": "client options",
-    })
-    create_dummy_files(live, {
-        "kubejs/startup_scripts/script.js": "// code",
-        "config/ftbquests/quests.json": "{}",
-    })
+    create_dummy_files(
+        sync / "client",
+        {
+            "fake_mod.jar": "dummy mod",
+            "backup.bak": "should be excluded",
+        },
+    )
+    create_dummy_files(
+        sync / "config",
+        {
+            "server.properties": "dummy server properties",
+            "some_other_config.cfg": "dummy config",
+            "options.txt": "client options",
+        },
+    )
+    create_dummy_files(
+        live,
+        {
+            "kubejs/startup_scripts/script.js": "// code",
+            "config/ftbquests/quests.json": "{}",
+        },
+    )
     # Exclude file
     (config_dir / ".rsync_exclude").write_text("*.bak\n*.tmp\n")
 
@@ -173,7 +196,9 @@ instance_name = '{instance_name}'
     mock_get_logger.return_value = mock_logger
 
     # Run main() with --client and --config-dir
-    with patch('sys.argv', ['deploy_pack.py', '--client', '--config-dir', str(config_dir)]):
+    with patch(
+        "sys.argv", ["deploy_pack.py", "--client", "--config-dir", str(config_dir)]
+    ):
         deploy_pack.main()
 
     # Verify files were copied to target .minecraft in the correct locations

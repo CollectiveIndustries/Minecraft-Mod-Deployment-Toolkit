@@ -20,6 +20,7 @@ license = {text = "MIT"}
 deploy-pack = "minecraft.deploy_pack:main"
 build-manifest = "minecraft.manifest_builder:main"
 pull-mods = "minecraft.mod_puller:main"
+lookup-assets = "minecraft.lookup:main"
 
 [project.optional-dependencies]
 dev = [

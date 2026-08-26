@@ -24,8 +24,8 @@ def compute_sha256(file_path):
     """Compute SHA-256 hash of a file in chunks."""
     sha256 = hashlib.sha256()
     try:
-        with open(file_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
                 sha256.update(chunk)
     except OSError as e:
         print(f"Error reading {file_path}: {e}", file=sys.stderr)
@@ -37,7 +37,7 @@ def build_inventory(root_dir):
     """Walk root_dir and return dict of relative path -> sha256 for files."""
     inventory = {}
     root_path = Path(root_dir).resolve()
-    for entry in root_path.rglob('*'):
+    for entry in root_path.rglob("*"):
         if entry.is_file():
             rel_path = str(entry.relative_to(root_path))
             print(f"Hashing: {rel_path}", file=sys.stderr)
@@ -54,17 +54,17 @@ def send_inventory(host, port, inventory):
         client_socket.connect((host, port))
 
         # Serialize inventory to JSON
-        data = json.dumps(inventory).encode('utf-8')
+        data = json.dumps(inventory).encode("utf-8")
         # Send length (4 bytes) followed by data
-        client_socket.sendall(len(data).to_bytes(4, 'big') + data)
+        client_socket.sendall(len(data).to_bytes(4, "big") + data)
 
         # Receive length of response
         raw_len = client_socket.recv(4)
         if not raw_len:
             raise ValueError("No response length received")
-        length = int.from_bytes(raw_len, 'big')
+        length = int.from_bytes(raw_len, "big")
         # Receive the response
-        response_data = b''
+        response_data = b""
         while len(response_data) < length:
             chunk = client_socket.recv(4096)
             if not chunk:
@@ -73,7 +73,7 @@ def send_inventory(host, port, inventory):
         if len(response_data) != length:
             raise ValueError("Incomplete response received")
 
-        report = json.loads(response_data.decode('utf-8'))
+        report = json.loads(response_data.decode("utf-8"))
         return report
 
     except Exception as e:
@@ -89,14 +89,16 @@ def print_report(report):
         print("No report received.", file=sys.stderr)
         return
 
-    missing = report.get('missing', [])
-    extra = report.get('extra', [])
-    modified = report.get('modified', [])
-    ok = report.get('ok', [])
+    missing = report.get("missing", [])
+    extra = report.get("extra", [])
+    modified = report.get("modified", [])
+    ok = report.get("ok", [])
 
     total = len(missing) + len(extra) + len(modified) + len(ok)
-    print(f"\nVerification complete. {len(ok)} files ok, {len(missing)} missing, "
-          f"{len(extra)} extra, {len(modified)} modified (out of {total} total files).")
+    print(
+        f"\nVerification complete. {len(ok)} files ok, {len(missing)} missing, "
+        f"{len(extra)} extra, {len(modified)} modified (out of {total} total files)."
+    )
 
     if missing:
         print("\n--- Missing files (in master, not in secondary) ---")
@@ -118,9 +120,16 @@ def main():
     parser = argparse.ArgumentParser(
         description="Client for verifying a secondary file system against a master server"
     )
-    parser.add_argument('secondary_root', help="Root directory of the secondary file system")
-    parser.add_argument('server_host', help="Hostname or IP of the master server")
-    parser.add_argument('--port', type=int, default=9999, help="Port of the master server (default: 9999)")
+    parser.add_argument(
+        "secondary_root", help="Root directory of the secondary file system"
+    )
+    parser.add_argument("server_host", help="Hostname or IP of the master server")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=9999,
+        help="Port of the master server (default: 9999)",
+    )
     args = parser.parse_args()
 
     if not os.path.isdir(args.secondary_root):
@@ -137,5 +146,5 @@ def main():
     print_report(report)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

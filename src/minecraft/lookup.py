@@ -30,22 +30,14 @@ Examples:
 def get_latest_dump(text):
     """Return only the newest complete registry dump."""
 
-    starts = list(
-        re.finditer(
-            r"\[REGDUMP\]\s+REGISTRY DUMP START",
-            text
-        )
-    )
+    starts = list(re.finditer(r"\[REGDUMP\]\s+REGISTRY DUMP START", text))
 
     if not starts:
         return text
 
     start = starts[-1].start()
 
-    end = text.find(
-        "[REGDUMP] REGISTRY DUMP END",
-        start
-    )
+    end = text.find("[REGDUMP] REGISTRY DUMP END", start)
 
     if end == -1:
         return text[start:]
@@ -55,16 +47,10 @@ def get_latest_dump(text):
 
 def parse_log():
     if not LOG.exists():
-        print(
-            f"ERROR: Cannot find {LOG}",
-            file=sys.stderr
-        )
+        print(f"ERROR: Cannot find {LOG}", file=sys.stderr)
         sys.exit(1)
 
-    text = LOG.read_text(
-        encoding="utf-8",
-        errors="replace"
-    )
+    text = LOG.read_text(encoding="utf-8", errors="replace")
 
     text = get_latest_dump(text)
 
@@ -82,7 +68,6 @@ def parse_log():
     )
 
     for line in text.splitlines():
-
         match = pattern.search(line)
 
         if not match:
@@ -104,32 +89,24 @@ def parse_log():
             continue
 
         if kind in ("item", "block"):
-
             stack = fields[3].strip() if len(fields) >= 4 else ""
 
-            tags = [
-                x.strip()
-                for x in fields[4:]
-                if x.strip()
-            ]
+            tags = [x.strip() for x in fields[4:] if x.strip()]
 
         else:
-
             stack = ""
 
-            tags = [
-                x.strip()
-                for x in fields[3:]
-                if x.strip()
-            ]
+            tags = [x.strip() for x in fields[3:] if x.strip()]
 
-        registry[kind].append({
-            "id": identifier,
-            "name": name,
-            "mod": mod,
-            "stack": stack,
-            "tags": tags,
-        })
+        registry[kind].append(
+            {
+                "id": identifier,
+                "name": name,
+                "mod": mod,
+                "stack": stack,
+                "tags": tags,
+            }
+        )
 
     return registry
 
@@ -144,7 +121,6 @@ def print_entry(entry):
         print(f"  Stack: {entry['stack']}")
 
     if entry["tags"]:
-
         print("  Tags:")
 
         for tag in entry["tags"]:
@@ -160,27 +136,23 @@ def search(registry, kind, query):
     results = []
 
     for entry in registry[kind]:
-
-        searchable = " ".join([
-            entry["id"],
-            entry["name"],
-            entry["mod"],
-            *entry["tags"],
-        ]).lower()
+        searchable = " ".join(
+            [
+                entry["id"],
+                entry["name"],
+                entry["mod"],
+                *entry["tags"],
+            ]
+        ).lower()
 
         if query in searchable:
             results.append(entry)
 
-    print(
-        f"{kind.upper()} SEARCH: {query}"
-    )
+    print(f"{kind.upper()} SEARCH: {query}")
 
     print("─" * 70)
 
-    print(
-        f"{len(results)} "
-        f"match{'es' if len(results) != 1 else ''}"
-    )
+    print(f"{len(results)} match{'es' if len(results) != 1 else ''}")
 
     print()
 
@@ -193,12 +165,8 @@ def show_tags(registry, identifier):
     identifier = identifier.lower()
 
     for entry in registry["item"]:
-
         if entry["id"].lower() == identifier:
-
-            print(
-                f"{entry['id']} — {entry['name']}"
-            )
+            print(f"{entry['id']} — {entry['name']}")
 
             print()
 
@@ -213,10 +181,7 @@ def show_tags(registry, identifier):
 
             return
 
-    print(
-        f"Item not found: {identifier}",
-        file=sys.stderr
-    )
+    print(f"Item not found: {identifier}", file=sys.stderr)
 
     sys.exit(1)
 
@@ -228,13 +193,9 @@ def show_mod(registry, mod):
     results = []
 
     for kind in registry:
-
         for entry in registry[kind]:
-
             if entry["mod"].lower() == mod:
-                results.append(
-                    (kind, entry)
-                )
+                results.append((kind, entry))
 
     print(f"MOD: {mod}")
     print("─" * 70)
@@ -242,12 +203,7 @@ def show_mod(registry, mod):
     print()
 
     for kind, entry in results:
-
-        print(
-            f"{kind.upper():8} "
-            f"{entry['id']} — "
-            f"{entry['name']}"
-        )
+        print(f"{kind.upper():8} {entry['id']} — {entry['name']}")
 
 
 def main():
@@ -276,66 +232,38 @@ def main():
         "machine",
         "entity",
     ):
-
         if len(args) < 2:
-
-            print(
-                f"Usage: lookup {command} <search>",
-                file=sys.stderr
-            )
+            print(f"Usage: lookup {command} <search>", file=sys.stderr)
 
             sys.exit(2)
 
         query = " ".join(args[1:])
 
-        search(
-            registry,
-            command,
-            query
-        )
+        search(registry, command, query)
 
         return
 
     if command == "tags":
-
         if len(args) != 2:
-
-            print(
-                "Usage: lookup tags <item-id>",
-                file=sys.stderr
-            )
+            print("Usage: lookup tags <item-id>", file=sys.stderr)
 
             sys.exit(2)
 
-        show_tags(
-            registry,
-            args[1]
-        )
+        show_tags(registry, args[1])
 
         return
 
     if command == "mod":
-
         if len(args) != 2:
-
-            print(
-                "Usage: lookup mod <mod-id>",
-                file=sys.stderr
-            )
+            print("Usage: lookup mod <mod-id>", file=sys.stderr)
 
             sys.exit(2)
 
-        show_mod(
-            registry,
-            args[1]
-        )
+        show_mod(registry, args[1])
 
         return
 
-    print(
-        f"Unknown command: {command}",
-        file=sys.stderr
-    )
+    print(f"Unknown command: {command}", file=sys.stderr)
 
     usage()
 
