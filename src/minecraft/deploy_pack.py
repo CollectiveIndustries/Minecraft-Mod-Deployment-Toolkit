@@ -2,6 +2,7 @@
 deploy_pack.py - Generates a client ZIP archive (server mode) or deploys directly to a MultiMC instance.
 Now supports --prism-index to use Prism .index folder directly for mod filtering.
 When --server is used, it also updates the live_server directory with the server-side files.
+The live_server directory is cleaned (extra files removed) to match the staging area.
 """
 
 import argparse
@@ -223,13 +224,14 @@ def main():
                 )
                 logger.info(f"Client pack created successfully at {output_zip}")
 
-                # 2. If not --no-deploy, copy staging to live_server
+                # 2. If not --no-deploy, copy staging to live_server with cleaning
                 if not args.no_deploy:
                     logger.info(f"Deploying to live_server: {live_server}")
+                    # Clean the destination to remove extra files not in staging
                     file_utils.copy_with_exclusions(
-                        staging, live_server, exclude_patterns, logger
+                        staging, live_server, exclude_patterns, logger, clean=True
                     )
-                    logger.info("Live server updated successfully.")
+                    logger.info("Live server updated successfully (cleaned).")
                 else:
                     logger.info("Skipping live_server deployment (--no-deploy).")
 
