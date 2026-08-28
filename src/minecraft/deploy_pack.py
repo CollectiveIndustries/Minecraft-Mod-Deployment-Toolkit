@@ -1,21 +1,24 @@
+#!/usr/bin/env python3
 """
 deploy_pack.py - Generates a client ZIP archive (server mode) or deploys directly to a MultiMC instance.
 Now supports --prism-index to use Prism .index folder directly for mod filtering.
 """
-
 import argparse
 import datetime
 import os
 import shutil
 import sys
 import tempfile
+import traceback
+from datetime import timezone
 from pathlib import Path
 
 from LoggingCore import get_logger, setup_logging
 
 from .common import config as cfg
-from .common import file_utils, prism
+from .common import file_utils
 from .common import manifest as manifest_utils
+from .common import prism
 
 
 def main():
@@ -37,6 +40,11 @@ def main():
         "--prism-index",
         type=Path,
         help="Path to Prism .index folder (uses .pw.toml for side filtering, overrides manifest)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging and print full traceback on error",
     )
     args, remaining = parser.parse_known_args()
 
@@ -90,6 +98,13 @@ def main():
                 },
             ],
         }
+    # Enable debug level if --debug
+    if args.debug:
+        log_config["level"] = "DEBUG"
+        # Also set console and file to debug
+        for handler in log_config.get("handlers", []):
+            handler["level"] = "DEBUG"
+
     setup_logging(log_config)
     logger = get_logger(__name__)
 
@@ -121,7 +136,7 @@ def main():
         try:
             all_mods = manifest_utils.load_manifest(manifest_path)
             logger.info(f"Loaded {len(all_mods)} mods from manifest")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.error(f"Failed to load manifest: {e}")
             sys.exit(1)
         side_mods = manifest_utils.filter_mods_by_side(all_mods, target_side)
@@ -144,7 +159,7 @@ def main():
                 else:
                     file_rel = entry.get("file")
                 if not file_rel:
-                    logger.warning("Mod entry missing 'file' field, skipping")
+                    logger.warning(f"Mod entry missing 'file' field, skipping")
                     continue
                 src_file = modpack_dir / file_rel
                 dest_file = mods_dir / file_rel
@@ -154,9 +169,7 @@ def main():
                     copied_count += 1
                     logger.debug(f"Copied mod: {file_rel}")
                 else:
-                    logger.warning(
-                        f"Mod file not found: {src_file} (expected for {entry.get('id')})"
-                    )
+                    logger.warning(f"Mod file not found: {src_file} (expected for {entry.get('id')})")
             logger.info(f"Copied {copied_count}/{len(side_mods)} mod files")
 
             # Create subdirectories for config, scripts, etc.
@@ -165,17 +178,11 @@ def main():
                 (staging / sub).mkdir(parents=True, exist_ok=True)
 
             # Copy config, scripts, kubejs, ftbquests
-            file_utils.copy_directory_contents(
-                sync_root / "config", staging / "config", logger
-            )
+            file_utils.copy_directory_contents(sync_root / "config", staging / "config", logger)
             scripts_src = sync_root / "scripts"
             if scripts_src.is_dir():
-                file_utils.copy_directory_contents(
-                    scripts_src, staging / "scripts", logger
-                )
-            file_utils.copy_directory_contents(
-                live_server / "kubejs", staging / "kubejs", logger
-            )
+                file_utils.copy_directory_contents(scripts_src, staging / "scripts", logger)
+            file_utils.copy_directory_contents(live_server / "kubejs", staging / "kubejs", logger)
             file_utils.copy_directory_contents(
                 live_server / "config" / "ftbquests",
                 staging / "config" / "ftbquests",
@@ -185,28 +192,25 @@ def main():
             exclude_patterns = file_utils.get_exclude_patterns(exclude_file, logger)
 
             if mode == "server":
-                date_str = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
+                date_str = datetime.datetime.now(timezone.utc).strftime("%Y%m%d")
                 zip_name = output_filename.format(date=date_str)
                 output_zip = www_dir / zip_name
                 logger.info(f"Creating zip: {output_zip}")
-                file_utils.create_zip_from_staging(
-                    staging, output_zip, exclude_patterns, logger
-                )
+                file_utils.create_zip_from_staging(staging, output_zip, exclude_patterns, logger)
                 logger.info(f"Client pack created successfully at {output_zip}")
             else:  # client
                 if not instance_name:
-                    raise ValueError(
-                        "instance_name must be set in config for client mode"
-                    )
+                    raise ValueError("instance_name must be set in config for client mode")
                 target_dir = multimc_base / instance_name / ".minecraft"
                 logger.info(f"Deploying to client instance: {target_dir}")
-                file_utils.copy_with_exclusions(
-                    staging, target_dir, exclude_patterns, logger
-                )
+                file_utils.copy_with_exclusions(staging, target_dir, exclude_patterns, logger)
                 logger.info("Client deployment completed successfully.")
 
-    except Exception:
-        logger.exception("Failed to build client pack")
+    except Exception as e:
+        # Print full traceback to stderr for debugging
+        if args.debug:
+            traceback.print_exc()
+        logger.exception(f"Failed: {e}")
         sys.exit(1)
 
 

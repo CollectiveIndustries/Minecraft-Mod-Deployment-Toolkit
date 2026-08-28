@@ -1,5 +1,5 @@
 # src/minecraft/common/file_utils.py
-"""File system utilities: copying, zipping, exclusion patterns, downloads."""
+"""File utilities."""
 
 import fnmatch
 import os
@@ -11,7 +11,6 @@ import requests
 
 
 def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
-    """Read exclusion patterns from a file, one per line (ignoring # comments)."""
     patterns = []
     if not exclude_file_path.is_file():
         logger.warning(f"Exclude file not found: {exclude_file_path}")
@@ -25,9 +24,15 @@ def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
 
 
 def copy_directory_contents(src: Path, dst: Path, logger):
-    """Copy all contents of src into dst (merging directories)."""
+    """Copy all contents of src into dst (merging directories).
+    If src does not exist or is not a directory, log a warning and return.
+    """
+    if not src.exists():
+        logger.warning(f"Source not found, skipping: {src}")
+        return
     if not src.is_dir():
-        raise NotADirectoryError(f"Source not found: {src}")
+        logger.warning(f"Source is not a directory, skipping: {src}")
+        return
     dst.mkdir(parents=True, exist_ok=True)
     for item in src.iterdir():
         dest_item = dst / item.name
@@ -39,7 +44,6 @@ def copy_directory_contents(src: Path, dst: Path, logger):
 
 
 def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger):
-    """Copy contents of src into dst, skipping files matching any exclude pattern."""
     if not src.is_dir():
         raise NotADirectoryError(f"Source not found: {src}")
     dst.mkdir(parents=True, exist_ok=True)
@@ -48,9 +52,7 @@ def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger):
         for file in files:
             full_path = Path(root) / file
             rel_path = rel_root / file
-            excluded = any(
-                fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns
-            )
+            excluded = any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
             if excluded:
                 logger.debug(f"Skipping excluded: {rel_path}")
                 continue
@@ -63,16 +65,13 @@ def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger):
 def create_zip_from_staging(
     staging_dir: Path, output_zip: Path, exclude_patterns: list, logger
 ):
-    """Create a ZIP archive from staging_dir, respecting exclude patterns."""
     output_zip.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         for root, dirs, files in os.walk(staging_dir):
             for file in files:
                 full_path = Path(root) / file
                 rel_path = full_path.relative_to(staging_dir)
-                excluded = any(
-                    fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns
-                )
+                excluded = any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
                 if excluded:
                     logger.debug(f"Skipping excluded: {rel_path}")
                     continue
@@ -81,9 +80,9 @@ def create_zip_from_staging(
 
 
 def download_file(url: str, output_path: Path):
-    """Download a file from URL to output_path (chunked)."""
     response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
-        f.writelines(response.iter_content(chunk_size=8192))
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
