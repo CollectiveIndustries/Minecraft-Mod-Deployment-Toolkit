@@ -13,18 +13,19 @@ from minecraft import deploy_pack
 
 
 @pytest.fixture
-def mock_config():
-    """Return a mock config dict."""
-    return {
-        "sync_root": "/home/minecraft/minecraft/sync",
-        "live_server": "/home/minecraft/minecraft/server",
-        "www_dir": "/home/minecraft/minecraft/www",
-        "exclude_file": "/home/minecraft/nfs/sync/.rsync_exclude",
-        "output_filename": "minecraft_client_{date}.zip",
-        "multimc_base": "/home/admiral/.local/share/multimc/instances",
-        "instance_name": "Mike_N_Ike",
-        "modpack_dir": "./modpack",
-    }
+def temp_dirs():
+    """Create temporary directories for testing."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        sync = base / "sync"
+        live = base / "server"
+        www = base / "www"
+        config_dir = base / "config.d"
+        for d in [sync, live, www, config_dir]:
+            d.mkdir()
+        yield base, sync, live, www, config_dir
 
 
 @patch("minecraft.deploy_pack.cfg.load_combined_config")
@@ -44,32 +45,40 @@ def test_main_server_mode(
     mock_get_exclude,
     mock_load_manifest,
     mock_load_config,
-    mock_config,
+    temp_dirs,
 ):
     """Test server mode main flow."""
-    # Setup config mock
+    base, sync, live, www, config_dir = temp_dirs
+
+    # Build mock config using actual temporary paths
+    mock_config = {
+        "sync_root": str(sync),
+        "live_server": str(live),
+        "www_dir": str(www),
+        "exclude_file": str(config_dir / ".rsync_exclude"),
+        "output_filename": "minecraft_client_{date}.zip",
+        "multimc_base": str(Path.home() / ".local/share/multimc/instances"),
+        "instance_name": "Mike_N_Ike",
+        "modpack_dir": str(sync / "downloads"),
+    }
     config_obj = MagicMock()
     config_obj.get.side_effect = lambda key, default=None: mock_config.get(key, default)
     mock_load_config.return_value = config_obj
 
-    # Manifest with one mod
     mock_load_manifest.return_value = [
         {"id": "testmod", "file": "mods/test.jar", "side": "both"}
     ]
 
-    # Mock file utils
     mock_get_exclude.return_value = []
-    mock_tempdir.return_value.__enter__.return_value = "/tmp/staging"
+    mock_tempdir.return_value.__enter__.return_value = str(base / "staging")
 
-    # Patch Path.is_dir so that scripts_src.is_dir() returns True (so we get 4 copy calls)
-    with patch.object(Path, "is_dir", return_value=True) as _:
+    with patch.object(Path, "is_dir", return_value=True):
         mock_logger = MagicMock()
         mock_get_logger.return_value = mock_logger
 
         with patch("sys.argv", ["deploy_pack.py"]):
             deploy_pack.main()
 
-    # Assertions
     mock_load_config.assert_called_once()
     mock_load_manifest.assert_called_once()
     mock_setup_logging.assert_called_once()
@@ -96,9 +105,21 @@ def test_main_client_mode(
     mock_get_exclude,
     mock_load_manifest,
     mock_load_config,
-    mock_config,
+    temp_dirs,
 ):
     """Test client mode main flow."""
+    base, sync, live, www, config_dir = temp_dirs
+
+    mock_config = {
+        "sync_root": str(sync),
+        "live_server": str(live),
+        "www_dir": str(www),
+        "exclude_file": str(config_dir / ".rsync_exclude"),
+        "output_filename": "minecraft_client_{date}.zip",
+        "multimc_base": str(Path.home() / ".local/share/multimc/instances"),
+        "instance_name": "Mike_N_Ike",
+        "modpack_dir": str(sync / "downloads"),
+    }
     config_obj = MagicMock()
     config_obj.get.side_effect = lambda key, default=None: mock_config.get(key, default)
     mock_load_config.return_value = config_obj
@@ -107,7 +128,7 @@ def test_main_client_mode(
         {"id": "testmod", "file": "mods/test.jar", "side": "client"}
     ]
     mock_get_exclude.return_value = []
-    mock_tempdir.return_value.__enter__.return_value = "/tmp/staging"
+    mock_tempdir.return_value.__enter__.return_value = str(base / "staging")
 
     mock_logger = MagicMock()
     mock_get_logger.return_value = mock_logger
@@ -115,8 +136,8 @@ def test_main_client_mode(
     with patch("sys.argv", ["deploy_pack.py", "--client"]):
         deploy_pack.main()
 
-    expected_target = Path(
-        "/home/admiral/.local/share/multimc/instances/Mike_N_Ike/.minecraft"
+    expected_target = (
+        Path.home() / ".local/share/multimc/instances/Mike_N_Ike/.minecraft"
     )
     mock_copy_exclusions.assert_called_once()
     args, _ = mock_copy_exclusions.call_args

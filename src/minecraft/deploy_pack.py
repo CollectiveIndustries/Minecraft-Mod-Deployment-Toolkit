@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
 """
 deploy_pack.py - Generates a client ZIP archive (server mode) or deploys directly to a MultiMC instance.
 Now supports --prism-index to use Prism .index folder directly for mod filtering.
+When --server is used, it also updates the live_server directory with the server-side files.
 """
+
 import argparse
 import datetime
 import os
@@ -10,22 +11,22 @@ import shutil
 import sys
 import tempfile
 import traceback
-from datetime import timezone
 from pathlib import Path
 
 from LoggingCore import get_logger, setup_logging
 
 from .common import config as cfg
-from .common import file_utils
+from .common import file_utils, prism
 from .common import manifest as manifest_utils
-from .common import prism
 
 
 def main():
     parser = argparse.ArgumentParser(description="Deploy client pack")
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
-        "--server", action="store_true", help="Server mode: create ZIP (default)"
+        "--server",
+        action="store_true",
+        help="Server mode: create ZIP and update live_server (default)",
     )
     group.add_argument(
         "--client", action="store_true", help="Client mode: deploy to MultiMC instance"
@@ -34,7 +35,7 @@ def main():
         "--config-dir",
         type=str,
         default=None,
-        help="Path to configuration directory (default: config.d)",
+        help="Path to configuration directory (default: config.d). If a file is given, its parent is used.",
     )
     parser.add_argument(
         "--prism-index",
@@ -46,32 +47,50 @@ def main():
         action="store_true",
         help="Enable debug logging and print full traceback on error",
     )
+    parser.add_argument(
+        "--no-deploy",
+        action="store_true",
+        help="When used with --server, skip copying files to live_server (only create ZIP).",
+    )
     args, remaining = parser.parse_known_args()
 
     mode = "client" if args.client else "server"
     target_side = "client" if mode == "client" else "server"
 
-    config_dir = (
-        Path(args.config_dir)
-        if args.config_dir
-        else Path(os.environ.get("DEPLOYPACK_CONFIG_DIR", "config.d"))
-    )
+    # --- Config directory handling ---
+    if args.config_dir:
+        config_dir = Path(args.config_dir)
+        if config_dir.is_file():
+            config_dir = config_dir.parent
+    else:
+        config_dir = Path(os.environ.get("DEPLOYPACK_CONFIG_DIR", "config.d"))
 
-    config = cfg.load_combined_config(
-        config_dir=config_dir,
-        base_name="deploy_pack",
-        env_prefix="DEPLOYPACK",
-        cli_args=remaining,
-    )
+    # --- Load configuration ---
+    try:
+        config = cfg.load_combined_config(
+            config_dir=config_dir,
+            base_name="deploy_pack",
+            env_prefix="DEPLOYPACK",
+            cli_args=remaining,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR: Failed to load configuration: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.debug:
+        print("=== Loaded configuration ===")
+        for key, value in config.items():
+            print(f"{key} = {value}")
+        print("============================")
 
     def get_path(key: str, default: str) -> Path:
         val = config.get(key)
         return Path(val) if val is not None else Path(default)
 
-    sync_root = get_path("sync_root", "/home/minecraft/minecraft/sync")
-    live_server = get_path("live_server", "/home/minecraft/minecraft/server")
-    www_dir = get_path("www_dir", "/home/minecraft/minecraft/www")
-    exclude_file = get_path("exclude_file", "/home/minecraft/nfs/sync/.rsync_exclude")
+    sync_root = get_path("sync_root", "./sync")
+    live_server = get_path("live_server", "./server")
+    www_dir = get_path("www_dir", "./www")
+    exclude_file = get_path("exclude_file", "./sync/.rsync_exclude")
     output_filename = config.get("output_filename", "minecraft_client_{date}.zip")
     modpack_dir = get_path("modpack_dir", "./sync/downloads")
 
@@ -84,6 +103,7 @@ def main():
         multimc_base = Path(multimc_base)
     instance_name = config.get("instance_name")
 
+    # --- Logging setup ---
     log_config = config.get("logging")
     if log_config is None:
         log_config = {
@@ -98,12 +118,9 @@ def main():
                 },
             ],
         }
-    # Enable debug level if --debug
-    if args.debug:
-        log_config["level"] = "DEBUG"
-        # Also set console and file to debug
-        for handler in log_config.get("handlers", []):
-            handler["level"] = "DEBUG"
+    log_config["level"] = "DEBUG" if args.debug else "INFO"
+    for handler in log_config.get("handlers", []):
+        handler["level"] = log_config["level"]
 
     setup_logging(log_config)
     logger = get_logger(__name__)
@@ -119,7 +136,7 @@ def main():
         logger.info(f"  multimc_base= {multimc_base}")
         logger.info(f"  instance_name= {instance_name}")
 
-    # Determine mod list source
+    # --- Determine mod list source ---
     if args.prism_index:
         logger.info(f"Using Prism index: {args.prism_index}")
         if not args.prism_index.is_dir():
@@ -132,17 +149,17 @@ def main():
         logger.info(f"Loaded {len(all_mods)} mods from Prism index")
         side_mods = prism.filter_prism_entries_by_side(all_mods, target_side)
     else:
-        # Fallback to manifest.yaml
         try:
             all_mods = manifest_utils.load_manifest(manifest_path)
             logger.info(f"Loaded {len(all_mods)} mods from manifest")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to load manifest: {e}")
             sys.exit(1)
         side_mods = manifest_utils.filter_mods_by_side(all_mods, target_side)
 
     logger.info(f"Filtered to {len(side_mods)} mods for side '{target_side}'")
 
+    # --- Build the pack ---
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             staging = Path(tmpdir)
@@ -151,15 +168,11 @@ def main():
             mods_dir = staging / "mods"
             mods_dir.mkdir(parents=True, exist_ok=True)
 
-            # Copy mods
             copied_count = 0
             for entry in side_mods:
-                if args.prism_index:
-                    file_rel = entry.get("file")
-                else:
-                    file_rel = entry.get("file")
+                file_rel = entry.get("file")
                 if not file_rel:
-                    logger.warning(f"Mod entry missing 'file' field, skipping")
+                    logger.warning("Mod entry missing 'file' field, skipping")
                     continue
                 src_file = modpack_dir / file_rel
                 dest_file = mods_dir / file_rel
@@ -169,20 +182,27 @@ def main():
                     copied_count += 1
                     logger.debug(f"Copied mod: {file_rel}")
                 else:
-                    logger.warning(f"Mod file not found: {src_file} (expected for {entry.get('id')})")
+                    logger.warning(
+                        f"Mod file not found: {src_file} (expected for {entry.get('id')})"
+                    )
             logger.info(f"Copied {copied_count}/{len(side_mods)} mod files")
 
-            # Create subdirectories for config, scripts, etc.
-            subdirs = ["config", "scripts", "kubejs", "config/ftbquests"]
-            for sub in subdirs:
+            # Prepare subdirectories
+            for sub in ["config", "scripts", "kubejs", "config/ftbquests"]:
                 (staging / sub).mkdir(parents=True, exist_ok=True)
 
-            # Copy config, scripts, kubejs, ftbquests
-            file_utils.copy_directory_contents(sync_root / "config", staging / "config", logger)
+            # Copy configs, scripts, kubejs, ftbquests
+            file_utils.copy_directory_contents(
+                sync_root / "config", staging / "config", logger
+            )
             scripts_src = sync_root / "scripts"
             if scripts_src.is_dir():
-                file_utils.copy_directory_contents(scripts_src, staging / "scripts", logger)
-            file_utils.copy_directory_contents(live_server / "kubejs", staging / "kubejs", logger)
+                file_utils.copy_directory_contents(
+                    scripts_src, staging / "scripts", logger
+                )
+            file_utils.copy_directory_contents(
+                live_server / "kubejs", staging / "kubejs", logger
+            )
             file_utils.copy_directory_contents(
                 live_server / "config" / "ftbquests",
                 staging / "config" / "ftbquests",
@@ -191,26 +211,44 @@ def main():
 
             exclude_patterns = file_utils.get_exclude_patterns(exclude_file, logger)
 
+            # --- Now, deploy based on mode ---
             if mode == "server":
-                date_str = datetime.datetime.now(timezone.utc).strftime("%Y%m%d")
+                # 1. Create ZIP
+                date_str = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
                 zip_name = output_filename.format(date=date_str)
                 output_zip = www_dir / zip_name
                 logger.info(f"Creating zip: {output_zip}")
-                file_utils.create_zip_from_staging(staging, output_zip, exclude_patterns, logger)
+                file_utils.create_zip_from_staging(
+                    staging, output_zip, exclude_patterns, logger
+                )
                 logger.info(f"Client pack created successfully at {output_zip}")
+
+                # 2. If not --no-deploy, copy staging to live_server
+                if not args.no_deploy:
+                    logger.info(f"Deploying to live_server: {live_server}")
+                    file_utils.copy_with_exclusions(
+                        staging, live_server, exclude_patterns, logger
+                    )
+                    logger.info("Live server updated successfully.")
+                else:
+                    logger.info("Skipping live_server deployment (--no-deploy).")
+
             else:  # client
                 if not instance_name:
-                    raise ValueError("instance_name must be set in config for client mode")
+                    raise ValueError(
+                        "instance_name must be set in config for client mode"
+                    )
                 target_dir = multimc_base / instance_name / ".minecraft"
                 logger.info(f"Deploying to client instance: {target_dir}")
-                file_utils.copy_with_exclusions(staging, target_dir, exclude_patterns, logger)
+                file_utils.copy_with_exclusions(
+                    staging, target_dir, exclude_patterns, logger
+                )
                 logger.info("Client deployment completed successfully.")
 
-    except Exception as e:
-        # Print full traceback to stderr for debugging
+    except Exception:
         if args.debug:
             traceback.print_exc()
-        logger.exception(f"Failed: {e}")
+        logger.exception("Failed")
         sys.exit(1)
 
 

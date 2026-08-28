@@ -52,7 +52,9 @@ def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger):
         for file in files:
             full_path = Path(root) / file
             rel_path = rel_root / file
-            excluded = any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
+            excluded = any(
+                fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns
+            )
             if excluded:
                 logger.debug(f"Skipping excluded: {rel_path}")
                 continue
@@ -71,7 +73,9 @@ def create_zip_from_staging(
             for file in files:
                 full_path = Path(root) / file
                 rel_path = full_path.relative_to(staging_dir)
-                excluded = any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
+                excluded = any(
+                    fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns
+                )
                 if excluded:
                     logger.debug(f"Skipping excluded: {rel_path}")
                     continue
@@ -84,5 +88,4 @@ def download_file(url: str, output_path: Path):
     response.raise_for_status()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
+        f.writelines(response.iter_content(chunk_size=8192))
