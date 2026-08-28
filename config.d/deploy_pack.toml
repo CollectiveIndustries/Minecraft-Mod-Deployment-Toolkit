@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------------
+# Main configuration for deploy_pack.py, mod_puller.py, and manifest_builder.py
+# ---------------------------------------------------------------------
+
+# === Core paths ========================================================
+
+# Directory where shared configuration, scripts, and other files reside.
+# This is the source for config/, scripts/, etc.
+sync_root = "/home/minecraft/minecraft/sync"
+
+# Path to the live Minecraft server installation.
+# Used to copy KubeJS scripts and FTBQuests data.
+live_server = "/home/minecraft/minecraft/server"
+
+# Web-accessible directory where the generated client ZIP will be placed
+# (server mode only).
+www_dir = "/home/minecraft/minecraft/www"
+
+# File containing exclusion patterns (rsync-style, one per line).
+# Files matching any pattern will be skipped when copying to staging.
+# Example patterns: *.bak, *.tmp, **/temp/*
+exclude_file = "/home/minecraft/nfs/sync/.rsync_exclude"
+
+# Filename template for the client ZIP (server mode).
+# The placeholder {date} will be replaced with UTC date YYYYMMDD.
+output_filename = "minecraft_client_{date}.zip"
+
+# Directory where mod files are stored (downloaded by mod_puller.py).
+# This must match the structure referenced in manifest.yaml.
+modpack_dir = "./sync/downloads"
+
+# === MultiMC client deployment ==========================================
+
+# Base directory for MultiMC instances. Used only in client mode.
+# Default: ~/.local/share/multimc/instances
+multimc_base = "/home/admiral/.local/share/multimc/instances"
+
+# Name of the MultiMC instance to update. Required for client mode.
+instance_name = "Mike_N_Ike"
+
+# === Mod puller options ================================================
+
+# CurseForge API key – also can be set in .env as CF_API_KEY.
+# Required for mod_puller.py when downloading CurseForge mods.
+CF_API_KEY = "$2a$10$5rZtyb9XfDLVW8s6XYsmMOa3TYqmrG8iKGT1Kqdv1.rF/tH.NmH.m"
+
+# Name of the manifest file (inside config.d/).
+manifest_file = "manifest.yaml"
+
+# Minecraft version used for matching CurseForge files.
+# Used when searching by slug/version fallback.
+minecraft_version = "1.20.1"
+
+# === Logging configuration =============================================
+
+[logging]
+# Enable colored console output globally.
+color = true
+
+# List of log handlers.
+handlers = [
+    # Console output with colors.
+    { type = "console", color = true },
+
+    # File output with rotation.
+    {
+        type = "file",
+        path = "logs/deploy_pack.log",   # log file path (relative)
+        max_bytes = 10485760,            # rotate after 10 MB
+        backup_count = 5                 # keep 5 rotated archives
+    }
+]
+
+# Optional: you can add more handlers or adjust levels in future.

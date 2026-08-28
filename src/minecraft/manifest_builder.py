@@ -1,12 +1,6 @@
-#!/usr/bin/env python3
 """
-manifest_builder.py - Build a manifest.yaml from .jar files.
-Scans directories, reads mods.toml metadata, and produces a single manifest.
-Uses LoggingCore for logging, with --debug for verbose output.
-
-Deduplication is enabled by default. With --curse, entries get source: curseforge
-and a slug. With --resolve, the script queries CurseForge API to fill project_id
-and file_id (implies --curse).
+manifest_builder.py - Build a manifest.yaml from .jar files or from a Prism .index folder.
+Scans directories, reads mods.toml metadata, or parses Prism .pw.toml files.
 """
 
 import argparse
@@ -16,58 +10,46 @@ import tomllib
 import zipfile
 from pathlib import Path
 
-import requests
 import yaml
-
-# Import collective-cores
-from ConfigCore import ConfigManager
 from LoggingCore import get_core, get_logger, setup_logging
 
+from .common import config as cfg
+from .common import curseforge as cf
+
 # ----------------------------------------------------------------------
-# Slug correction mapping: metadata modid -> correct CurseForge slug
-# Add entries for mods where the metadata's modId is not the CF slug.
+# Slug correction mapping (unchanged, used for JAR scanning)
 # ----------------------------------------------------------------------
 SLUG_CORRECTIONS = {
-    # FTB mods
     "ftbessentials": "ftb-essentials",
     "ftblibrary": "ftb-library",
-    "ftbteams": "ftb-teams-forge",  # corrected
-    "ftbquests": "ftb-quests-forge",  # corrected
-    "ftbchunks": "ftb-chunks-forge",  # corrected
+    "ftbteams": "ftb-teams-forge",
+    "ftbquests": "ftb-quests-forge",
+    "ftbchunks": "ftb-chunks-forge",
     "ftbfiltersystem": "ftb-filter-system",
     "ftbxmodcompat": "ftb-xmod-compat",
-    # Compass mods
     "naturescompass": "natures-compass",
     "explorerscompass": "explorers-compass",
-    # Essentials
     "inventoryessentials": "inventory-essentials",
-    # Sophisticated
     "sophisticatedcore": "sophisticated-core",
     "sophisticatedbackpacks": "sophisticated-backpacks",
-    # Libs
     "resourcefullib": "resourceful-lib",
-    "forgeconfigscreens": "config-menus-forge",  # corrected
+    "forgeconfigscreens": "config-menus-forge",
     "puzzleslib": "puzzles-lib",
     "anvianslib": "anvians-lib",
-    # Create addons & related
     "createaddition": "create-addition",
     "create-new-age": "create-new-age",
-    "create-hypertube": "hypertubes",  # corrected
-    "create-unbreakable": "create-unbreakable-tools",  # corrected
-    "create-decoration": "create-deco",  # corrected
+    "create-hypertube": "hypertubes",
+    "create-unbreakable": "create-unbreakable-tools",
+    "create-decoration": "create-deco",
     "create-ultimate-factory": "create-ultimate-factory",
-    "create": "create",  # already correct
-    # JEI / JEP
+    "create": "create",
     "jeimultiblocks": "jei-multiblocks",
-    "justenoughprofessions": "just-enough-professions-jep",  # corrected
-    # Storage
+    "justenoughprofessions": "just-enough-professions-jep",
     "storagedrawers": "storage-drawers",
     "storagedrawersextra": "storage-drawers-extra",
-    # Villages/underground
-    "underground-village": "underground-villages-stoneholm",  # corrected
-    # Misc
+    "underground-village": "underground-villages-stoneholm",
     "morerelics": "more-relics",
-    "bits-n-bobs": "create-bits-n-bobs",  # corrected
+    "bits-n-bobs": "create-bits-n-bobs",
     "ceilingtorch": "ceiling-torch",
     "lighty": "lighty",
     "collective": "collective",
@@ -87,7 +69,6 @@ SLUG_CORRECTIONS = {
     "jadeaddons": "jade-addons",
     "createsweetsandtreets": "create-sweets-and-treats",
     "svmm": "server-side-vein-miner",
-    # Additions from latest corrections
     "mininggadgets": "mining-gadgets",
     "inventory-sorter": "inventory-sorter",
     "enchanting-infuser": "enchanting-infuser",
@@ -97,8 +78,96 @@ SLUG_CORRECTIONS = {
 }
 
 
+# ----------------------------------------------------------------------
+# Prism .pw.toml parser
+# ----------------------------------------------------------------------
+
+
+def parse_prism_toml(toml_path: Path) -> dict | None:
+    """Parse a Prism .pw.toml file and return a manifest entry dict."""
+    try:
+        with open(toml_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        # Logged by caller
+        return None
+
+    # Basic required fields
+    filename = data.get("filename")
+    name = data.get("name", "")
+    side = data.get("side", "both").lower()
+    if not side:
+        side = "both"
+
+    # CurseForge update info
+    cf_update = data.get("update", {}).get("curseforge")
+    project_id = cf_update.get("project-id") if cf_update else None
+    file_id = cf_update.get("file-id") if cf_update else None
+
+    # Modrinth update info (for future support)
+    mr_update = data.get("update", {}).get("modrinth")
+    if mr_update:
+        # We don't support Modrinth yet; skip or set source='local'
+        return None
+
+    if not project_id or not file_id:
+        # Only CurseForge supported for automatic download
+        return None
+
+    # Build entry
+    entry = {
+        "id": str(project_id),  # use project_id as unique ID
+        "source": "curseforge",
+        "file": filename,
+        "side": side,
+        "enabled": True,
+        "project_id": project_id,
+        "file_id": file_id,
+        "version": "",  # we don't extract version; mod_puller uses IDs
+        "display_name": name,
+        "depends": [],
+        "conflicts": [],
+        "tags": [],
+    }
+    return entry
+
+
+def build_manifest_from_prism(index_dir: Path, logger) -> list:
+    """Read all *.pw.toml files from index_dir and build manifest entries."""
+    entries = []
+    for toml_path in index_dir.glob("*.pw.toml"):
+        entry = parse_prism_toml(toml_path)
+        if entry is None:
+            logger.warning(
+                f"Skipping {toml_path.name} (missing CurseForge data or unsupported)"
+            )
+            continue
+        entries.append(entry)
+        logger.debug(
+            f"Added {toml_path.name} -> {entry['id']} ({entry['display_name']})"
+        )
+
+    # Deduplicate by id (project_id)
+    seen = set()
+    unique = []
+    for entry in entries:
+        if entry["id"] not in seen:
+            seen.add(entry["id"])
+            unique.append(entry)
+        else:
+            logger.warning(
+                f"Duplicate mod id {entry['id']} ({entry['display_name']}) skipped"
+            )
+
+    return sorted(unique, key=lambda x: x["id"])
+
+
+# ----------------------------------------------------------------------
+# Legacy JAR scanning functions (unchanged)
+# ----------------------------------------------------------------------
+
+
 def find_jars(directories, logger):
-    """Yield all .jar files found under the given directories."""
     for d in directories:
         root = Path(d)
         if not root.is_dir():
@@ -108,7 +177,6 @@ def find_jars(directories, logger):
 
 
 def extract_metadata(jar_path, logger):
-    """Extract mod metadata from the jar's META-INF/mods.toml."""
     try:
         with zipfile.ZipFile(jar_path, "r") as zf:
             toml_path = None
@@ -135,8 +203,7 @@ def extract_metadata(jar_path, logger):
             side = mod.get("side", "BOTH").upper()
 
             depends = []
-            deps = mod.get("dependencies", [])
-            for dep in deps:
+            for dep in mod.get("dependencies", []):
                 if isinstance(dep, dict):
                     mod_id = dep.get("modId")
                     if mod_id:
@@ -151,137 +218,60 @@ def extract_metadata(jar_path, logger):
                 "side": side.lower(),
                 "depends": depends,
             }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Error reading {jar_path}: {e}")
         return None
 
 
-def curseforge_request(endpoint, api_key, method="GET", params=None, json_data=None):
-    """Make a request to the CurseForge API with proper headers."""
-    headers = {
-        "x-api-key": api_key,
-        "Accept": "application/json",
-    }
-    if json_data is not None:
-        headers["Content-Type"] = "application/json"
-    url = f"https://api.curseforge.com{endpoint}"
-    resp = requests.request(
-        method, url, headers=headers, params=params, json=json_data, timeout=30
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def fetch_all_files(mod_id, api_key, logger):
-    """Fetch all files for a mod, handling pagination."""
-    all_files = []
-    page_size = 100
-    index = 0
-    max_pages = 5  # up to 500 files, enough for most mods
-    for _ in range(max_pages):
-        try:
-            resp = curseforge_request(
-                f"/v1/mods/{mod_id}/files",
-                api_key,
-                params={"pageSize": page_size, "index": index},
-            )
-            page = resp.get("data", [])
-            if not page:
-                break
-            all_files.extend(page)
-            pagination = resp.get("pagination", {})
-            total = pagination.get("totalCount", 0)
-            if index + page_size >= total:
-                break
-            index += page_size
-        except Exception as e:
-            logger.debug(f"Could not fetch files page {index // page_size}: {e}")
-            break
-    return all_files
-
-
-def find_mod_by_slug(slug, api_key, logger):
-    """Find a mod by its exact slug. Returns mod dict or None."""
-    try:
-        resp = curseforge_request(
-            "/v1/mods/search",
-            api_key,
-            params={"gameId": 432, "slug": slug, "pageSize": 1},
-        )
-        data = resp.get("data", [])
-        if data:
-            return data[0]
-    except Exception as e:
-        logger.debug(f"Slug search failed for {slug}: {e}")
-    return None
-
-
 def resolve_by_search_direct(jars, logger, api_key):
-    """
-    Resolve each jar:
-      1. Use corrected slug (if mapping exists) or original.
-      2. Search by slug (exact match).
-      3. If fails, try display_name as last resort (but with sanity check).
-      4. Fetch all files, filter by MC version 1.20.1.
-      5. Match file by exact filename, version from filename, or metadata version.
-      6. If still no match, pick the latest file (fallback).
-    """
     results = {}
-
     for jar in jars:
         meta = extract_metadata(jar, logger)
         if not meta:
             continue
 
         original_slug = meta["id"].lower().replace("_", "-")
-        # Apply correction
         corrected_slug = SLUG_CORRECTIONS.get(original_slug, original_slug)
         display_name = meta.get("display_name")
         version_from_meta = meta.get("version")
         jar_name = jar.name
 
-        # ----- Find the mod using corrected slug -----
         mod = None
 
-        # 1. Try corrected slug
         if corrected_slug != original_slug:
-            mod = find_mod_by_slug(corrected_slug, api_key, logger)
+            mod = cf.find_mod_by_slug(corrected_slug, api_key)
             if mod:
                 logger.debug(
                     f"Found mod by corrected slug '{corrected_slug}': {mod['name']} (id={mod['id']}) for {jar_name}"
                 )
 
-        # 2. Try original slug
         if not mod:
-            mod = find_mod_by_slug(original_slug, api_key, logger)
+            mod = cf.find_mod_by_slug(original_slug, api_key)
             if mod:
                 logger.debug(
                     f"Found mod by original slug '{original_slug}': {mod['name']} (id={mod['id']}) for {jar_name}"
                 )
 
-        # 3. Last resort: searchFilter with display name (with sanity check)
         if not mod and display_name:
             try:
-                resp = curseforge_request(
+                resp = cf.curseforge_request(
                     "/v1/mods/search",
                     api_key,
                     params={"gameId": 432, "searchFilter": display_name, "pageSize": 5},
                 )
                 candidates = resp.get("data", [])
                 if candidates:
-                    # Prefer candidates whose slug contains the original slug
                     for cand in candidates:
                         cand_slug = cand.get("slug", "")
                         if original_slug in cand_slug or corrected_slug in cand_slug:
                             mod = cand
                             break
                     if not mod:
-                        # Pick the first one that has "forge" in the name? or just first
                         mod = candidates[0]
                     logger.debug(
                         f"Found mod by display_name: {mod['name']} (id={mod['id']}) for {jar_name}"
                     )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.debug(f"Display_name search failed: {e}")
 
         if not mod:
@@ -291,36 +281,27 @@ def resolve_by_search_direct(jars, logger, api_key):
             continue
 
         mod_id = mod["id"]
-
-        # ----- Get all files for this mod -----
-        all_files = fetch_all_files(mod_id, api_key, logger)
+        all_files = cf.fetch_all_files(mod_id, api_key)
         if not all_files:
             logger.debug(f"No files found for mod {mod_id} (slug {original_slug})")
             continue
 
-        # Filter files that support Minecraft 1.20.1 (or 1.20)
         target_mc = "1.20.1"
-        filtered_files = []
-        for f in all_files:
-            game_versions = f.get("gameVersions", [])
-            # gameVersions is a list of strings like "1.20.1"
-            if any(target_mc in gv or "1.20" in gv for gv in game_versions):
-                filtered_files.append(f)
-        # If none support 1.20.1, use all files (but prefer those that have at least some MC version)
+        filtered_files = [
+            f
+            for f in all_files
+            if any(target_mc in gv or "1.20" in gv for gv in f.get("gameVersions", []))
+        ]
         if not filtered_files:
             filtered_files = all_files
 
-        # ----- Match the file -----
         matched = None
 
-        # 1. Exact filename (case‑insensitive)
         for f in filtered_files:
             if f.get("fileName") and f["fileName"].lower() == jar_name.lower():
                 matched = f
-                logger.debug(f"Exact file name match: {jar_name} -> file={f['id']}")
                 break
 
-        # 2. Extract version from filename and match
         if not matched:
             version_pattern = re.compile(r"[-_]?(\d+\.\d+(?:\.\d+)?(?:[+.-]\w+)?)[-_]")
             match = version_pattern.search(jar_name)
@@ -331,34 +312,22 @@ def resolve_by_search_direct(jars, logger, api_key):
                     display = f.get("displayName", "")
                     if extracted_version in fname or extracted_version in display:
                         matched = f
-                        logger.debug(
-                            f"Version match (extracted {extracted_version}): {jar_name} -> file={f['id']}"
-                        )
                         break
-            # If that fails, try the metadata version
             if not matched and version_from_meta:
                 for f in filtered_files:
                     fname = f.get("fileName", "")
                     display = f.get("displayName", "")
                     if version_from_meta in fname or version_from_meta in display:
                         matched = f
-                        logger.debug(
-                            f"Meta version match: {jar_name} -> file={f['id']}"
-                        )
                         break
 
-        # 3. Slug in filename (case‑insensitive)
         if not matched:
             for f in filtered_files:
                 fname = f.get("fileName", "")
                 if original_slug in fname.lower() or corrected_slug in fname.lower():
                     matched = f
-                    logger.debug(
-                        f"Slug-in-filename match: {jar_name} -> file={f['id']}"
-                    )
                     break
 
-        # 4. Base name match (without .jar)
         if not matched:
             base_name = jar_name.replace(".jar", "").lower()
             for f in filtered_files:
@@ -366,18 +335,10 @@ def resolve_by_search_direct(jars, logger, api_key):
                 display = f.get("displayName", "").lower()
                 if base_name in fname or base_name in display:
                     matched = f
-                    logger.debug(f"Base-name match: {jar_name} -> file={f['id']}")
                     break
 
-        # 5. Fallback: latest file among filtered (by fileDate)
         if not matched and filtered_files:
-            sorted_files = sorted(
-                filtered_files, key=lambda f: f.get("fileDate", ""), reverse=True
-            )
-            matched = sorted_files[0]
-            logger.debug(
-                f"Latest-file fallback (MC 1.20.1): {jar_name} -> file={matched['id']} ({matched.get('fileName', 'unknown')})"
-            )
+            matched = max(filtered_files, key=lambda f: f.get("fileDate", ""))
 
         if matched:
             results[jar] = (mod_id, matched["id"])
@@ -389,49 +350,13 @@ def resolve_by_search_direct(jars, logger, api_key):
     return results
 
 
-def resolve_curse_ids(jars, logger, api_key):
-    """
-    Main resolver: use strict search with slug corrections.
-    """
-    # Test API key with a simple search
-    try:
-        resp = curseforge_request(
-            "/v1/mods/search",
-            api_key,
-            params={"gameId": 432, "searchFilter": "jei", "pageSize": 1},
-        )
-        if resp.get("data"):
-            first = resp["data"][0]
-            logger.debug(
-                f"API test: found mod '{first['name']}' (id={first['id']}) for 'jei'"
-            )
-        else:
-            logger.warning(
-                "API test: search for 'jei' returned no results – API key may be invalid."
-            )
-    except Exception as e:
-        logger.error(f"API test failed: {e}")
-
-    logger.info("Resolving via strict search with slug corrections...")
-    results = resolve_by_search_direct(jars, logger, api_key)
-    logger.info(f"Resolved {len(results)} mods")
-    return results
-
-
-def build_manifest(
+def build_manifest_from_jars(
     jars, default_side, logger, curse=False, resolve=False, api_key=None
 ):
-    """
-    Build the manifest list from jar paths, deduplicating by mod id.
-    Stores only the filename in the 'file' field.
-    If curse is True, add source: curseforge and a slug.
-    If resolve is True, also add project_id and file_id from CurseForge.
-    """
     entries_with_jar = []
     for jar in jars:
         meta = extract_metadata(jar, logger)
         if meta is None:
-            logger.debug(f"No metadata found in {jar}, skipping")
             continue
 
         side = (
@@ -453,23 +378,19 @@ def build_manifest(
         }
         if curse:
             entry["source"] = "curseforge"
-            # Use corrected slug if available
             original_slug = meta["id"].lower().replace("_", "-")
             entry["slug"] = SLUG_CORRECTIONS.get(original_slug, original_slug)
         entries_with_jar.append((entry, jar))
 
-    # Deduplicate: keep first occurrence by mod id
     unique = {}
     for entry, jar in entries_with_jar:
-        mid = entry["id"]
-        if mid not in unique:
-            unique[mid] = (entry, jar)
+        if entry["id"] not in unique:
+            unique[entry["id"]] = (entry, jar)
 
-    # If resolve, get project/file IDs
     if resolve and api_key:
         kept_jars = [jar for _, jar in unique.values()]
         logger.info(f"Resolving CurseForge IDs for {len(kept_jars)} unique mods...")
-        resolved = resolve_curse_ids(kept_jars, logger, api_key)
+        resolved = resolve_by_search_direct(kept_jars, logger, api_key)
         resolved_count = 0
         for entry, jar in unique.values():
             if jar in resolved:
@@ -477,11 +398,6 @@ def build_manifest(
                 entry["project_id"] = project_id
                 entry["file_id"] = file_id
                 resolved_count += 1
-                logger.debug(
-                    f"Resolved {entry['id']}: project_id={project_id}, file_id={file_id}"
-                )
-            else:
-                logger.warning(f"Could not resolve CurseForge IDs for {entry['file']}")
         logger.info(f"Resolved {resolved_count}/{len(unique)} mods")
 
     return sorted(
@@ -489,15 +405,25 @@ def build_manifest(
     )
 
 
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Build a manifest.yaml from .jar files."
+        description="Build a manifest.yaml from .jar files or Prism .index."
     )
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
         "--mods",
         action="append",
-        required=True,
         help="Directories to scan for .jar files (can be used multiple times)",
+    )
+    group.add_argument(
+        "--prism-index",
+        type=Path,
+        help="Path to Prism launcher .index folder (contains *.pw.toml files)",
     )
     parser.add_argument(
         "--manifest",
@@ -515,17 +441,17 @@ def main():
     parser.add_argument(
         "--no-deduplicate",
         action="store_true",
-        help="Disable deduplication (keep duplicate entries)",
+        help="Disable deduplication (keep duplicate entries) - only for JAR scanning",
     )
     parser.add_argument(
         "--curse",
         action="store_true",
-        help="Configure entries for CurseForge: add slug and source: curseforge",
+        help="Configure entries for CurseForge: add slug and source: curseforge (JAR mode only)",
     )
     parser.add_argument(
         "--resolve",
         action="store_true",
-        help="Query CurseForge API to fill project_id and file_id (implies --curse)",
+        help="Query CurseForge API to fill project_id and file_id (implies --curse, JAR mode only)",
     )
     parser.add_argument(
         "--env-file",
@@ -538,6 +464,12 @@ def main():
 
     if args.resolve and not args.curse:
         args.curse = True
+
+    if args.prism_index and (args.curse or args.resolve):
+        print(
+            "Warning: --curse and --resolve are ignored when using --prism-index.",
+            file=sys.stderr,
+        )
 
     # Setup logging
     log_config = {
@@ -559,60 +491,56 @@ def main():
     if core is not None:
         core.set_level(10 if args.debug else 20)
 
-    # Load API key if resolving
+    # Load API key if resolving (JAR mode)
     api_key = None
     if args.resolve:
-        env_candidates = []
-        if args.env_file:
-            env_candidates.append(args.env_file)
-        env_candidates.append(Path(".env"))
-        env_candidates.append(Path("config.d/.env"))
-
-        mgr = ConfigManager()
-        loaded = False
-        for env_file in env_candidates:
-            if env_file.is_file():
-                logger.debug(f"Loading .env from {env_file}")
-                mgr.file(env_file, format="env")
-                loaded = True
-                break
-        if not loaded:
-            logger.error(
-                "No .env file found. Checked: "
-                + ", ".join(str(p) for p in env_candidates)
-            )
-            sys.exit(1)
-
-        config = mgr.load()
+        env_candidates = [args.env_file] if args.env_file else []
+        env_candidates += [Path(".env"), Path("config.d/.env")]
+        config = cfg.load_combined_config(
+            config_dir=Path("config.d"),
+            base_name="manifest_builder",
+            env_prefix="",
+            env_file_candidates=env_candidates,
+        )
         api_key = config.get("CF_API_KEY") or config.get("api_key")
         if not api_key:
-            logger.error("CF_API_KEY not found in .env; cannot resolve CurseForge IDs.")
+            logger.error("CF_API_KEY not found; cannot resolve CurseForge IDs.")
             sys.exit(1)
         logger.debug(f"Loaded API key (first 4 chars): {api_key[:4]}")
 
     logger.info("Starting manifest builder")
-    logger.info(f"  Scan directories: {args.mods}")
     logger.info(f"  Output manifest: {args.manifest}")
     logger.info(f"  Default side: {args.side}")
-    logger.info(f"  Deduplicate: {not args.no_deduplicate}")
-    logger.info(f"  CurseForge mode: {args.curse}")
-    logger.info(f"  Resolve IDs: {args.resolve}")
 
-    jars = list(find_jars(args.mods, logger))
-    if not jars:
-        logger.error("No .jar files found.")
-        sys.exit(1)
+    if args.prism_index:
+        logger.info(f"  Mode: Prism index from {args.prism_index}")
+        if not args.prism_index.is_dir():
+            logger.error(f"Prism index directory not found: {args.prism_index}")
+            sys.exit(1)
+        manifest_entries = build_manifest_from_prism(args.prism_index, logger)
+        if not manifest_entries:
+            logger.error("No valid entries found in Prism index.")
+            sys.exit(1)
+    else:
+        logger.info(f"  Mode: JAR scanning from {args.mods}")
+        jars = list(find_jars(args.mods, logger))
+        if not jars:
+            logger.error("No .jar files found.")
+            sys.exit(1)
+        logger.info(f"Found {len(jars)} jar files.")
+        manifest_entries = build_manifest_from_jars(
+            jars,
+            args.side,
+            logger,
+            curse=args.curse,
+            resolve=args.resolve,
+            api_key=api_key,
+        )
+        if not manifest_entries:
+            logger.error("No valid mod metadata found.")
+            sys.exit(1)
 
-    logger.info(f"Found {len(jars)} jar files.")
-
-    manifest_entries = build_manifest(
-        jars, args.side, logger, curse=args.curse, resolve=args.resolve, api_key=api_key
-    )
-
-    if not manifest_entries:
-        logger.error("No valid mod metadata found.")
-        sys.exit(1)
-
+    # Write manifest
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
     with args.manifest.open("w") as f:
         yaml.dump(

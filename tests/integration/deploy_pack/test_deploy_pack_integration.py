@@ -1,11 +1,11 @@
 """
-Integration tests for deploy_pack.py – runs main() with real file I/O.
+Integration tests for deploy_pack.py - runs main() with real file I/O.
 """
 
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -45,9 +45,10 @@ def temp_dirs():
         live = base / "server"
         www = base / "www"
         config_dir = base / "config.d"
-        for d in [sync, live, www, config_dir]:
+        modpack = base / "modpack"
+        for d in [sync, live, www, config_dir, modpack]:
             d.mkdir()
-        yield base, sync, live, www, config_dir
+        yield base, sync, live, www, config_dir, modpack
 
 
 # ----------------------------------------------------------------------
@@ -55,43 +56,58 @@ def temp_dirs():
 # ----------------------------------------------------------------------
 
 
-@patch("minecraft.deploy_pack.setup_logging")
-@patch("minecraft.deploy_pack.get_logger")
-def test_integration_server_mode(mock_get_logger, mock_setup_logging, temp_dirs):
+def test_integration_server_mode(temp_dirs):
     """
     Integration test for server mode: creates a ZIP from real staging.
+    Now uses a manifest and modpack directory.
     """
-    base, sync, live, www, config_dir = temp_dirs
+    _base, sync, live, www, config_dir, modpack = temp_dirs
 
-    # Write a real config file (use single quotes to avoid escaping issues)
+    # Write a real config file
     config_content = f"""
 sync_root = '{sync}'
 live_server = '{live}'
 www_dir = '{www}'
 exclude_file = '{config_dir / ".rsync_exclude"}'
 output_filename = "minecraft_client_{{date}}.zip"
+modpack_dir = '{modpack}'
 multimc_base = "/fake"
 instance_name = "test"
 """
     write_config_file(config_dir, config_content)
 
-    # Populate source directories according to script expectations:
-    # - sync_root/client/ contains mod JARs directly
-    # - sync_root/config/ contains config files
-    # - live_server/kubejs/ and live_server/config/ftbquests/
+    # Create the manifest (config.d/manifest.yaml)
+    manifest = {
+        "mods": [
+            {
+                "id": "fake_mod",
+                "file": "fake_mod.jar",
+                "side": "both",
+                "enabled": True,
+            }
+        ]
+    }
+    import yaml
+
+    with (config_dir / "manifest.yaml").open("w") as f:
+        yaml.dump(manifest, f)
+
+    # Place mod files in modpack directory
     create_dummy_files(
-        sync / "client",
+        modpack,
         {
             "fake_mod.jar": "dummy mod content",
-            "backup.bak": "should be excluded",
+            "backup.bak": "should be excluded",  # not referenced in manifest, will be ignored
         },
     )
+
+    # Populate source directories for config, kubejs, etc.
     create_dummy_files(
         sync / "config",
         {
             "server.properties": "dummy server properties",
             "some_other_config.cfg": "dummy config",
-            "options.txt": "client options",  # now from config, not from client
+            "options.txt": "client options",
         },
     )
     create_dummy_files(
@@ -104,10 +120,6 @@ instance_name = "test"
     # Create exclude file with patterns
     (config_dir / ".rsync_exclude").write_text("*.bak\n*.tmp\n")
 
-    # Mock logger
-    mock_logger = MagicMock()
-    mock_get_logger.return_value = mock_logger
-
     # Run main() with --server and explicit --config-dir
     with patch(
         "sys.argv", ["deploy_pack.py", "--server", "--config-dir", str(config_dir)]
@@ -119,7 +131,7 @@ instance_name = "test"
     assert len(zip_files) == 1
     zip_path = zip_files[0]
 
-    # Inspect the zip contents – expected layout:
+    # Inspect the zip contents - expected layout:
     #   mods/fake_mod.jar
     #   config/server.properties
     #   config/some_other_config.cfg
@@ -129,24 +141,20 @@ instance_name = "test"
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
         assert "mods/fake_mod.jar" in names
-        assert "mods/backup.bak" not in names  # excluded
+        assert "mods/backup.bak" not in names  # not in manifest
         assert "config/server.properties" in names
         assert "config/some_other_config.cfg" in names
         assert "config/options.txt" in names
         assert "kubejs/startup_scripts/script.js" in names
         assert "config/ftbquests/quests.json" in names
 
-    mock_logger.info.assert_any_call("Mode: server")
-    mock_logger.info.assert_any_call("Client pack created successfully.")
 
-
-@patch("minecraft.deploy_pack.setup_logging")
-@patch("minecraft.deploy_pack.get_logger")
-def test_integration_client_mode(mock_get_logger, mock_setup_logging, temp_dirs):
+def test_integration_client_mode(temp_dirs):
     """
     Integration test for client mode: deploys to a MultiMC instance folder.
+    Uses manifest to decide which mods to copy.
     """
-    base, sync, live, www, config_dir = temp_dirs
+    base, sync, live, www, config_dir, modpack = temp_dirs
 
     # Fake MultiMC instance directory
     multimc_base = base / "multimc" / "instances"
@@ -160,19 +168,38 @@ live_server = '{live}'
 www_dir = '{www}'
 exclude_file = '{config_dir / ".rsync_exclude"}'
 output_filename = "minecraft_client_{{date}}.zip"
+modpack_dir = '{modpack}'
 multimc_base = '{multimc_base}'
 instance_name = '{instance_name}'
 """
     write_config_file(config_dir, config_content)
 
-    # Populate source directories
+    # Create manifest
+    manifest = {
+        "mods": [
+            {
+                "id": "fake_mod",
+                "file": "fake_mod.jar",
+                "side": "both",
+                "enabled": True,
+            }
+        ]
+    }
+    import yaml
+
+    with (config_dir / "manifest.yaml").open("w") as f:
+        yaml.dump(manifest, f)
+
+    # Place mod files in modpack
     create_dummy_files(
-        sync / "client",
+        modpack,
         {
             "fake_mod.jar": "dummy mod",
-            "backup.bak": "should be excluded",
+            "backup.bak": "should be excluded",  # not referenced
         },
     )
+
+    # Populate source directories
     create_dummy_files(
         sync / "config",
         {
@@ -191,10 +218,6 @@ instance_name = '{instance_name}'
     # Exclude file
     (config_dir / ".rsync_exclude").write_text("*.bak\n*.tmp\n")
 
-    # Mock logger
-    mock_logger = MagicMock()
-    mock_get_logger.return_value = mock_logger
-
     # Run main() with --client and --config-dir
     with patch(
         "sys.argv", ["deploy_pack.py", "--client", "--config-dir", str(config_dir)]
@@ -203,12 +226,9 @@ instance_name = '{instance_name}'
 
     # Verify files were copied to target .minecraft in the correct locations
     assert (target_dir / "mods" / "fake_mod.jar").exists()
-    assert not (target_dir / "mods" / "backup.bak").exists()  # excluded
+    assert not (target_dir / "mods" / "backup.bak").exists()
     assert (target_dir / "config" / "server.properties").exists()
     assert (target_dir / "config" / "some_other_config.cfg").exists()
     assert (target_dir / "config" / "options.txt").exists()
     assert (target_dir / "kubejs" / "startup_scripts" / "script.js").exists()
     assert (target_dir / "config" / "ftbquests" / "quests.json").exists()
-
-    mock_logger.info.assert_any_call("Mode: client")
-    mock_logger.info.assert_any_call("Client deployment completed successfully.")

@@ -35,6 +35,14 @@ lint = "ruff check ."
 lint-fix = "ruff check . --fix"
 tests = "pytest"
 
+full.composite = [
+    "format",
+    "lint-fix",
+    "lint",
+    "tests",
+    "risky-files --coverage coverage.json --quiet --filter \"risk > 2.0\" --sort complexity:desc",
+]
+
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
