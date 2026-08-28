@@ -6,20 +6,20 @@
 
 # Directory where shared configuration, scripts, and other files reside.
 # This is the source for config/, scripts/, etc.
-sync_root = "/home/minecraft/minecraft/sync"
+sync_root = "./sync"
 
 # Path to the live Minecraft server installation.
 # Used to copy KubeJS scripts and FTBQuests data.
-live_server = "/home/minecraft/minecraft/server"
+live_server = "./server"
 
 # Web-accessible directory where the generated client ZIP will be placed
 # (server mode only).
-www_dir = "/home/minecraft/minecraft/www"
+www_dir = "./www"
 
 # File containing exclusion patterns (rsync-style, one per line).
 # Files matching any pattern will be skipped when copying to staging.
 # Example patterns: *.bak, *.tmp, **/temp/*
-exclude_file = "/home/minecraft/nfs/sync/.rsync_exclude"
+exclude_file = "./sync/.rsync_exclude"
 
 # Filename template for the client ZIP (server mode).
 # The placeholder {date} will be replaced with UTC date YYYYMMDD.
