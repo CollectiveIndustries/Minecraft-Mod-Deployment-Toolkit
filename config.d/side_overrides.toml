@@ -1,0 +1,20 @@
+# Side overrides for Prism mods
+# Values: "client", "server", or "both"
+# Override by project-id (stable) – no version numbers needed.
+
+[by_id]
+# ---- Client-only mods (do not install on server) ----
+"976858" = "client"   # inventory-tweaks-refoxed
+"986380" = "client"   # lighty
+"1375689" = "client"  # jei-copy-recipe-json
+"634571" = "client"   # just-enough-immersive-multiblocks (JEI Multiblocks)
+"417645" = "client"   # just-enough-professions-jep
+"240630" = "client"   # just-enough-resources-jer
+
+# (Optional) If you find more client-only mods, add them here.
+
+# ---- Server-only mods (if any) ----
+# "123456" = "server"
+
+# ---- Force both (if needed) ----
+# "789012" = "both"
