@@ -17,7 +17,7 @@ www_dir = "./www"
 
 # File containing rsync‑style exclude patterns (e.g., *.bak, *.tmp).
 # Used to skip files when copying to staging and during live deployment.
-exclude_file = "./sync/.rsync_exclude"
+exclude_file = "./.rsync_exclude"
 
 # Template for the output ZIP filename. The {date} placeholder is replaced
 # with the current date (YYYYMMDD). Example: minecraft_client_20260101.zip

@@ -11,6 +11,50 @@ from pathlib import Path
 import requests
 from requests.exceptions import RequestException
 
+# Permanent protection – these files/directories are NEVER removed from destination
+PROTECTED_PATHS = {
+    # Root-level server files
+    "server.properties",
+    "eula.txt",
+    "ops.json",
+    "whitelist.json",
+    "banned-ips.json",
+    "banned-players.json",
+    "usercache.json",
+    "usernamecache.json",
+    "user_jvm_args.txt",
+    ".run-forge.env",
+    ".forge-manifest.json",
+    ".rcon-cli.env",
+    ".rcon-cli.yaml",
+    "run.sh",
+    "run.bat",
+    # Top-level directories that should never be removed
+    "logs",
+    "world",
+    "world_nether",
+    "world_the_end",
+    "crash-reports",
+    "patchouli_books",
+    "schematics",
+    "local",
+    ".cache",
+    ".mixin.out",
+    "bin",
+    "libraries",
+    "defaultconfigs",
+}
+
+
+def _is_protected(rel_path: Path) -> bool:
+    """Return True if the relative path (or any parent) is protected."""
+    # Check exact match or any parent component
+    parts = rel_path.parts
+    for i in range(len(parts)):
+        if parts[i] in PROTECTED_PATHS:
+            return True
+    return False
+
 
 def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
     patterns = []
@@ -46,13 +90,19 @@ def copy_directory_contents(src: Path, dst: Path, logger):
 def copy_with_exclusions(
     src: Path, dst: Path, exclude_patterns: list, logger, clean: bool = False
 ):
-    """Copy contents of src into dst, skipping excluded patterns.
-    If clean=True, remove any files/dirs in dst that are not in src (like rsync --delete)."""
+    """
+    Copy contents of src into dst, skipping excluded patterns.
+    If clean=True, remove any files/dirs in dst that are not in src,
+    EXCEPT those that are permanently protected (PROTECTED_PATHS) or excluded.
+    """
     if not src.is_dir():
         raise NotADirectoryError(f"Source not found: {src}")
     dst.mkdir(parents=True, exist_ok=True)
 
-    # Gather all relative paths in source
+    def is_excluded(rel_path: str | Path) -> bool:
+        return any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
+
+    # Gather all relative paths in source (skipping excluded)
     src_files = set()
     src_dirs = set()
     for root, dirs, files in os.walk(src):
@@ -62,39 +112,45 @@ def copy_with_exclusions(
         for file in files:
             full_path = Path(root) / file
             rel_path = rel_root / file
-            excluded = any(
-                fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns
-            )
-            if not excluded:
+            if not is_excluded(rel_path):
                 src_files.add(rel_path)
 
-    # If clean, remove destination files/dirs not in source
+    # Clean destination: remove files/dirs not in src AND not excluded AND not protected
     if clean and dst.exists():
         for root, dirs, files in os.walk(dst):
             rel_root = Path(root).relative_to(dst)
             for file in files:
                 rel_path = rel_root / file
-                if rel_path not in src_files:
+                if (
+                    rel_path not in src_files
+                    and not is_excluded(rel_path)
+                    and not _is_protected(rel_path)
+                ):
                     (dst / rel_path).unlink()
                     logger.debug(f"Removed extra file: {rel_path}")
             for dir_name in dirs:
                 rel_dir = rel_root / dir_name
-                if rel_dir not in src_dirs and not any(
-                    p.parent == rel_dir for p in src_files
+                # Remove directory if:
+                # - it's not in src_dirs
+                # - no src file lives inside it
+                # - it's not excluded
+                # - it's not protected
+                if (
+                    rel_dir not in src_dirs
+                    and not any(p.parent == rel_dir for p in src_files)
+                    and not is_excluded(rel_dir)
+                    and not _is_protected(rel_dir)
                 ):
                     shutil.rmtree(dst / rel_dir)
                     logger.debug(f"Removed extra directory: {rel_dir}")
 
-    # Copy source files to destination
+    # Copy source files (excluding patterns)
     for root, dirs, files in os.walk(src):
         rel_root = Path(root).relative_to(src)
         for file in files:
             full_path = Path(root) / file
             rel_path = rel_root / file
-            excluded = any(
-                fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns
-            )
-            if excluded:
+            if is_excluded(rel_path):
                 logger.debug(f"Skipping excluded: {rel_path}")
                 continue
             dest_path = dst / rel_path
@@ -166,19 +222,16 @@ def ensure_mod_file(
     If missing or hash mismatch, download from the given URL and verify again.
     Returns True if the file is present and valid after attempt.
     """
-    # If file exists and hash matches (or no hash to verify), we're good.
     if filepath.is_file() and (
         expected_hash is None or verify_file_hash(filepath, expected_hash, hash_format)
     ):
         return True
 
-    # If we have a download URL, attempt to download/redownload
     if download_url:
         try:
             if logger:
                 logger.info(f"Downloading {filepath.name} from {download_url}")
             download_file(download_url, filepath)
-            # After download, verify if hash was given
             if expected_hash is not None:
                 if verify_file_hash(filepath, expected_hash, hash_format):
                     return True
@@ -190,14 +243,12 @@ def ensure_mod_file(
                     filepath.unlink(missing_ok=True)
                     return False
             else:
-                # No hash to verify, just assume it's good
                 return True
         except (RequestException, OSError) as e:
             if logger:
                 logger.error(f"Failed to download {filepath.name}: {e}")
             return False
     else:
-        # No download URL available
         if logger:
             logger.error(
                 f"No download URL provided for {filepath.name} and file is missing or hash mismatch"
