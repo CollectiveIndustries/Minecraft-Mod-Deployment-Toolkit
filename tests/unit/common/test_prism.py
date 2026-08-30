@@ -14,17 +14,16 @@ side = "server"
     toml_file = tmp_path / "test.pw.toml"
     toml_file.write_text(toml_content)
     result = prism.parse_prism_toml(toml_file)
-    # The parser should return a dict with at least 'file' and 'side'
     assert result is not None
     assert result["file"] == "testmod.jar"
     assert result["side"] == "server"
-    # 'id' should fall back to filename if no project id is present
     assert result["id"] == "testmod.jar"
-    # project_id and file_id should be None
     assert result["project_id"] is None
     assert result["file_id"] is None
-    # source should be 'unknown' (or whatever default you set)
     assert result["source"] == "unknown"
+    assert result["download_url"] is None
+    assert result["hash_value"] is None
+    assert result["hash_format"] == "sha512"  # default
 
 
 def test_parse_prism_toml_missing_filename(tmp_path):
@@ -65,48 +64,57 @@ side = "invalid"
 
 def test_parse_prism_toml_with_curseforge_block(tmp_path):
     """
-    Should still accept a .pw.toml with a CurseForge block,
-    but it doesn't require it. The IDs may be present.
+    Should accept a .pw.toml with a CurseForge block and extract IDs.
+    Also should read download fields if present.
     """
     toml_content = """
 filename = "cf_mod.jar"
 [update.curseforge]
 project-id = 123
 file-id = 456
+[download]
+url = "https://example.com/cf_mod.jar"
+hash = "abc123"
+hash-format = "sha256"
 """
     toml_file = tmp_path / "test.pw.toml"
     toml_file.write_text(toml_content)
     result = prism.parse_prism_toml(toml_file)
     assert result is not None
     assert result["file"] == "cf_mod.jar"
-    assert result["id"] == "123"  # project-id used as id
+    assert result["id"] == "123"
     assert result["project_id"] == 123
     assert result["file_id"] == 456
     assert result["source"] == "curseforge"
+    assert result["download_url"] == "https://example.com/cf_mod.jar"
+    assert result["hash_value"] == "abc123"
+    assert result["hash_format"] == "sha256"
 
 
 def test_parse_prism_toml_with_modrinth_block(tmp_path):
     """
-    Should accept a .pw.toml with a Modrinth block;
-    it doesn't need to extract IDs, just the filename.
+    Should accept a .pw.toml with a Modrinth block and download info.
     """
     toml_content = """
 filename = "mr_mod.jar"
 [update.modrinth]
 mod-id = "xyz"
 version = "abc"
+[download]
+url = "https://cdn.modrinth.com/mr_mod.jar"
+hash = "def456"
 """
     toml_file = tmp_path / "test.pw.toml"
     toml_file.write_text(toml_content)
     result = prism.parse_prism_toml(toml_file)
     assert result is not None
     assert result["file"] == "mr_mod.jar"
-    # project_id/file_id should be None, source should be 'modrinth'
     assert result["project_id"] is None
     assert result["file_id"] is None
     assert result["source"] == "modrinth"
-    # id falls back to filename
-    assert result["id"] == "mr_mod.jar"
+    assert result["download_url"] == "https://cdn.modrinth.com/mr_mod.jar"
+    assert result["hash_value"] == "def456"
+    assert result["hash_format"] == "sha512"  # default if not specified
 
 
 def test_load_prism_index(tmp_path):

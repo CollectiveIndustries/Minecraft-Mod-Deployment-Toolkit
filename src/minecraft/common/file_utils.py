@@ -2,12 +2,14 @@
 """File utilities."""
 
 import fnmatch
+import hashlib
 import os
 import shutil
 import zipfile
 from pathlib import Path
 
 import requests
+from requests.exceptions import RequestException
 
 
 def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
@@ -126,3 +128,78 @@ def download_file(url: str, output_path: Path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
         f.writelines(response.iter_content(chunk_size=8192))
+
+
+def compute_file_hash(filepath: Path, hash_format: str = "sha512") -> str:
+    """Compute the hash of a file using the specified algorithm."""
+    if not filepath.is_file():
+        raise FileNotFoundError(f"File not found: {filepath}")
+    hasher = hashlib.new(hash_format)
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def verify_file_hash(
+    filepath: Path, expected_hash: str, hash_format: str = "sha512"
+) -> bool:
+    """Return True if the file exists and its hash matches the expected value."""
+    if not filepath.is_file():
+        return False
+    try:
+        actual = compute_file_hash(filepath, hash_format)
+        return actual.lower() == expected_hash.lower()
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_mod_file(
+    filepath: Path,
+    download_url: str | None,
+    expected_hash: str | None,
+    hash_format: str = "sha512",
+    logger=None,
+) -> bool:
+    """
+    Ensure the mod file exists and (if hash provided) matches the hash.
+    If missing or hash mismatch, download from the given URL and verify again.
+    Returns True if the file is present and valid after attempt.
+    """
+    # If file exists and hash matches (or no hash to verify), we're good.
+    if filepath.is_file() and (
+        expected_hash is None or verify_file_hash(filepath, expected_hash, hash_format)
+    ):
+        return True
+
+    # If we have a download URL, attempt to download/redownload
+    if download_url:
+        try:
+            if logger:
+                logger.info(f"Downloading {filepath.name} from {download_url}")
+            download_file(download_url, filepath)
+            # After download, verify if hash was given
+            if expected_hash is not None:
+                if verify_file_hash(filepath, expected_hash, hash_format):
+                    return True
+                else:
+                    if logger:
+                        logger.error(
+                            f"Downloaded file hash mismatch for {filepath.name}"
+                        )
+                    filepath.unlink(missing_ok=True)
+                    return False
+            else:
+                # No hash to verify, just assume it's good
+                return True
+        except (RequestException, OSError) as e:
+            if logger:
+                logger.error(f"Failed to download {filepath.name}: {e}")
+            return False
+    else:
+        # No download URL available
+        if logger:
+            logger.error(
+                f"No download URL provided for {filepath.name} and file is missing or hash mismatch"
+            )
+        return False

@@ -1,31 +1,49 @@
 # ---------------------------------------------------------------------
-# Main configuration for deploy_pack.py, mod_puller.py, and manifest_builder.py
+# Configuration for deploy_pack.py
 # ---------------------------------------------------------------------
+# This file controls the modpack deployment tool.
+# All paths can be absolute or relative to the working directory.
 
 # === Core paths ========================================================
 
+# Directory where mods, configs, and other assets are synced from.
 sync_root = "./sync"
+
+# The live server directory (where the modpack is actually deployed).
 live_server = "./server"
+
+# Web directory where the generated client ZIP will be placed.
 www_dir = "./www"
+
+# File containing rsync‑style exclude patterns (e.g., *.bak, *.tmp).
+# Used to skip files when copying to staging and during live deployment.
 exclude_file = "./sync/.rsync_exclude"
+
+# Template for the output ZIP filename. The {date} placeholder is replaced
+# with the current date (YYYYMMDD). Example: minecraft_client_20260101.zip
 output_filename = "minecraft_client_{date}.zip"
+
+# Directory where mod JAR files are stored (populated by PrismLauncher).
 modpack_dir = "./sync/downloads"
 
 # === MultiMC client deployment ==========================================
 
+# Base path to the MultiMC instances folder. Used only in client mode.
+# Default on Linux: ~/.local/share/multimc/instances
 multimc_base = "/home/admiral/.local/share/multimc/instances"
+
+# Name of the MultiMC instance to deploy to (client mode only).
 instance_name = "Mike_N_Ike"
-
-# === Mod puller options ================================================
-
-CF_API_KEY = "$2a$10$5rZtyb9XfDLVW8s6XYsmMOa3TYqmrG8iKGT1Kqdv1.rF/tH.NmH.m"
-manifest_file = "manifest.yaml"
-minecraft_version = "1.20.1"
 
 # === Logging configuration =============================================
 
 [logging]
+# Enable or disable colored console output.
 color = true
+
+# List of log handlers. Each handler can be of type "console" or "file".
+# Console handlers support 'color' (true/false).
+# File handlers support 'path', 'max_bytes', and 'backup_count'.
 handlers = [
     { type = "console", color = true },
     { type = "file", path = "logs/deploy_pack.log", max_bytes = 10485760, backup_count = 5 }

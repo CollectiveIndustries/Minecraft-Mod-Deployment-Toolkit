@@ -8,13 +8,16 @@ from pathlib import Path
 def parse_prism_toml(toml_path: Path) -> dict | None:
     """
     Parse a Prism .pw.toml file and return a dict with:
-      - id:      (str) A unique identifier – falls back to filename if no project ID.
-      - file:    (str) The JAR filename.
-      - side:    (str) 'client', 'server', or 'both' (default 'both').
-      - project_id: (int or None) CurseForge project ID if present.
-      - file_id:    (int or None) CurseForge file ID if present.
-      - display_name: (str) Human‑readable mod name.
-      - source:  (str) 'curseforge', 'modrinth', or 'unknown'.
+      - id:          (str) A unique identifier – falls back to filename if no project ID.
+      - file:        (str) The JAR filename.
+      - side:        (str) 'client', 'server', or 'both' (default 'both').
+      - project_id:  (int or None) CurseForge project ID if present.
+      - file_id:     (int or None) CurseForge file ID if present.
+      - display_name:(str) Human‑readable mod name.
+      - source:      (str) 'curseforge', 'modrinth', or 'unknown'.
+      - download_url:(str or None) Direct download URL from [download] section.
+      - hash_value:  (str or None) Expected hash from [download] section.
+      - hash_format: (str or None) Hash algorithm (default 'sha512').
 
     Returns None only if the file cannot be parsed or no filename is present.
     """
@@ -33,6 +36,12 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
     if side not in ("client", "server", "both"):
         side = "both"
 
+    # Download info (optional)
+    download = data.get("download", {})
+    download_url = download.get("url")
+    hash_value = download.get("hash")
+    hash_format = download.get("hash-format", "sha512")
+
     # Try to extract CurseForge or Modrinth IDs, but don't require them.
     cf_update = data.get("update", {}).get("curseforge")
     mr_update = data.get("update", {}).get("modrinth")
@@ -46,7 +55,6 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
         file_id = cf_update.get("file-id")
         source = "curseforge"
     elif mr_update:
-        # We don't need the IDs, but we can record the source
         source = "modrinth"
 
     # Use the filename as a fallback ID if we have no project ID
@@ -60,6 +68,9 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
         "file_id": file_id,
         "display_name": name,
         "source": source,
+        "download_url": download_url,
+        "hash_value": hash_value,
+        "hash_format": hash_format,
     }
 
 
