@@ -13,11 +13,10 @@ def load_config(
     cli_args: list[str] | None = None,
     env_file: Path | None = None,
 ) -> Config:
-    """
-    Load configuration using ConfigCore.
+    """Load configuration using ConfigCore.
 
     Sources (in order of increasing priority):
-        1. .env file (if provided) – loaded as environment variables
+        1. .env file (if provided) - loaded as environment variables
         2. Config file: config_dir / f"{base_name}.toml" (or yaml/yml)
         3. Environment variables with the given prefix
         4. CLI arguments (--key value or --key=value)

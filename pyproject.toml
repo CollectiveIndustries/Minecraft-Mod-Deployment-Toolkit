@@ -34,6 +34,8 @@ lint-fix = "ruff check . --fix"
 tests = "pytest"
 
 full.composite = [
+    "pipeline",
+    "docstring-fixer --workers 2 --retry 5 --mode opendeep --exclude 'tests/.*/fixtures/' src/ tests/",
     "format",
     "lint-fix",
     "lint",
@@ -82,3 +84,72 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.pdm]
 distribution = true
+
+[tool.ruff]
+target-version = "py313"
+line-length = 160
+
+exclude = [
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "data",
+    "debug",
+    "logs",
+    "backups",
+    "tests/**/fixtures/**",
+]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",      # pycodestyle + pyflakes
+    "B",                # bugbear
+    "I",                # import sorting
+    "UP",               # pyupgrade
+    "SIM",              # simplification
+    "C4",               # comprehensions
+    "C90",              # complexity
+    "PLC", "PLE",       # pylint baseline checks
+    "RUF",              # ruff rules
+    "D",                # docstrings (MANDATORY POLICY)
+    "TID"               # Enable Banned API see section bellow
+]
+
+ignore = [
+    "E501",      # handled by formatter
+    "B008",      # dependency injection patterns
+    "B904",      # exception chaining flexibility
+    "C901",      # allowed complexity in core services
+    "PLR0912",   # branches
+    "PLR0915",   # statements
+    "SIM108",    # readability preference
+
+    "D203", "D213",   # conflicting doc conventions
+    "D105",           # dunder methods optional
+    "D107",           # __init__ docstring optional
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pipeline]
+dirs = "src,tests"
+exclude = "tests/.*/fixtures/"
+
+[tool.docstring-fixer]
+mode = "opendeep"
+batch_size = 5
+delay_between_batches = 1.0
+workers = 4
+retry = 1
+api_timeout = 240
+
+# ----------------------------
+# Unicode Handling (ENSURE ALL FILES ARE UTF-8 AND FREE OF NON-ASCII)
+# ----------------------------
+[tool.fix-unicode-ascii]
+disable = ["0060"]           # backtick + en dash
+enable = []                  # optional: re-enable some
+normalize_accents = false    # keep false unless you want "café" -> "cafe"
+#line_endings = "lf"      # or "crlf" tool.ruff.format.line-ending already handles this

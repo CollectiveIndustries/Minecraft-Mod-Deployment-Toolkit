@@ -140,7 +140,7 @@ def test_show_tags(capsys, sample_log):
         registry = lookup.parse_log()
         lookup.show_tags(registry, "minecraft:apple")
     captured = capsys.readouterr()
-    assert "minecraft:apple — Apple" in captured.out
+    assert "minecraft:apple - Apple" in captured.out
     assert "minecraft:food" in captured.out
     assert "minecraft:berries" in captured.out
 
@@ -151,7 +151,7 @@ def test_show_tags_no_tags(capsys, sample_log):
         registry = lookup.parse_log()
         lookup.show_tags(registry, "minecraft:stick")
     captured = capsys.readouterr()
-    assert "minecraft:stick — Stick" in captured.out
+    assert "minecraft:stick - Stick" in captured.out
     assert "No tags." in captured.out
 
 
@@ -208,7 +208,7 @@ def test_main_tags(capsys, sample_log):
     ):
         lookup.main()
     captured = capsys.readouterr()
-    assert "minecraft:apple — Apple" in captured.out
+    assert "minecraft:apple - Apple" in captured.out
 
 
 def test_main_mod(capsys, sample_log):

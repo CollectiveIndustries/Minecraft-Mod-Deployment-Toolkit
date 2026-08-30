@@ -6,14 +6,14 @@ from pathlib import Path
 
 
 def parse_prism_toml(toml_path: Path) -> dict | None:
-    """
-    Parse a Prism .pw.toml file and return a dict with:
-      - id:          (str) A unique identifier – falls back to filename if no project ID.
+    """Parse a Prism .pw.toml file and return a dict.
+
+      - id:          (str) A unique identifier - falls back to filename if no project ID.
       - file:        (str) The JAR filename.
       - side:        (str) 'client', 'server', or 'both' (default 'both').
       - project_id:  (int or None) CurseForge project ID if present.
       - file_id:     (int or None) CurseForge file ID if present.
-      - display_name:(str) Human‑readable mod name.
+      - display_name:(str) Human-readable mod name.
       - source:      (str) 'curseforge', 'modrinth', or 'unknown'.
       - download_url:(str or None) Direct download URL from [download] section.
       - hash_value:  (str or None) Expected hash from [download] section.
@@ -29,7 +29,7 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
 
     filename = data.get("filename")
     if not filename:
-        return None  # No filename – not a valid mod entry
+        return None  # No filename - not a valid mod entry
 
     name = data.get("name", "")
     side = data.get("side", "both").lower()

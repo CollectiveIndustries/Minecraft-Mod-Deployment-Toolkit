@@ -1,4 +1,5 @@
 # tests/unit/common/test_file_utils.py
+
 """Unit tests for file utility functions."""
 
 import hashlib
@@ -14,15 +15,19 @@ class DummyLogger:
     """A logger that does nothing (avoids formatting issues in tests)."""
 
     def debug(self, msg, *args, **kwargs):
+        """Logs a debug message. Accepts a message and optional arguments, then passes."""
         pass
 
     def info(self, msg, *args, **kwargs):
+        """Logs an info message. Accepts a message and optional arguments, then passes."""
         pass
 
     def warning(self, msg, *args, **kwargs):
+        """Warn about a non-critical issue."""
         pass
 
     def error(self, msg, *args, **kwargs):
+        """Report an error condition."""
         pass
 
 
@@ -33,17 +38,17 @@ def dummy_logger():
 
 
 def test_get_exclude_patterns(tmp_path, dummy_logger):
+    """Test parsing an exclude patterns file. Verifies that comments and blank lines are ignored and that valid patterns are returned. Also tests that a missing file returns an empty list."""
     exclude_file = tmp_path / ".rsync_exclude"
     exclude_file.write_text("*.tmp\n# comment\n*.log\n")
     patterns = file_utils.get_exclude_patterns(exclude_file, dummy_logger)
     assert patterns == ["*.tmp", "*.log"]
-
-    # Missing file -> empty list
     patterns = file_utils.get_exclude_patterns(tmp_path / "missing", dummy_logger)
     assert patterns == []
 
 
 def test_copy_directory_contents(tmp_path, dummy_logger):
+    """Test copying all contents of a source directory to a destination directory, including nested subdirectories. Verifies that all files and subdirectories are correctly copied."""
     src = tmp_path / "src"
     src.mkdir()
     (src / "file1.txt").write_text("content")
@@ -57,6 +62,7 @@ def test_copy_directory_contents(tmp_path, dummy_logger):
 
 
 def test_copy_with_exclusions(tmp_path, dummy_logger):
+    """Test copying directory contents while excluding files matching a given pattern. Verifies that excluded files are not copied and included files are copied."""
     src = tmp_path / "src"
     src.mkdir()
     (src / "keep.txt").write_text("keep")
@@ -68,6 +74,7 @@ def test_copy_with_exclusions(tmp_path, dummy_logger):
 
 
 def test_create_zip_from_staging(tmp_path, dummy_logger):
+    """Test creating a zip archive from a staging directory, including nested subdirectories and files. Verifies that the zip file is created successfully with the expected contents."""
     staging = tmp_path / "staging"
     staging.mkdir()
     (staging / "file.txt").write_text("test")
@@ -80,6 +87,7 @@ def test_create_zip_from_staging(tmp_path, dummy_logger):
 
 
 def test_download_file(tmp_path):
+    """Tests download_file function without file system interaction."""
     out = tmp_path / "downloaded.dat"
     with patch("requests.get") as mock_get:
         mock_response = mock_get.return_value
@@ -90,17 +98,16 @@ def test_download_file(tmp_path):
 
 
 def test_compute_file_hash(tmp_path):
+    """Tests compute_file_hash function for default and custom hash algorithms."""
     f = tmp_path / "data.txt"
     f.write_text("hello")
     expected = hashlib.sha512(b"hello").hexdigest()
     assert file_utils.compute_file_hash(f) == expected
-    assert (
-        file_utils.compute_file_hash(f, "sha256")
-        == hashlib.sha256(b"hello").hexdigest()
-    )
+    assert file_utils.compute_file_hash(f, "sha256") == hashlib.sha256(b"hello").hexdigest()
 
 
 def test_verify_file_hash(tmp_path):
+    """Tests verify_file_hash for correct, incorrect, and missing file cases."""
     f = tmp_path / "data.txt"
     f.write_text("hello")
     correct = hashlib.sha512(b"hello").hexdigest()
@@ -111,12 +118,14 @@ def test_verify_file_hash(tmp_path):
 
 
 def test_ensure_mod_file_missing_no_download(tmp_path, dummy_logger):
+    """Tests ensure_mod_file returns False when file is missing and no download URL is provided."""
     modpath = tmp_path / "mod.jar"
     result = file_utils.ensure_mod_file(modpath, None, None, logger=dummy_logger)
     assert result is False
 
 
 def test_ensure_mod_file_exists_no_hash(tmp_path, dummy_logger):
+    """Tests ensure_mod_file returns True when file exists without requiring hash verification."""
     modpath = tmp_path / "mod.jar"
     modpath.write_text("content")
     result = file_utils.ensure_mod_file(modpath, None, None, logger=dummy_logger)
@@ -124,11 +133,13 @@ def test_ensure_mod_file_exists_no_hash(tmp_path, dummy_logger):
 
 
 def test_ensure_mod_file_missing_with_download(tmp_path, dummy_logger):
+    """Tests that ensure_mod_file downloads the file when it does not exist locally."""
     modpath = tmp_path / "mod.jar"
     url = "http://example.com/mod.jar"
     with patch("src.minecraft.common.file_utils.download_file") as mock_download:
 
         def fake_download(url, out):
+            """Simulate a download by writing static content to a file."""
             out.write_text("downloaded content")
 
         mock_download.side_effect = fake_download
@@ -138,34 +149,29 @@ def test_ensure_mod_file_missing_with_download(tmp_path, dummy_logger):
 
 
 def test_ensure_mod_file_hash_mismatch_download_retry(tmp_path, dummy_logger):
+    """Tests that ensure_mod_file re-downloads the file when the existing file's hash mismatches the expected hash."""
     modpath = tmp_path / "mod.jar"
     url = "http://example.com/mod.jar"
     expected_hash = hashlib.sha512(b"correct").hexdigest()
-    # Initially file exists but wrong content
     modpath.write_text("wrong")
     with patch("src.minecraft.common.file_utils.download_file") as mock_download:
 
         def fake_download(url, out):
+            """Simulate a download by writing static content to a file."""
             out.write_text("correct")
 
         mock_download.side_effect = fake_download
-        result = file_utils.ensure_mod_file(
-            modpath, url, expected_hash, logger=dummy_logger
-        )
+        result = file_utils.ensure_mod_file(modpath, url, expected_hash, logger=dummy_logger)
     assert result is True
     assert file_utils.verify_file_hash(modpath, expected_hash) is True
 
 
 def test_ensure_mod_file_download_fails(tmp_path, dummy_logger):
+    """Tests that ensure_mod_file returns False and does not create the file when download raises a RequestException."""
     modpath = tmp_path / "mod.jar"
     url = "http://example.com/mod.jar"
     expected_hash = hashlib.sha512(b"correct").hexdigest()
-    with patch(
-        "src.minecraft.common.file_utils.download_file",
-        side_effect=RequestException("Network error"),
-    ):
-        result = file_utils.ensure_mod_file(
-            modpath, url, expected_hash, logger=dummy_logger
-        )
+    with patch("src.minecraft.common.file_utils.download_file", side_effect=RequestException("Network error")):
+        result = file_utils.ensure_mod_file(modpath, url, expected_hash, logger=dummy_logger)
     assert result is False
     assert not modpath.exists()

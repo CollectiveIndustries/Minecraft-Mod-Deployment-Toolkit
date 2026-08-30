@@ -1,4 +1,6 @@
 # tests/conftest.py
+"""Shared fixtures and configuration for pytest."""
+
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -28,6 +30,7 @@ def mock_config_manager():
 
 @pytest.fixture
 def sample_manifest_data():
+    """Returns a sample manifest dictionary containing mod entries with fields id, side, file, and enabled. Used for testing or demonstration purposes."""
     return {
         "mods": [
             {"id": "mod1", "side": "both", "file": "mod1.jar", "enabled": True},
@@ -37,14 +40,10 @@ def sample_manifest_data():
     }
 
 
-# A fixture that patches logging in all modules under test
 @pytest.fixture(autouse=True)
 def mock_logging():
     """Patch LoggingCore setup and get_logger globally."""
-    with (
-        patch("LoggingCore.setup_logging") as mock_setup,
-        patch("LoggingCore.get_logger") as mock_get,
-    ):
+    with patch("LoggingCore.setup_logging") as mock_setup, patch("LoggingCore.get_logger") as mock_get:
         mock_logger = MagicMock()
         mock_get.return_value = mock_logger
-        yield mock_setup, mock_logger
+        yield (mock_setup, mock_logger)

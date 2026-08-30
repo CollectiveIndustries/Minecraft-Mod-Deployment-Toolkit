@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 def load_side_overrides(override_path: Path) -> dict[str, str]:
-    """
-    Load side overrides from a TOML file.
+    """Load side overrides from a TOML file.
+
     Expected format:
         [by_id]
         "123" = "client"
@@ -38,8 +38,8 @@ def load_side_overrides(override_path: Path) -> dict[str, str]:
 
 
 def apply_side_overrides(entries: list[dict], overrides: dict[str, str]) -> list[dict]:
-    """
-    Apply side overrides to a list of Prism index entries (in-place).
+    """Apply side overrides to a list of Prism index entries (in-place).
+
     Overrides are checked against entry['id'] and entry['file'].
     """
     for entry in entries:

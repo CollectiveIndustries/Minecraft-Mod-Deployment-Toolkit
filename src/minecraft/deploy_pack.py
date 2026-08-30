@@ -1,10 +1,13 @@
-"""
-deploy_pack.py - Generate server ZIP and update live server.
+# src/minecraft/deploy_pack.py
+
+"""deploy_pack.py - Generate server ZIP and update live server.
+
 Uses Prism .index for mod metadata and ConfigCore for configuration.
 """
 
 import argparse
 import datetime
+import fnmatch
 import os
 import shutil
 import sys
@@ -24,8 +27,8 @@ def load_mod_list(
     target_side: str,
     logger,
 ) -> list:
-    """
-    Load mod entries from a Prism index directory.
+    """Load mod entries from a Prism index directory.
+
     Returns a list of mod dicts filtered by target side.
     """
     if not prism_index.is_dir():
@@ -46,21 +49,88 @@ def load_mod_list(
     return side_mods
 
 
+def _copy_sync_with_mapping(
+    sync_root: Path,
+    staging: Path,
+    side: str,
+    exclude_patterns: list,
+    sync_mapping: dict,
+    logger,
+) -> None:
+    """Copy top-level items from sync_root (except downloads) to staging, using the mapping to determine destination paths per side.
+
+    Mapping rules:
+      - If a key is not present in sync_mapping, the item is IGNORED completely.
+      - If the value is a string, it is used as the destination for BOTH sides.
+      - If the value is a dict, it must have 'server' and/or 'client' keys.
+        - The value for the current side (server/client) is used.
+        - If the value is -1 (int) or the side key is missing, the item is IGNORED.
+        - Otherwise the value is taken as the destination path (string).
+    """
+    # Iterate over top-level items in sync_root
+    for item in sync_root.iterdir():
+        rel = Path(item.name)
+        # Skip downloads folder
+        if rel.parts[0] == "downloads":
+            continue
+
+        # Apply exclusion patterns (global)
+        if any(fnmatch.fnmatch(str(rel), pat) for pat in exclude_patterns):
+            logger.debug(f"Skipping excluded top-level item: {rel}")
+            continue
+
+        # Determine destination based on mapping
+        key = str(rel)
+        mapping_value = sync_mapping.get(key)
+        if mapping_value is None:
+            # Not mapped -> ignore completely (deterministic)
+            logger.debug(f"Item '{key}' not in sync_mapping, skipped.")
+            continue
+
+        # Resolve destination for the current side
+        if isinstance(mapping_value, str):
+            dest_rel = mapping_value
+        elif isinstance(mapping_value, dict):
+            # Get side-specific path
+            side_val = mapping_value.get(side)
+            if side_val is None or side_val == -1:
+                logger.debug(f"Item '{key}' ignored for side '{side}' (value = {side_val})")
+                continue
+            if not isinstance(side_val, str):
+                logger.warning(f"Invalid mapping for '{key}', side '{side}': expected string or -1, got {type(side_val)}. Skipping.")
+                continue
+            dest_rel = side_val
+        else:
+            logger.warning(f"Invalid mapping for '{key}': expected string or dict, got {type(mapping_value)}. Skipping.")
+            continue
+
+        dest_path = staging / dest_rel
+        if item.is_dir():
+            shutil.copytree(item, dest_path, dirs_exist_ok=True)
+            logger.info(f"Copied directory {rel} -> {dest_rel} (side: {side})")
+        else:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, dest_path)
+            logger.info(f"Copied file {rel} -> {dest_rel} (side: {side})")
+
+
 def prepare_staging(
     side_mods: list,
     modpack_dir: Path,
     sync_root: Path,
-    live_server: Path,
+    side: str,  # "server" or "client"
     logger,
+    exclude_patterns: list,
+    sync_mapping: dict,
 ) -> Path:
-    """
-    Create a staging directory with all mods, configs, scripts, kubejs, and ftbquests.
+    """Create a staging directory with all mods and sync contents mapped per side.
+
     Returns the Path to the staging directory.
     """
     staging = Path(tempfile.mkdtemp(prefix="deploy_staging_"))
     logger.info(f"Staging directory: {staging}")
 
-    # Copy mods
+    # 1. Copy mods (filtered by side)
     mods_dir = staging / "mods"
     mods_dir.mkdir(parents=True, exist_ok=True)
 
@@ -91,21 +161,13 @@ def prepare_staging(
 
     logger.info(f"Copied {copied}/{len(side_mods)} mod files")
 
-    # Prepare subdirs
-    for sub in ["config", "scripts", "kubejs", "config/ftbquests"]:
-        (staging / sub).mkdir(parents=True, exist_ok=True)
-
-    # Copy configs, scripts, kubejs, ftbquests
-    file_utils.copy_directory_contents(sync_root / "config", staging / "config", logger)
-    scripts_src = sync_root / "scripts"
-    if scripts_src.is_dir():
-        file_utils.copy_directory_contents(scripts_src, staging / "scripts", logger)
-    file_utils.copy_directory_contents(
-        live_server / "kubejs", staging / "kubejs", logger
-    )
-    file_utils.copy_directory_contents(
-        live_server / "config" / "ftbquests",
-        staging / "config" / "ftbquests",
+    # 2. Copy sync contents (except downloads) using the mapping
+    _copy_sync_with_mapping(
+        sync_root,
+        staging,
+        side,
+        exclude_patterns,
+        sync_mapping,
         logger,
     )
 
@@ -124,9 +186,7 @@ def create_client_zip(
     zip_name = filename_template.format(date=date_str)
     output_zip = www_dir / zip_name
     logger.info(f"Creating zip: {output_zip}")
-    file_utils.create_zip_from_staging(
-        staging_dir, output_zip, exclude_patterns, logger
-    )
+    file_utils.create_zip_from_staging(staging_dir, output_zip, exclude_patterns, logger)
     logger.info(f"Client pack created successfully at {output_zip}")
     return output_zip
 
@@ -139,9 +199,7 @@ def deploy_to_server(
 ):
     """Copy staging contents to the live server directory (with cleanup)."""
     logger.info(f"Deploying to live_server: {live_server}")
-    file_utils.copy_with_exclusions(
-        staging_dir, live_server, exclude_patterns, logger, clean=True
-    )
+    file_utils.copy_with_exclusions(staging_dir, live_server, exclude_patterns, logger, clean=True)
     logger.info("Live server updated successfully (cleaned).")
 
 
@@ -160,6 +218,7 @@ def deploy_to_client(
 
 
 def main():
+    """Main entrypoint for deploy_pack.py. Parses arguments, loads config, and executes deployment."""
     parser = argparse.ArgumentParser(description="Deploy client pack")
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -167,9 +226,7 @@ def main():
         action="store_true",
         help="Server mode: create ZIP and update live_server (default)",
     )
-    group.add_argument(
-        "--client", action="store_true", help="Client mode: deploy to MultiMC instance"
-    )
+    group.add_argument("--client", action="store_true", help="Client mode: deploy to MultiMC instance")
     parser.add_argument(
         "--config-dir",
         type=str,
@@ -185,6 +242,11 @@ def main():
         "--no-deploy",
         action="store_true",
         help="When used with --server, skip copying to live_server (only create ZIP).",
+    )
+    parser.add_argument(
+        "--no-zip",
+        action="store_true",
+        help="When used with --server, skip creating the client ZIP (only update live_server).",
     )
     args, remaining = parser.parse_known_args()
 
@@ -224,13 +286,12 @@ def main():
     exclude_file = get_path("exclude_file", "./sync/.rsync_exclude")
     output_filename = config.get("output_filename", "minecraft_client_{date}.zip")
     modpack_dir = get_path("modpack_dir", "./sync/downloads")
+    sync_mapping = config.get("sync_mapping", {})
 
     # Prism index is always located inside modpack_dir
     prism_index_dir = modpack_dir / ".index"
 
-    multimc_base = config.get(
-        "multimc_base", str(Path.home() / ".local/share/multimc/instances")
-    )
+    multimc_base = config.get("multimc_base", str(Path.home() / ".local/share/multimc/instances"))
     instance_name = config.get("instance_name")
 
     # Logging setup
@@ -267,6 +328,17 @@ def main():
         logger.info(f"  multimc_base= {multimc_base}")
         logger.info(f"  instance_name= {instance_name}")
 
+    # Early validation for client mode
+    if mode == "client" and not instance_name:
+        logger.error("instance_name must be set for client mode")
+        sys.exit(1)
+
+    if mode == "server" and args.no_zip and args.no_deploy:
+        logger.warning("Both --no-zip and --no-deploy specified - nothing will be done.")
+
+    # Load exclude patterns early
+    exclude_patterns = file_utils.get_exclude_patterns(exclude_file, logger)
+
     # Load mod list (Prism index required)
     try:
         side_mods = load_mod_list(
@@ -285,19 +357,24 @@ def main():
             side_mods,
             modpack_dir,
             sync_root,
-            live_server,
+            mode,  # "server" or "client"
             logger,
+            exclude_patterns,
+            sync_mapping,
         )
-        exclude_patterns = file_utils.get_exclude_patterns(exclude_file, logger)
 
         if mode == "server":
-            create_client_zip(
-                staging,
-                www_dir,
-                output_filename,
-                exclude_patterns,
-                logger,
-            )
+            if not args.no_zip:
+                create_client_zip(
+                    staging,
+                    www_dir,
+                    output_filename,
+                    exclude_patterns,
+                    logger,
+                )
+            else:
+                logger.info("Skipping client ZIP creation (--no-zip).")
+
             if not args.no_deploy:
                 deploy_to_server(
                     staging,
@@ -308,6 +385,7 @@ def main():
             else:
                 logger.info("Skipping live_server deployment (--no-deploy).")
         else:  # client mode
+            # instance_name already validated, but keep for safety
             if not instance_name:
                 logger.error("instance_name must be set for client mode")
                 sys.exit(1)

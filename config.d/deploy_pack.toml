@@ -35,6 +35,18 @@ multimc_base = "/home/admiral/.local/share/multimc/instances"
 # Name of the MultiMC instance to deploy to (client mode only).
 instance_name = "Mike_N_Ike"
 
+[sync_mapping]
+# Folders that go to the same place on both sides
+config = "config"
+kubejs = "kubejs"
+scripts = "scripts"
+
+# Folders with different destinations per side
+resourcepacks = { server = "www/resourcepacks", client = "resourcepacks" }
+
+# You can also map a single file if needed
+# "my_special.txt" = { server = "special/server.txt", client = "special/client.txt" }
+
 # === Logging configuration =============================================
 
 [logging]

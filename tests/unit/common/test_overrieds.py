@@ -1,4 +1,4 @@
-# tests/unit/common/test_overrides.py
+# tests/unit/common/test_overrieds.py
 """Unit tests for side overrides module."""
 
 from src.minecraft.common import overrides

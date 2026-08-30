@@ -1,4 +1,5 @@
 # src/minecraft/common/file_utils.py
+
 """File utilities."""
 
 import fnmatch
@@ -11,9 +12,7 @@ from pathlib import Path
 import requests
 from requests.exceptions import RequestException
 
-# Permanent protection – these files/directories are NEVER removed from destination
 PROTECTED_PATHS = {
-    # Root-level server files
     "server.properties",
     "eula.txt",
     "ops.json",
@@ -29,7 +28,6 @@ PROTECTED_PATHS = {
     ".rcon-cli.yaml",
     "run.sh",
     "run.bat",
-    # Top-level directories that should never be removed
     "logs",
     "world",
     "world_nether",
@@ -48,15 +46,12 @@ PROTECTED_PATHS = {
 
 def _is_protected(rel_path: Path) -> bool:
     """Return True if the relative path (or any parent) is protected."""
-    # Check exact match or any parent component
     parts = rel_path.parts
-    for i in range(len(parts)):
-        if parts[i] in PROTECTED_PATHS:
-            return True
-    return False
+    return any(parts[i] in PROTECTED_PATHS for i in range(len(parts)))
 
 
 def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
+    """Reads a file containing exclusion patterns, ignoring blank lines and comments, and returns a list of patterns."""
     patterns = []
     if not exclude_file_path.is_file():
         logger.warning(f"Exclude file not found: {exclude_file_path}")
@@ -64,7 +59,7 @@ def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
     with exclude_file_path.open("r") as f:
         for line in f:
             line = line.strip()
-            if line and not line.startswith("#"):
+            if line and (not line.startswith("#")):
                 patterns.append(line)
     return patterns
 
@@ -87,11 +82,9 @@ def copy_directory_contents(src: Path, dst: Path, logger):
     logger.debug(f"Copied {src} -> {dst}")
 
 
-def copy_with_exclusions(
-    src: Path, dst: Path, exclude_patterns: list, logger, clean: bool = False
-):
-    """
-    Copy contents of src into dst, skipping excluded patterns.
+def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger, clean: bool = False):
+    """Copy contents of src into dst, skipping excluded patterns.
+
     If clean=True, remove any files/dirs in dst that are not in src,
     EXCEPT those that are permanently protected (PROTECTED_PATHS) or excluded.
     """
@@ -102,10 +95,9 @@ def copy_with_exclusions(
     def is_excluded(rel_path: str | Path) -> bool:
         return any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
 
-    # Gather all relative paths in source (skipping excluded)
     src_files = set()
     src_dirs = set()
-    for root, dirs, files in os.walk(src):
+    for root, _dirs, files in os.walk(src):
         rel_root = Path(root).relative_to(src)
         if rel_root != Path("."):
             src_dirs.add(rel_root)
@@ -114,38 +106,25 @@ def copy_with_exclusions(
             rel_path = rel_root / file
             if not is_excluded(rel_path):
                 src_files.add(rel_path)
-
-    # Clean destination: remove files/dirs not in src AND not excluded AND not protected
     if clean and dst.exists():
         for root, dirs, files in os.walk(dst):
             rel_root = Path(root).relative_to(dst)
             for file in files:
                 rel_path = rel_root / file
-                if (
-                    rel_path not in src_files
-                    and not is_excluded(rel_path)
-                    and not _is_protected(rel_path)
-                ):
+                if rel_path not in src_files and (not is_excluded(rel_path)) and (not _is_protected(rel_path)):
                     (dst / rel_path).unlink()
                     logger.debug(f"Removed extra file: {rel_path}")
             for dir_name in dirs:
                 rel_dir = rel_root / dir_name
-                # Remove directory if:
-                # - it's not in src_dirs
-                # - no src file lives inside it
-                # - it's not excluded
-                # - it's not protected
                 if (
                     rel_dir not in src_dirs
-                    and not any(p.parent == rel_dir for p in src_files)
-                    and not is_excluded(rel_dir)
-                    and not _is_protected(rel_dir)
+                    and (not any(p.parent == rel_dir for p in src_files))
+                    and (not is_excluded(rel_dir))
+                    and (not _is_protected(rel_dir))
                 ):
                     shutil.rmtree(dst / rel_dir)
                     logger.debug(f"Removed extra directory: {rel_dir}")
-
-    # Copy source files (excluding patterns)
-    for root, dirs, files in os.walk(src):
+    for root, _dirs, files in os.walk(src):
         rel_root = Path(root).relative_to(src)
         for file in files:
             full_path = Path(root) / file
@@ -159,18 +138,15 @@ def copy_with_exclusions(
     logger.info(f"Copied with exclusions to {dst}")
 
 
-def create_zip_from_staging(
-    staging_dir: Path, output_zip: Path, exclude_patterns: list, logger
-):
+def create_zip_from_staging(staging_dir: Path, output_zip: Path, exclude_patterns: list, logger):
+    """Creates a ZIP archive from a staging directory, respecting exclude patterns and logging progress."""
     output_zip.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(staging_dir):
+        for root, _dirs, files in os.walk(staging_dir):
             for file in files:
                 full_path = Path(root) / file
                 rel_path = full_path.relative_to(staging_dir)
-                excluded = any(
-                    fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns
-                )
+                excluded = any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
                 if excluded:
                     logger.debug(f"Skipping excluded: {rel_path}")
                     continue
@@ -179,6 +155,7 @@ def create_zip_from_staging(
 
 
 def download_file(url: str, output_path: Path):
+    """Downloads a file from the given URL and saves it to the specified output path."""
     response = requests.get(url, stream=True, timeout=30)
     response.raise_for_status()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,9 +174,7 @@ def compute_file_hash(filepath: Path, hash_format: str = "sha512") -> str:
     return hasher.hexdigest()
 
 
-def verify_file_hash(
-    filepath: Path, expected_hash: str, hash_format: str = "sha512"
-) -> bool:
+def verify_file_hash(filepath: Path, expected_hash: str, hash_format: str = "sha512") -> bool:
     """Return True if the file exists and its hash matches the expected value."""
     if not filepath.is_file():
         return False
@@ -210,23 +185,14 @@ def verify_file_hash(
         return False
 
 
-def ensure_mod_file(
-    filepath: Path,
-    download_url: str | None,
-    expected_hash: str | None,
-    hash_format: str = "sha512",
-    logger=None,
-) -> bool:
-    """
-    Ensure the mod file exists and (if hash provided) matches the hash.
+def ensure_mod_file(filepath: Path, download_url: str | None, expected_hash: str | None, hash_format: str = "sha512", logger=None) -> bool:
+    """Ensure the mod file exists and (if hash provided) matches the hash.
+
     If missing or hash mismatch, download from the given URL and verify again.
     Returns True if the file is present and valid after attempt.
     """
-    if filepath.is_file() and (
-        expected_hash is None or verify_file_hash(filepath, expected_hash, hash_format)
-    ):
+    if filepath.is_file() and (expected_hash is None or verify_file_hash(filepath, expected_hash, hash_format)):
         return True
-
     if download_url:
         try:
             if logger:
@@ -237,9 +203,7 @@ def ensure_mod_file(
                     return True
                 else:
                     if logger:
-                        logger.error(
-                            f"Downloaded file hash mismatch for {filepath.name}"
-                        )
+                        logger.error(f"Downloaded file hash mismatch for {filepath.name}")
                     filepath.unlink(missing_ok=True)
                     return False
             else:
@@ -250,7 +214,5 @@ def ensure_mod_file(
             return False
     else:
         if logger:
-            logger.error(
-                f"No download URL provided for {filepath.name} and file is missing or hash mismatch"
-            )
+            logger.error(f"No download URL provided for {filepath.name} and file is missing or hash mismatch")
         return False
