@@ -39,12 +39,13 @@ instance_name = "Mike_N_Ike"
 # Folders that go to the same place on both sides
 config = "config"
 kubejs = "kubejs"
-scripts = "scripts"
 
 # Folders with different destinations per side
 resourcepacks = { server = "www/resourcepacks", client = "resourcepacks" }
 
 # You can also map a single file if needed
+# you can also disable a destination by setting it to -1
+# resourcepacks = { server = -1, client = "resourcepacks" }
 # "my_special.txt" = { server = "special/server.txt", client = "special/client.txt" }
 
 # === Logging configuration =============================================

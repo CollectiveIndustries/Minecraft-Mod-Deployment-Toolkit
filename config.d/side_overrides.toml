@@ -13,8 +13,9 @@
 
 # (Optional) If you find more client-only mods, add them here.
 
-# ---- Server-only mods (if any) ----
-# "123456" = "server"
+# ---- Server-only mods (do not install on client) ----
+
+"ejJQJnIT" = "server"   # server-side-vein-miner (Server-side Vein Miner & Tunneler)
 
 # ---- Force both (if needed) ----
 # "789012" = "both"

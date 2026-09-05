@@ -17,3 +17,4 @@ www/
 server/crash-reports
 .ruff_cache
 server/schematics/
+config/worldedit/sessions/
