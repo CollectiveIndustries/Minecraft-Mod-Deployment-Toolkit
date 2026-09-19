@@ -9,54 +9,82 @@
 # Directory where mods, configs, and other assets are synced from.
 sync_root = "./sync"
 
-# The live server directory (where the modpack is actually deployed).
-live_server = "./server"
+# Shared mods directory. Server-side mods are deployed here ONCE and
+# bind-mounted into every instance's /data/mods by Docker Compose.
+mods_dir = "./mods"
 
-# Web directory where the generated client ZIP will be placed.
+# Public web directory. Receives resourcepacks, the client ZIP, BlueMap, etc.
 www_dir = "./www"
 
 # File containing rsync‑style exclude patterns (e.g., *.bak, *.tmp).
-# Used to skip files when copying to staging and during live deployment.
+# Applied recursively during both staging and live deployment.
 exclude_file = "./.rsync_exclude"
 
-# Template for the output ZIP filename. The {date} placeholder is replaced
-# with the current date (YYYYMMDD). Example: minecraft_client_20260101.zip
+# Template for the output ZIP filename. {date} -> YYYYMMDD.
 output_filename = "minecraft_client_{date}.zip"
 
 # Directory where mod JAR files are stored (populated by PrismLauncher).
+# The .index subfolder inside this dir holds the Prism .pw.toml metadata.
 modpack_dir = "./sync/downloads"
+
+# === Server instances ==================================================
+# Each instance receives its own copy of every instance-mapped sync item
+# (config, kubejs, etc.). Mods are shared from `mods_dir` — do NOT put a
+# mods mapping here.
+#
+# Two equivalent forms are supported:
+#
+#   [instances.survival]        instances = {
+#   path = "./survival"             survival = "./survival",
+#                                   creative = "./creative",
+#                               }
+#
+[instances.survival]
+path = "./survival"
+
+[instances.creative]
+path = "./creative"
 
 # === MultiMC client deployment ==========================================
 
 # Base path to the MultiMC instances folder. Used only in client mode.
-# Default on Linux: ~/.local/share/multimc/instances
 multimc_base = "/home/admiral/.local/share/multimc/instances"
 
 # Name of the MultiMC instance to deploy to (client mode only).
 instance_name = "Mike_N_Ike"
 
+# === Sync mapping ======================================================
+# Maps top-level items in `sync_root` to destination paths.
+#
+# Destination rules:
+#
+#   "config"                  -> deployed to EVERY instance at <instance.path>/config
+#   { server = "server/x",
+#     client = "client/x" }   -> per-side destination (relative to instance, or shared)
+#   -1                        -> excluded for that side
+#
+# Shared destinations (not per-instance) are prefixed with '@':
+#
+#   "@www/resourcepacks"      -> www_dir/resourcepacks
+#   "@www/foo/bar"            -> www_dir/foo/bar
+#   "@mods/foo"               -> mods_dir/foo   (rarely needed — see note above)
+#
 [sync_mapping]
-# Folders that go to the same place on both sides
+# These go to every instance (survival AND creative) at the same rel path.
 config = "config"
 kubejs = "kubejs"
 
-# Folders with different destinations per side
-resourcepacks = { server = "www/resourcepacks", client = "resourcepacks" }
+# resourcepacks: server-side publishes into the public www dir;
+# client-side stays relative so it ends up inside the client ZIP.
+resourcepacks = { server = "@www/resourcepacks", client = "resourcepacks" }
 
-# You can also map a single file if needed
-# you can also disable a destination by setting it to -1
-# resourcepacks = { server = -1, client = "resourcepacks" }
-# "my_special.txt" = { server = "special/server.txt", client = "special/client.txt" }
+# You can disable a side entirely:
+# "some_folder" = { server = -1, client = "some_folder" }
 
 # === Logging configuration =============================================
 
 [logging]
-# Enable or disable colored console output.
 color = true
-
-# List of log handlers. Each handler can be of type "console" or "file".
-# Console handlers support 'color' (true/false).
-# File handlers support 'path', 'max_bytes', and 'backup_count'.
 handlers = [
     { type = "console", color = true },
     { type = "file", path = "logs/deploy_pack.log", max_bytes = 10485760, backup_count = 5 }

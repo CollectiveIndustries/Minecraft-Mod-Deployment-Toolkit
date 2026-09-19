@@ -1,20 +1,90 @@
-.git/
-*.log
+# ---------------------------------------------------------------------
+# .rsync_exclude — exclude patterns for deploy_pack.py
+# ---------------------------------------------------------------------
+# Patterns are matched (fnmatch-style) against:
+#   - top-level names inside sync/          e.g. "config", "kubejs"
+#   - paths relative to each copied item    e.g. "worldedit/sessions/x.json"
+#     (i.e. NOT relative to sync/ — drop the leading sync/<item>/ segment)
+#
+# Trailing slashes are normalized away by file_utils.get_exclude_patterns,
+# so "world/" and "world" are equivalent.
+# ---------------------------------------------------------------------
+
+# === Backups / editor droppings =======================================
 *.bak
-temp/
-old_versions/
-.Trash-*
+*.tmp
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# === Logs =============================================================
+*.log
+*.log.*
+logs
+
+# === World data (server-runtime, never synced) ========================
+world
+world_nether
+world_the_end
+DIM-1
+DIM1
+*.mca
+
+# === Server runtime artifacts =========================================
+crash-reports
+local
+playerdata
+bluemap
+.usercache.json
+usernamecache.json
+banned-ips.json
+banned-players.json
+ops.json
+whitelist.json
+server.properties
+eula.txt
+
+# === Mod-loader / Minecraft caches ====================================
+.cache
+.mixin.out
+.patchouli
+patchouli_books
+schematics
+defaultconfigs
+libraries
+bin
+
+# === Nested content inside source items ===============================
+# These match paths relative to sync/<item>/, so if quests live in
+# sync/config/ftbquests/, this correctly excludes them:
 ftbquests/*
 jei/*
-.venv
+worldedit/sessions/*
+
+# === Java / build tooling =============================================
+.gradle
+build
+out
+*.class
+
+# === Python ===========================================================
 __pycache__
-*.mca
-world/
-bluemap/
-playerdata/
-www/
-*.log*
-server/crash-reports
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
 .ruff_cache
-server/schematics/
-config/worldedit/sessions/
+.venv
+
+# === VCS / editor / OS ================================================
+.git
+.gitignore
+.gitattributes
+.github
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+desktop.ini

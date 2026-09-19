@@ -8,16 +8,16 @@ from pathlib import Path
 def parse_prism_toml(toml_path: Path) -> dict | None:
     """Parse a Prism .pw.toml file and return a dict.
 
-      - id:          (str) A unique identifier - falls back to filename if no project ID.
+      - id:          (str) Unique identifier: CurseForge project-id, Modrinth mod-id, or filename.
       - file:        (str) The JAR filename.
       - side:        (str) 'client', 'server', or 'both' (default 'both').
-      - project_id:  (int or None) CurseForge project ID if present.
-      - file_id:     (int or None) CurseForge file ID if present.
+      - project_id:  (int | str | None) CF project id (int) or Modrinth mod-id (str).
+      - file_id:     (int | str | None) CF file-id (int) or Modrinth version id (str).
       - display_name:(str) Human-readable mod name.
       - source:      (str) 'curseforge', 'modrinth', or 'unknown'.
-      - download_url:(str or None) Direct download URL from [download] section.
-      - hash_value:  (str or None) Expected hash from [download] section.
-      - hash_format: (str or None) Hash algorithm (default 'sha512').
+      - download_url:(str | None) Direct download URL from [download] section.
+      - hash_value:  (str | None) Expected hash from [download] section.
+      - hash_format: (str | None) Hash algorithm (default 'sha512').
 
     Returns None only if the file cannot be parsed or no filename is present.
     """
@@ -42,7 +42,7 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
     hash_value = download.get("hash")
     hash_format = download.get("hash-format", "sha512")
 
-    # Try to extract CurseForge or Modrinth IDs, but don't require them.
+    # Try to extract CurseForge or Modrinth IDs
     cf_update = data.get("update", {}).get("curseforge")
     mr_update = data.get("update", {}).get("modrinth")
 
@@ -55,6 +55,9 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
         file_id = cf_update.get("file-id")
         source = "curseforge"
     elif mr_update:
+        # Prism stores Modrinth metadata as { mod-id = "...", version = "..." }
+        project_id = mr_update.get("mod-id")
+        file_id = mr_update.get("version")
         source = "modrinth"
 
     # Use the filename as a fallback ID if we have no project ID

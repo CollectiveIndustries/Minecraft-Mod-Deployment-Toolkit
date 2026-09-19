@@ -3,6 +3,12 @@
 """deploy_pack.py - Generate server ZIP and update live server.
 
 Uses Prism .index for mod metadata and ConfigCore for configuration.
+
+Multi-instance model:
+    sync_root  ──► each instance  (config, kubejs, ...)
+               ──► shared mods    (from Prism index, deployed once)
+               ──► shared www     (@www/... destinations)
+               ──► client ZIP     (www_dir/minecraft_client_<date>.zip)
 """
 
 import argparse
@@ -20,17 +26,13 @@ from LoggingCore import get_logger, setup_logging
 from .common import config as cfg
 from .common import file_utils, overrides, prism
 
+# ---------------------------------------------------------------------------
+# Mod loading
+# ---------------------------------------------------------------------------
 
-def load_mod_list(
-    prism_index: Path,
-    config_dir: Path,
-    target_side: str,
-    logger,
-) -> list:
-    """Load mod entries from a Prism index directory.
 
-    Returns a list of mod dicts filtered by target side.
-    """
+def load_mod_list(prism_index: Path, config_dir: Path, target_side: str, logger) -> list:
+    """Load mod entries from a Prism index directory, filtered by target side."""
     if not prism_index.is_dir():
         raise ValueError(f"Prism index directory not found: {prism_index}")
     all_mods = prism.load_prism_index(prism_index)
@@ -49,90 +51,83 @@ def load_mod_list(
     return side_mods
 
 
-def _copy_sync_with_mapping(
-    sync_root: Path,
-    staging: Path,
-    side: str,
-    exclude_patterns: list,
-    sync_mapping: dict,
-    logger,
-) -> None:
-    """Copy top-level items from sync_root (except downloads) to staging, using the mapping to determine destination paths per side.
+# ---------------------------------------------------------------------------
+# Mapping helpers
+# ---------------------------------------------------------------------------
 
-    Mapping rules:
-      - If a key is not present in sync_mapping, the item is IGNORED completely.
-      - If the value is a string, it is used as the destination for BOTH sides.
-      - If the value is a dict, it must have 'server' and/or 'client' keys.
-        - The value for the current side (server/client) is used.
-        - If the value is -1 (int) or the side key is missing, the item is IGNORED.
-        - Otherwise the value is taken as the destination path (string).
+
+def resolve_mapping_for_side(mapping_value, side: str) -> str | None:
+    """Return the destination string for a given side, or None if excluded.
+
+    mapping_value can be:
+      - str: used for both sides
+      - dict with 'server'/'client' keys: side-specific
+      - -1 or missing side key: excluded for that side
     """
-    # Iterate over top-level items in sync_root
+    if isinstance(mapping_value, str):
+        return mapping_value
+    if isinstance(mapping_value, dict):
+        v = mapping_value.get(side)
+        if v is None or v == -1:
+            return None
+        if not isinstance(v, str):
+            return None
+        return v
+    return None
+
+
+def is_shared_dest(dest: str) -> bool:
+    """Return True if the destination refers to a shared (non-instance) location."""
+    return dest.startswith("@")
+
+
+def resolve_shared_dest(dest: str, www_dir: Path, mods_dir: Path) -> Path:
+    """Resolve '@www/foo' to www_dir/foo, '@mods/foo' to mods_dir/foo."""
+    if dest == "@www":
+        return www_dir
+    if dest.startswith("@www/"):
+        return www_dir / dest[5:]
+    if dest == "@mods":
+        return mods_dir
+    if dest.startswith("@mods/"):
+        return mods_dir / dest[6:]
+    raise ValueError(f"Unknown shared destination prefix: {dest}")
+
+
+def iter_sync_items(sync_root: Path, exclude_patterns: list, logger):
+    """Yield (rel, item) for each top-level sync item, skipping downloads and excluded."""
     for item in sync_root.iterdir():
         rel = Path(item.name)
-        # Skip downloads folder
         if rel.parts[0] == "downloads":
             continue
-
-        # Apply exclusion patterns (global)
         if any(fnmatch.fnmatch(str(rel), pat) for pat in exclude_patterns):
             logger.debug(f"Skipping excluded top-level item: {rel}")
             continue
-
-        # Determine destination based on mapping
-        key = str(rel)
-        mapping_value = sync_mapping.get(key)
-        if mapping_value is None:
-            # Not mapped -> ignore completely (deterministic)
-            logger.debug(f"Item '{key}' not in sync_mapping, skipped.")
-            continue
-
-        # Resolve destination for the current side
-        if isinstance(mapping_value, str):
-            dest_rel = mapping_value
-        elif isinstance(mapping_value, dict):
-            # Get side-specific path
-            side_val = mapping_value.get(side)
-            if side_val is None or side_val == -1:
-                logger.debug(f"Item '{key}' ignored for side '{side}' (value = {side_val})")
-                continue
-            if not isinstance(side_val, str):
-                logger.warning(f"Invalid mapping for '{key}', side '{side}': expected string or -1, got {type(side_val)}. Skipping.")
-                continue
-            dest_rel = side_val
-        else:
-            logger.warning(f"Invalid mapping for '{key}': expected string or dict, got {type(mapping_value)}. Skipping.")
-            continue
-
-        dest_path = staging / dest_rel
-        if item.is_dir():
-            shutil.copytree(item, dest_path, dirs_exist_ok=True)
-            logger.info(f"Copied directory {rel} -> {dest_rel} (side: {side})")
-        else:
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, dest_path)
-            logger.info(f"Copied file {rel} -> {dest_rel} (side: {side})")
+        yield rel, item
 
 
-def prepare_staging(
-    side_mods: list,
-    modpack_dir: Path,
-    sync_root: Path,
-    side: str,  # "server" or "client"
-    logger,
-    exclude_patterns: list,
-    sync_mapping: dict,
-) -> Path:
-    """Create a staging directory with all mods and sync contents mapped per side.
+def _copy_item_to(item: Path, dest_path: Path, exclude_patterns: list, logger):
+    """Copy a sync item (file or dir) to dest_path, applying exclusions recursively."""
+    if item.is_dir():
+        file_utils.copy_with_exclusions(item, dest_path, exclude_patterns, logger, clean=False)
+    else:
+        if any(fnmatch.fnmatch(item.name, pat) for pat in exclude_patterns):
+            logger.debug(f"Skipping excluded file: {item.name}")
+            return
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, dest_path)
 
-    Returns the Path to the staging directory.
-    """
-    staging = Path(tempfile.mkdtemp(prefix="deploy_staging_"))
-    logger.info(f"Staging directory: {staging}")
 
-    # 1. Copy mods (filtered by side)
-    mods_dir = staging / "mods"
-    mods_dir.mkdir(parents=True, exist_ok=True)
+# ---------------------------------------------------------------------------
+# Staging builders
+# ---------------------------------------------------------------------------
+
+
+def prepare_mods_staging(side_mods: list, modpack_dir: Path, logger) -> Path:
+    """Create a staging dir containing only the mods for the given side."""
+    staging = Path(tempfile.mkdtemp(prefix="deploy_mods_"))
+    mods_subdir = staging / "mods"
+    mods_subdir.mkdir(parents=True, exist_ok=True)
 
     copied = 0
     for entry in side_mods:
@@ -141,9 +136,7 @@ def prepare_staging(
             logger.warning("Mod entry missing 'file' field, skipping")
             continue
         src = modpack_dir / file_rel
-        dst = mods_dir / file_rel
-
-        # Ensure file exists and hash matches (download if needed)
+        dst = mods_subdir / file_rel
         if not file_utils.ensure_mod_file(
             src,
             entry.get("download_url"),
@@ -153,25 +146,128 @@ def prepare_staging(
         ):
             logger.warning(f"Skipping mod {file_rel} due to missing/corrupt file")
             continue
-
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         copied += 1
-        logger.debug(f"Copied mod: {file_rel}")
+    logger.info(f"Copied {copied}/{len(side_mods)} mod files to mods staging")
+    return staging
 
-    logger.info(f"Copied {copied}/{len(side_mods)} mod files")
 
-    # 2. Copy sync contents (except downloads) using the mapping
-    _copy_sync_with_mapping(
-        sync_root,
-        staging,
-        side,
-        exclude_patterns,
-        sync_mapping,
-        logger,
-    )
+def prepare_instance_staging(
+    sync_root: Path,
+    side: str,
+    exclude_patterns: list,
+    sync_mapping: dict,
+    logger,
+) -> Path:
+    """Create a staging dir with all NON-shared sync items for one instance."""
+    staging = Path(tempfile.mkdtemp(prefix="deploy_instance_"))
+    logger.debug(f"Instance staging directory: {staging}")
+
+    for rel, item in iter_sync_items(sync_root, exclude_patterns, logger):
+        key = str(rel)
+        mapping_value = sync_mapping.get(key)
+        if mapping_value is None:
+            logger.debug(f"Item '{key}' not in sync_mapping, skipped.")
+            continue
+
+        dest_rel = resolve_mapping_for_side(mapping_value, side)
+        if dest_rel is None:
+            logger.debug(f"Item '{key}' ignored for side '{side}'")
+            continue
+
+        if is_shared_dest(dest_rel):
+            logger.debug(f"Item '{key}' -> '{dest_rel}' is shared, skipping in instance staging")
+            continue
+
+        dest_path = staging / dest_rel
+        _copy_item_to(item, dest_path, exclude_patterns, logger)
 
     return staging
+
+
+def prepare_client_staging(
+    client_mods: list,
+    modpack_dir: Path,
+    sync_root: Path,
+    exclude_patterns: list,
+    sync_mapping: dict,
+    logger,
+) -> Path:
+    """Build a client staging dir (client mods + client-mapped sync items)."""
+    staging = Path(tempfile.mkdtemp(prefix="deploy_client_"))
+    logger.info(f"Client staging directory: {staging}")
+
+    # 1. Client mods
+    mods_dir = staging / "mods"
+    mods_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for entry in client_mods:
+        file_rel = entry.get("file")
+        if not file_rel:
+            continue
+        src = modpack_dir / file_rel
+        dst = mods_dir / file_rel
+        if not file_utils.ensure_mod_file(
+            src,
+            entry.get("download_url"),
+            entry.get("hash_value"),
+            entry.get("hash_format", "sha512"),
+            logger,
+        ):
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        copied += 1
+    logger.info(f"Copied {copied}/{len(client_mods)} mod files to client staging")
+
+    # 2. Client-mapped sync items
+    for rel, item in iter_sync_items(sync_root, exclude_patterns, logger):
+        key = str(rel)
+        mapping_value = sync_mapping.get(key)
+        if mapping_value is None:
+            continue
+        dest_rel = resolve_mapping_for_side(mapping_value, "client")
+        if dest_rel is None:
+            continue
+        if is_shared_dest(dest_rel):
+            # @-prefixed items point outside the ZIP; skip them here.
+            logger.debug(f"Skipping shared item for client ZIP: {key} -> {dest_rel}")
+            continue
+        dest_path = staging / dest_rel
+        _copy_item_to(item, dest_path, exclude_patterns, logger)
+
+    return staging
+
+
+# ---------------------------------------------------------------------------
+# Deployment actions
+# ---------------------------------------------------------------------------
+
+
+def deploy_shared_items(
+    sync_root: Path,
+    side: str,
+    exclude_patterns: list,
+    sync_mapping: dict,
+    www_dir: Path,
+    mods_dir: Path,
+    logger,
+):
+    """Copy all @-prefixed sync items to their shared destinations."""
+    for rel, item in iter_sync_items(sync_root, exclude_patterns, logger):
+        key = str(rel)
+        mapping_value = sync_mapping.get(key)
+        if mapping_value is None:
+            continue
+
+        dest_rel = resolve_mapping_for_side(mapping_value, side)
+        if dest_rel is None or not is_shared_dest(dest_rel):
+            continue
+
+        dest_path = resolve_shared_dest(dest_rel, www_dir, mods_dir)
+        _copy_item_to(item, dest_path, exclude_patterns, logger)
+        logger.info(f"Copied shared item {rel} -> {dest_path}")
 
 
 def create_client_zip(
@@ -197,7 +293,7 @@ def deploy_to_server(
     exclude_patterns: list,
     logger,
 ):
-    """Copy staging contents to the live server directory (with cleanup)."""
+    """Copy staging contents to a live server instance (with cleanup)."""
     logger.info(f"Deploying to live_server: {live_server}")
     file_utils.copy_with_exclusions(staging_dir, live_server, exclude_patterns, logger, clean=True)
     logger.info("Live server updated successfully (cleaned).")
@@ -217,15 +313,41 @@ def deploy_to_client(
     logger.info("Client deployment completed.")
 
 
+def load_instances(config, logger) -> list[tuple[str, Path]]:
+    """Load instance name -> path pairs from config.
+
+    Supports both shapes:
+        [instances.survival]
+        path = "./survival"
+
+        instances = { survival = "./survival", creative = "./creative" }
+    """
+    instances = config.get("instances")
+    if not instances:
+        return []
+    result: list[tuple[str, Path]] = []
+    for name, value in instances.items():
+        if isinstance(value, dict):
+            path_str = value.get("path")
+        else:
+            path_str = value
+        if not path_str:
+            logger.warning(f"Instance '{name}' has no path, skipping")
+            continue
+        result.append((name, Path(path_str)))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+
 def main():
-    """Main entrypoint for deploy_pack.py. Parses arguments, loads config, and executes deployment."""
-    parser = argparse.ArgumentParser(description="Deploy client pack")
+    """Main entrypoint for deploy_pack.py."""
+    parser = argparse.ArgumentParser(description="Deploy modpack")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument(
-        "--server",
-        action="store_true",
-        help="Server mode: create ZIP and update live_server (default)",
-    )
+    group.add_argument("--server", action="store_true", help="Server mode (default)")
     group.add_argument("--client", action="store_true", help="Client mode: deploy to MultiMC instance")
     parser.add_argument(
         "--config-dir",
@@ -233,25 +355,12 @@ def main():
         default=None,
         help="Path to config directory (default: config.d). If a file is given, its parent is used.",
     )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging and print full traceback",
-    )
-    parser.add_argument(
-        "--no-deploy",
-        action="store_true",
-        help="When used with --server, skip copying to live_server (only create ZIP).",
-    )
-    parser.add_argument(
-        "--no-zip",
-        action="store_true",
-        help="When used with --server, skip creating the client ZIP (only update live_server).",
-    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging and full traceback")
+    parser.add_argument("--no-deploy", action="store_true", help="With --server: skip writing to instances/mods/www (only create ZIP).")
+    parser.add_argument("--no-zip", action="store_true", help="With --server: skip creating the client ZIP (only deploy server side).")
     args, remaining = parser.parse_known_args()
 
     mode = "client" if args.client else "server"
-    target_side = "client" if mode == "client" else "server"
 
     # Config directory resolution
     if args.config_dir:
@@ -261,7 +370,6 @@ def main():
     else:
         config_dir = Path(os.environ.get("DEPLOYPACK_CONFIG_DIR", "config.d"))
 
-    # Load configuration
     config = cfg.load_config(
         config_dir=config_dir,
         base_name="deploy_pack",
@@ -281,18 +389,16 @@ def main():
         return Path(val) if val is not None else Path(default)
 
     sync_root = get_path("sync_root", "./sync")
-    live_server = get_path("live_server", "./server")
+    mods_dir = get_path("mods_dir", "./mods")
     www_dir = get_path("www_dir", "./www")
-    exclude_file = get_path("exclude_file", "./sync/.rsync_exclude")
+    exclude_file = get_path("exclude_file", "./.rsync_exclude")
     output_filename = config.get("output_filename", "minecraft_client_{date}.zip")
     modpack_dir = get_path("modpack_dir", "./sync/downloads")
     sync_mapping = config.get("sync_mapping", {})
-
-    # Prism index is always located inside modpack_dir
-    prism_index_dir = modpack_dir / ".index"
-
     multimc_base = config.get("multimc_base", str(Path.home() / ".local/share/multimc/instances"))
     instance_name = config.get("instance_name")
+
+    prism_index_dir = modpack_dir / ".index"
 
     # Logging setup
     log_config = config.get("logging")
@@ -301,12 +407,7 @@ def main():
             "color": True,
             "handlers": [
                 {"type": "console", "color": True},
-                {
-                    "type": "file",
-                    "path": "logs/deploy_pack.log",
-                    "max_bytes": 10_485_760,
-                    "backup_count": 5,
-                },
+                {"type": "file", "path": "logs/deploy_pack.log", "max_bytes": 10_485_760, "backup_count": 5},
             ],
         }
     log_config["level"] = "DEBUG" if args.debug else "INFO"
@@ -316,96 +417,122 @@ def main():
     setup_logging(log_config)
     logger = get_logger(__name__)
 
+    instances = load_instances(config, logger)
+
     logger.info(f"Mode: {mode}")
     logger.info(f"  config_dir   = {config_dir}")
     logger.info(f"  sync_root    = {sync_root}")
-    logger.info(f"  live_server  = {live_server}")
+    logger.info(f"  mods_dir     = {mods_dir}")
     logger.info(f"  www_dir      = {www_dir}")
     logger.info(f"  modpack_dir  = {modpack_dir}")
     logger.info(f"  prism_index  = {prism_index_dir}")
     logger.info(f"  exclude_file = {exclude_file}")
+    logger.info(f"  instances    = {[(n, str(p)) for n, p in instances]}")
     if mode == "client":
-        logger.info(f"  multimc_base= {multimc_base}")
+        logger.info(f"  multimc_base = {multimc_base}")
         logger.info(f"  instance_name= {instance_name}")
 
-    # Early validation for client mode
+    # Validation
     if mode == "client" and not instance_name:
         logger.error("instance_name must be set for client mode")
+        sys.exit(1)
+
+    if mode == "server" and not instances and not args.no_deploy:
+        logger.error("No instances defined under [instances.*] - nothing to deploy to.")
         sys.exit(1)
 
     if mode == "server" and args.no_zip and args.no_deploy:
         logger.warning("Both --no-zip and --no-deploy specified - nothing will be done.")
 
-    # Load exclude patterns early
     exclude_patterns = file_utils.get_exclude_patterns(exclude_file, logger)
 
-    # Load mod list (Prism index required)
     try:
-        side_mods = load_mod_list(
-            prism_index_dir,
-            config_dir,
-            target_side,
-            logger,
-        )
-    except (ValueError, OSError, FileNotFoundError) as e:
-        logger.error(f"Failed to load mods: {e}")
-        sys.exit(1)
-
-    # Build staging
-    try:
-        staging = prepare_staging(
-            side_mods,
-            modpack_dir,
-            sync_root,
-            mode,  # "server" or "client"
-            logger,
-            exclude_patterns,
-            sync_mapping,
-        )
-
         if mode == "server":
-            if not args.no_zip:
-                create_client_zip(
-                    staging,
-                    www_dir,
-                    output_filename,
+            # ---------- Server deployment ----------
+            if not args.no_deploy:
+                # 1. Deploy shared server mods once into mods_dir
+                server_mods = load_mod_list(prism_index_dir, config_dir, "server", logger)
+                staging_mods = prepare_mods_staging(server_mods, modpack_dir, logger)
+                try:
+                    mods_src = staging_mods / "mods"
+                    if mods_src.is_dir():
+                        file_utils.copy_with_exclusions(mods_src, mods_dir, exclude_patterns, logger, clean=True)
+                finally:
+                    shutil.rmtree(staging_mods, ignore_errors=True)
+
+                # 2. Deploy instance-mapped items (config, kubejs, ...) to EVERY instance
+                for inst_name, inst_path in instances:
+                    logger.info(f"--- Deploying to instance '{inst_name}' ({inst_path}) ---")
+                    staging = prepare_instance_staging(sync_root, "server", exclude_patterns, sync_mapping, logger)
+                    try:
+                        deploy_to_server(staging, inst_path, exclude_patterns, logger)
+                    finally:
+                        shutil.rmtree(staging, ignore_errors=True)
+
+                # 3. Deploy @-prefixed shared items (resourcepacks -> www, ...)
+                deploy_shared_items(
+                    sync_root,
+                    "server",
                     exclude_patterns,
+                    sync_mapping,
+                    www_dir,
+                    mods_dir,
                     logger,
                 )
+            else:
+                logger.info("Skipping deployment (--no-deploy).")
+
+            # ---------- Client ZIP ----------
+            if not args.no_zip:
+                client_mods = load_mod_list(prism_index_dir, config_dir, "client", logger)
+                staging_client = prepare_client_staging(
+                    client_mods,
+                    modpack_dir,
+                    sync_root,
+                    exclude_patterns,
+                    sync_mapping,
+                    logger,
+                )
+                try:
+                    create_client_zip(
+                        staging_client,
+                        www_dir,
+                        output_filename,
+                        exclude_patterns,
+                        logger,
+                    )
+                finally:
+                    shutil.rmtree(staging_client, ignore_errors=True)
             else:
                 logger.info("Skipping client ZIP creation (--no-zip).")
 
-            if not args.no_deploy:
-                deploy_to_server(
+        else:
+            # ---------- Client mode ----------
+            client_mods = load_mod_list(prism_index_dir, config_dir, "client", logger)
+            staging = prepare_client_staging(
+                client_mods,
+                modpack_dir,
+                sync_root,
+                exclude_patterns,
+                sync_mapping,
+                logger,
+            )
+            try:
+                deploy_to_client(
                     staging,
-                    live_server,
+                    Path(multimc_base),
+                    instance_name,
                     exclude_patterns,
                     logger,
                 )
-            else:
-                logger.info("Skipping live_server deployment (--no-deploy).")
-        else:  # client mode
-            # instance_name already validated, but keep for safety
-            if not instance_name:
-                logger.error("instance_name must be set for client mode")
-                sys.exit(1)
-            deploy_to_client(
-                staging,
-                Path(multimc_base),
-                instance_name,
-                exclude_patterns,
-                logger,
-            )
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
 
     except Exception:
         if args.debug:
             traceback.print_exc()
         logger.exception("Deployment failed")
         sys.exit(1)
-    finally:
-        if "staging" in locals() and staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
-            logger.debug(f"Cleaned up staging: {staging}")
 
 
 if __name__ == "__main__":

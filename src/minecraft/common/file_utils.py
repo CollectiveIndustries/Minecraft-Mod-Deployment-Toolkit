@@ -51,7 +51,13 @@ def _is_protected(rel_path: Path) -> bool:
 
 
 def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
-    """Reads a file containing exclusion patterns, ignoring blank lines and comments, and returns a list of patterns."""
+    """Reads a file containing exclusion patterns, ignoring blank lines and comments.
+
+    A single trailing slash is stripped so that ``world/`` behaves identically
+    to ``world``. This matters because ``fnmatch`` treats ``/`` as a literal
+    and paths produced during matching never end with a slash, so a pattern
+    like ``logs/`` would otherwise match nothing.
+    """
     patterns = []
     if not exclude_file_path.is_file():
         logger.warning(f"Exclude file not found: {exclude_file_path}")
@@ -59,8 +65,12 @@ def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
     with exclude_file_path.open("r") as f:
         for line in f:
             line = line.strip()
-            if line and (not line.startswith("#")):
-                patterns.append(line)
+            if not line or line.startswith("#"):
+                continue
+            # Normalize a single trailing slash: "world/" -> "world".
+            if line.endswith("/") and len(line) > 1:
+                line = line.rstrip("/")
+            patterns.append(line)
     return patterns
 
 

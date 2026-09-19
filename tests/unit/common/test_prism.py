@@ -71,15 +71,21 @@ def test_parse_prism_toml_with_curseforge_block(tmp_path):
 
 
 def test_parse_prism_toml_with_modrinth_block(tmp_path):
-    """Should accept a .pw.toml with a Modrinth block and download info."""
+    """Should accept a .pw.toml with a Modrinth block and extract mod-id/version.
+
+    This is what makes side_overrides.toml entries like '"ejJQJnIT" = "server"'
+    actually match a Modrinth-only .pw.toml.
+    """
     toml_content = '\nfilename = "mr_mod.jar"\n[update.modrinth]\nmod-id = "xyz"\nversion = "abc"\n[download]\nurl = "https://cdn.modrinth.com/mr_mod.jar"\nhash = "def456"\n'
     toml_file = tmp_path / "test.pw.toml"
     toml_file.write_text(toml_content)
     result = prism.parse_prism_toml(toml_file)
     assert result is not None
     assert result["file"] == "mr_mod.jar"
-    assert result["project_id"] is None
-    assert result["file_id"] is None
+    # Modrinth ID is now preserved (previously this was None).
+    assert result["id"] == "xyz"
+    assert result["project_id"] == "xyz"
+    assert result["file_id"] == "abc"
     assert result["source"] == "modrinth"
     assert result["download_url"] == "https://cdn.modrinth.com/mr_mod.jar"
     assert result["hash_value"] == "def456"

@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-LOG = Path("server/logs/kubejs/server.log")
+LOG = Path("survival/logs/kubejs/server.log")
 
 
 def usage():
@@ -158,29 +158,38 @@ def main():
     if command in ("help", "-h", "--help"):
         usage()
         return
-    registry = parse_log()
+
+    # Validate arguments BEFORE touching the log file. This ensures that
+    # usage errors exit with code 2 regardless of whether the log exists.
     if command in ("item", "block", "machine", "entity"):
         if len(args) < 2:
             print(f"Usage: lookup {command} <search>", file=sys.stderr)
             sys.exit(2)
+    elif command == "tags":
+        if len(args) != 2:
+            print("Usage: lookup tags <item-id>", file=sys.stderr)
+            sys.exit(2)
+    elif command == "mod":
+        if len(args) != 2:
+            print("Usage: lookup mod <mod-id>", file=sys.stderr)
+            sys.exit(2)
+    else:
+        print(f"Unknown command: {command}", file=sys.stderr)
+        usage()
+        sys.exit(2)
+
+    registry = parse_log()
+
+    if command in ("item", "block", "machine", "entity"):
         query = " ".join(args[1:])
         search(registry, command, query)
         return
     if command == "tags":
-        if len(args) != 2:
-            print("Usage: lookup tags <item-id>", file=sys.stderr)
-            sys.exit(2)
         show_tags(registry, args[1])
         return
     if command == "mod":
-        if len(args) != 2:
-            print("Usage: lookup mod <mod-id>", file=sys.stderr)
-            sys.exit(2)
         show_mod(registry, args[1])
         return
-    print(f"Unknown command: {command}", file=sys.stderr)
-    usage()
-    sys.exit(2)
 
 
 if __name__ == "__main__":
