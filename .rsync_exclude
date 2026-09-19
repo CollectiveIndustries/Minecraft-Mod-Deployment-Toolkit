@@ -59,7 +59,7 @@ bin
 # === Nested content inside source items ===============================
 # These match paths relative to sync/<item>/, so if quests live in
 # sync/config/ftbquests/, this correctly excludes them:
-ftbquests/*
+#ftbquests/*
 jei/*
 worldedit/sessions/*
 
