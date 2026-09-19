@@ -211,6 +211,12 @@ services:
         bind:
           create_host_path: false
 
+      - type: bind
+        source: ./logs/survival/crash-reports
+        target: /data/crash-reports
+        bind:
+          create_host_path: false
+
 
   # ============================================================
   # CREATIVE
@@ -294,6 +300,12 @@ services:
       - type: bind
         source: ./logs/creative
         target: /data/logs
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ./logs/creative/crash-reports
+        target: /data/crash-reports
         bind:
           create_host_path: false
 
