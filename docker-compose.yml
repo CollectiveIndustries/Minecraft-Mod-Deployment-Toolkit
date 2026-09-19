@@ -1,73 +1,513 @@
-services:
-  minecraft:
-    image: itzg/minecraft-server
-    user: "1001:1001"
-    container_name: mc
+# ==============================================================
+# REUSABLE MINECRAFT CONFIGURATION
+#
+# Docker Compose ignores top-level x-* extension fields.
+# YAML anchors let Survival and Creative consume the same
+# configuration without duplicating it.
+# ==============================================================
 
-    stop_grace_period: 2m
-    stop_signal: SIGTERM
+x-minecraft-environment: &minecraft-environment
+  EULA: "TRUE"
+  TYPE: "FORGE"
+  VERSION: "1.20.1"
+  FORGE_VERSION: "47.4.10"
+
+  UID: "1001"
+  GID: "1001"
+
+  JVM_OPTS: >-
+    -XX:+UseG1GC
+    -Dfml.maxPacketSize=8388608
+
+  OVERRIDE_SERVER_PROPERTIES: "false"
+
+
+x-minecraft-healthcheck: &minecraft-healthcheck
+  test: ["CMD-SHELL", "mc-health"]
+  start_period: 5m
+  interval: 10s
+  timeout: 10s
+  retries: 6
+
+
+x-minecraft-service: &minecraft-service
+  image: itzg/minecraft-server:java25
+
+  restart: unless-stopped
+
+  stop_grace_period: 2m
+  stop_signal: SIGTERM
+
+  tty: true
+  stdin_open: true
+
+  environment:
+    <<: *minecraft-environment
+
+  healthcheck: *minecraft-healthcheck
+
+  networks:
+    - minedock
+
+
+x-minecraft-mods: &minecraft-mods
+  type: bind
+  source: ./mods
+  target: /mods
+  read_only: true
+  bind:
+    create_host_path: false
+
+
+services:
+
+  # ============================================================
+  # VELOCITY PROXY
+  #
+  # Public Minecraft endpoint:
+  #
+  #   HOST:25565 -> Velocity
+  #
+  # Survival and Creative are NOT exposed on the host.
+  # Velocity reaches them over the minedock Docker network.
+  #
+  # Startup waits until BOTH Minecraft servers are healthy.
+  # ============================================================
+  velocity:
+    image: itzg/mc-proxy:java25
+    container_name: velocity-proxy
+
+    restart: unless-stopped
+
+    environment:
+      TYPE: "VELOCITY"
+      MEMORY: "512M"
+
+      PUID: "1001"
+      PGID: "1001"
 
     ports:
       - "25565:25565"
-    environment:
-      EULA: "TRUE"
-      TYPE: "FORGE"
-      VERSION: "1.20.1"
-      FORGE_VERSION: "47.4.10"
-      MEMORY: "6G"
-      JVM_OPTS: "-XX:+UseG1GC -Dfml.maxPacketSize=8388608"
+
     volumes:
-      - ./server:/data
-      - ./world:/data/world
-      - ./datapacks:/data/world/datapacks
-      - ./serverconfigs:/data/world/serverconfig
-      - ./bin:/data/bin
-    restart: unless-stopped
+
+      # --------------------------------------------------------
+      # Velocity configuration and persistent state.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./velocity
+        target: /server
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Velocity application logs.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./logs/velocity
+        target: /server/logs
+        bind:
+          create_host_path: false
+
     networks:
       - minedock
 
+    depends_on:
+      survival:
+        condition: service_healthy
+      creative:
+        condition: service_healthy
+
+
+  # ============================================================
+  # SURVIVAL
+  #
+  # Public:
+  #   NONE
+  #
+  # Internal:
+  #   survival:25565
+  #
+  # Host-managed:
+  #   ./mods
+  #   ./survival/server.properties
+  #   ./survival/world
+  #   ./survival/config
+  #   ./survival/kubejs
+  #   ./logs/survival
+  #
+  # Docker-managed:
+  #   Everything else under /data.
+  # ============================================================
+  survival:
+    <<: *minecraft-service
+
+    container_name: mc-survival
+
+    environment:
+      <<: *minecraft-environment
+      MEMORY: "6G"
+
+    volumes:
+
+      # --------------------------------------------------------
+      # Complete Survival runtime.
+      #
+      # Independent Docker-managed volume.
+      # --------------------------------------------------------
+      - type: volume
+        source: survival-data
+        target: /data
+
+      # --------------------------------------------------------
+      # THE ONLY HOST DIRECTORY SHARED BETWEEN SURVIVAL
+      # AND CREATIVE.
+      # --------------------------------------------------------
+      - *minecraft-mods
+
+      # --------------------------------------------------------
+      # Survival-specific configuration.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./survival/config
+        target: /data/config
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Survival-specific KubeJS.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./survival/kubejs
+        target: /data/kubejs
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Survival world.
+      #
+      # Minecraft creates everything underneath this directory.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./survival/world
+        target: /data/world
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Minecraft creates and updates this file.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./survival/server.properties
+        target: /data/server.properties
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Minecraft application logs.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./logs/survival
+        target: /data/logs
+        bind:
+          create_host_path: false
+
+
+  # ============================================================
+  # CREATIVE
+  #
+  # Development / testing server.
+  #
+  # Public:
+  #   NONE
+  #
+  # Internal:
+  #   creative:25565
+  #
+  # Completely independent /data runtime.
+  # ============================================================
+  creative:
+    <<: *minecraft-service
+
+    container_name: mc-creative
+
+    environment:
+      <<: *minecraft-environment
+      MEMORY: "4G"
+
+    volumes:
+
+      # --------------------------------------------------------
+      # Complete Creative runtime.
+      #
+      # Independent Docker-managed volume.
+      # --------------------------------------------------------
+      - type: volume
+        source: creative-data
+        target: /data
+
+      # --------------------------------------------------------
+      # SAME physical modpack source as Survival.
+      # --------------------------------------------------------
+      - *minecraft-mods
+
+      # --------------------------------------------------------
+      # Creative-specific configuration.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./creative/config
+        target: /data/config
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Creative-specific KubeJS.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./creative/kubejs
+        target: /data/kubejs
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Creative world.
+      #
+      # Minecraft creates everything underneath this directory.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./creative/world
+        target: /data/world
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Minecraft creates and updates this file.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./creative/server.properties
+        target: /data/server.properties
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Minecraft application logs.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./logs/creative
+        target: /data/logs
+        bind:
+          create_host_path: false
+
+
+  # ============================================================
+  # BLUEMAP
+  #
+  # BlueMap depends on Survival because it reads Survival's
+  # world. It does NOT depend on Creative.
+  #
+  # The entire Survival world is mounted once.
+  # Minecraft creates DIM-1 and DIM1 itself.
+  # ============================================================
   bluemap:
-    image: ghcr.io/bluemap-minecraft/bluemap:latest
-    user: "1001:1001"
+    image: ghcr.io/bluemap-minecraft/bluemap:v5.20
     container_name: bluemap
+
+    user: "1001:1001"
+
     restart: unless-stopped
+
     command: -r -u -w
+
     expose:
       - "8100"
+
     volumes:
-      - ./bluemap/config:/app/config:rw
-      - ./world:/app/world:ro
-      - ./world/DIM-1:/app/world_nether:ro
-      - ./world/DIM1:/app/world_the_end:ro
-      - ./bluemap/data:/app/data
-      - ./bluemap/web:/app/web
+
+      # --------------------------------------------------------
+      # BlueMap configuration.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./bluemap/config
+        target: /app/config
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # COMPLETE SURVIVAL WORLD.
+      #
+      # Includes:
+      #
+      #   /app/world/
+      #   /app/world/DIM-1/
+      #   /app/world/DIM1/
+      # --------------------------------------------------------
+      - type: bind
+        source: ./survival/world
+        target: /app/world
+        read_only: true
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # BlueMap persistent runtime data.
+      # --------------------------------------------------------
+      - type: volume
+        source: bluemap-data
+        target: /app/data
+
+      # --------------------------------------------------------
+      # BlueMap generated webroot.
+      # --------------------------------------------------------
+      - type: volume
+        source: bluemap-web
+        target: /app/web
+
+      # --------------------------------------------------------
+      # BlueMap application logs.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./logs/bluemap
+        target: /app/logs
+        bind:
+          create_host_path: false
+
     networks:
       - minedock
 
+    depends_on:
+      survival:
+        condition: service_healthy
+
+
+  # ============================================================
+  # NGINX WEB ENGINE
+  #
+  # Public HTTP:
+  #
+  #   HOST:80 -> nginx:80
+  #
+  # Responsibilities:
+  #
+  #   - Serve PDM deployment packs from ./www
+  #   - Reverse proxy /bluemap/ to BlueMap
+  #
+  # Nginx does NOT require BlueMap to be healthy.
+  #
+  # BlueMap is only a startup-order dependency so Docker DNS has
+  # the "bluemap" service name available before Nginx parses the
+  # upstream configuration.
+  # ============================================================
   nginx:
     image: nginx:stable
-    container_name: mc_proxy
+    container_name: mc-web
+
     restart: unless-stopped
+
     ports:
       - "80:80"
+
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./www:/usr/share/nginx/www:ro
-    depends_on:
-      - bluemap
+
+      # --------------------------------------------------------
+      # Nginx configuration.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./config.d/nginx.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # PDM deployment-pack/download webroot.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./www
+        target: /usr/share/nginx/www
+        read_only: true
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Nginx application logs.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./logs/nginx
+        target: /var/log/nginx
+        bind:
+          create_host_path: false
+
     networks:
       - minedock
 
+    # ----------------------------------------------------------
+    # STARTUP ORDER ONLY.
+    #
+    # This does NOT require BlueMap to be healthy and does not
+    # make Nginx restart if BlueMap dies.
+    # ----------------------------------------------------------
+    depends_on:
+      bluemap:
+        condition: service_started
+
+
+  # ============================================================
+  # NFS
+  #
+  # OPTIONAL.
+  #
+  # Normal:
+  #
+  #   docker compose up -d
+  #
+  # NFS is NOT started.
+  #
+  # Explicit:
+  #
+  #   docker compose --profile nfs up -d nfs
+  #
+  # Rsync is the normal synchronization mechanism.
+  # ============================================================
   nfs:
+    profiles:
+      - nfs
+
     image: erichough/nfs-server
     container_name: nfs
+
     privileged: true
+
     restart: unless-stopped
 
     volumes:
-      - ./exports.conf:/etc/exports:ro
-      - ./www:/exports/www
-      - ./sync:/exports/sync
+
+      # --------------------------------------------------------
+      # NFS export configuration.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./config.d/exports.conf
+        target: /etc/exports
+        read_only: true
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Web/download files.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./www
+        target: /exports/www
+        bind:
+          create_host_path: false
+
+      # --------------------------------------------------------
+      # Synchronization area.
+      # --------------------------------------------------------
+      - type: bind
+        source: ./sync
+        target: /exports/sync
+        bind:
+          create_host_path: false
 
     ports:
       - "111:111/tcp"
@@ -82,6 +522,27 @@ services:
     networks:
       - minedock
 
+
+# ==============================================================
+# DOCKER-MANAGED VOLUMES
+# ==============================================================
+
+volumes:
+
+  survival-data:
+
+  creative-data:
+
+  bluemap-data:
+
+  bluemap-web:
+
+
+# ==============================================================
+# INTERNAL DOCKER NETWORK
+# ==============================================================
+
 networks:
+
   minedock:
     driver: bridge

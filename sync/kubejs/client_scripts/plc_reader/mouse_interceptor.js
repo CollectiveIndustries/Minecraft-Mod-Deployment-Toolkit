@@ -13,26 +13,42 @@
  * PURPOSE
  * -------
  *
- * Prevent Create's schematic placement handler from consuming
- * a right-click on the PLC Schematic Reader.
+ * Intercept ONLY:
  *
- * We intercept the mouse event at HIGHEST priority and forward
- * it through Minecraft's normal useItemOn() pathway.
+ *     RMB
+ *     +
+ *     mouse PRESS
+ *     +
+ *     no GUI
+ *     +
+ *     holding create:schematic
+ *     +
+ *     target is PLC Schematic Reader
+ *     +
+ *     target face is TOP
  *
- * The server then receives:
+ * Then forward the interaction through:
  *
- *     PlayerInteractEvent.RightClickBlock
+ *     Minecraft.gameMode.useItemOn()
  *
- * and performs the actual inventory operation.
+ * so the server-side PLC interaction handler receives the
+ * normal PlayerInteractEvent.RightClickBlock event.
  *
- * IMPORTANT
- * ---------
+ * EVERYTHING ELSE IS LEFT COMPLETELY ALONE.
  *
- * ForgeEvents is NOT available in this client_scripts
- * environment.
+ * In particular:
  *
- * We therefore register directly against MinecraftForge.EVENT_BUS
- * using an explicit java.util.function.Consumer.
+ *     - hoes
+ *     - blocks
+ *     - tools
+ *     - Create machines
+ *     - CC modems
+ *     - empty hand
+ *     - containers
+ *     - normal Create interactions
+ *
+ * are NOT intercepted here.
+ *
  * ============================================================
  */
 
@@ -96,11 +112,13 @@ var SCHEMATIC_ID =
 
 
 /* ============================================================
- * ITEM TEST
+ * SAFE HELPERS
  * ============================================================
  */
 
-function plcIsEmpty(stack) {
+function plcIsEmpty(
+    stack
+) {
 
     try {
 
@@ -121,45 +139,118 @@ function plcIsEmpty(stack) {
 }
 
 
-function plcItemId(stack) {
+/*
+ * Resolve the item registry ID.
+ *
+ * KubeJS/Rhino commonly exposes:
+ *
+ *     stack.id
+ *
+ * We retain the Java fallback for compatibility.
+ */
+
+function plcItemId(
+    stack
+) {
+
+    if (
+        plcIsEmpty(
+            stack
+        )
+    ) {
+
+        return null
+
+    }
+
 
     try {
 
+        var id =
+            stack.id
+
         if (
-            plcIsEmpty(
-                stack
-            )
+            id !== null
+            &&
+            id !== undefined
         ) {
 
-            return null
+            return String(
+                id
+            )
 
         }
-
-
-        return String(
-            stack.id
-        )
 
     } catch (error) {
 
-        try {
+    }
 
-            return String(
-                stack.getItem()
-            )
 
-        } catch (ignored) {
+    /*
+     * Java fallback.
+     */
 
-            return null
+    try {
+
+        var item =
+            stack.getItem()
+
+        if (
+            item !== null
+            &&
+            item !== undefined
+        ) {
+
+            /*
+             * KubeJS normally gives us the registry ID through
+             * stack.id, so this fallback is deliberately only
+             * used when that path is unavailable.
+             */
+
+            try {
+
+                if (
+                    item.id !== null
+                    &&
+                    item.id !== undefined
+                ) {
+
+                    return String(
+                        item.id
+                    )
+
+                }
+
+            } catch (ignored) {
+
+            }
 
         }
 
+    } catch (error) {
+
     }
+
+
+    return null
 
 }
 
 
-function plcIsSchematic(stack) {
+/*
+ * Exact Create schematic test.
+ *
+ * IMPORTANT:
+ *
+ * This is the FIRST item-specific gate.
+ *
+ * A modem, hoe, block, wrench, empty hand, etc. therefore
+ * never reaches the PLC target logic.
+ */
+
+function plcIsSchematic(
+    stack
+) {
 
     return (
         plcItemId(
@@ -173,7 +264,7 @@ function plcIsSchematic(stack) {
 
 
 /* ============================================================
- * BLOCK TEST
+ * PLC BLOCK IDENTIFICATION
  * ============================================================
  */
 
@@ -227,28 +318,34 @@ function plcIsReaderBlock(
             }
 
         } catch (ignored) {
+
         }
 
 
         /*
-         * Fallback.
+         * Fallback registry string.
          */
 
         try {
 
-            return (
+            if (
                 String(
                     state.getBlock()
                 )
                 ===
                 'Block{' + PLC_ID + '}'
-            )
+            ) {
+
+                return true
+
+            }
 
         } catch (ignored) {
 
-            return false
-
         }
+
+
+        return false
 
     } catch (error) {
 
@@ -260,7 +357,7 @@ function plcIsReaderBlock(
 
 
 /* ============================================================
- * MOUSE HANDLER
+ * MAIN HANDLER
  * ============================================================
  */
 
@@ -268,16 +365,25 @@ function plcHandleMouse(
     event
 ) {
 
+    /*
+     * Everything below this point is protected by increasingly
+     * specific filters.
+     *
+     * If ANY filter fails, we simply return.
+     *
+     * We DO NOT cancel the mouse event.
+     */
+
+
     try {
 
-        /*
-         * ------------------------------------------------------
-         * RIGHT MOUSE BUTTON
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * BUTTON
+         * ----------------------------------------------------
          *
          * GLFW:
          *
-         *     1 = right button
+         *     1 = right mouse button
          */
 
         if (
@@ -293,14 +399,15 @@ function plcHandleMouse(
         }
 
 
-        /*
-         * ------------------------------------------------------
-         * PRESS ONLY
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * ACTION
+         * ----------------------------------------------------
          *
          * GLFW:
          *
          *     1 = PRESS
+         *
+         * Release events are ignored.
          */
 
         if (
@@ -316,10 +423,9 @@ function plcHandleMouse(
         }
 
 
-        /*
-         * ------------------------------------------------------
-         * MINECRAFT CLIENT
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * CLIENT
+         * ----------------------------------------------------
          */
 
         var mc =
@@ -343,10 +449,11 @@ function plcHandleMouse(
         }
 
 
-        /*
-         * ------------------------------------------------------
-         * NO GUI
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * GUI
+         * ----------------------------------------------------
+         *
+         * Never intercept clicks while a GUI is open.
          */
 
         if (
@@ -360,10 +467,13 @@ function plcHandleMouse(
         }
 
 
-        /*
-         * ------------------------------------------------------
-         * ONLY WHILE HOLDING A SCHEMATIC
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * HELD ITEM
+         * ----------------------------------------------------
+         *
+         * THIS IS THE CRITICAL FILTER.
+         *
+         * Nothing except create:schematic is allowed to pass.
          */
 
         var held =
@@ -376,23 +486,14 @@ function plcHandleMouse(
             )
         ) {
 
-            /*
-             * Empty-hand extraction is intentionally allowed to
-             * use the normal block interaction pathway.
-             *
-             * Create does not need to steal an empty-hand click,
-             * so we only intercept schematic-in-hand clicks.
-             */
-
             return
 
         }
 
 
-        /*
-         * ------------------------------------------------------
-         * MUST BE A BLOCK HIT
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * HIT TYPE
+         * ----------------------------------------------------
          */
 
         if (
@@ -412,6 +513,11 @@ function plcHandleMouse(
             mc.hitResult
 
 
+        /* ----------------------------------------------------
+         * TARGET POSITION
+         * ----------------------------------------------------
+         */
+
         var pos =
             hit.getBlockPos()
 
@@ -423,10 +529,9 @@ function plcHandleMouse(
         }
 
 
-        /*
-         * ------------------------------------------------------
-         * MUST BE OUR PLC READER
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * TARGET BLOCK
+         * ----------------------------------------------------
          */
 
         if (
@@ -441,10 +546,11 @@ function plcHandleMouse(
         }
 
 
-        /*
-         * ------------------------------------------------------
-         * TOP FACE ONLY
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * TARGET FACE
+         * ----------------------------------------------------
+         *
+         * PLC accepts schematics from TOP only.
          */
 
         if (
@@ -458,48 +564,104 @@ function plcHandleMouse(
         }
 
 
+        /* ====================================================
+         * EVERYTHING ABOVE THIS POINT WAS ONLY FILTERING.
+         *
+         * We now KNOW this is:
+         *
+         *     RMB PRESS
+         *     + schematic
+         *     + PLC reader
+         *     + TOP
+         *
+         * This is the ONLY situation where we take control.
+         * ====================================================
+         */
+
         console.info(
             '[PLC] >>> PLC SCHEMATIC TARGET CONFIRMED <<<'
         )
 
 
-        /*
-         * ------------------------------------------------------
-         * FORWARD TO SERVER
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * FORWARD NORMAL INTERACTION
+         * ----------------------------------------------------
          *
-         * This triggers the normal Forge
-         * PlayerInteractEvent.RightClickBlock event.
+         * This sends the interaction to the server where
+         * interaction.js performs:
+         *
+         *     insert
+         *     swap
+         *
+         * and then returns SUCCESS.
          */
 
-        console.info(
-            '[PLC] Calling gameMode.useItemOn().'
-        )
+        try {
+
+            mc.gameMode.useItemOn(
+                mc.player,
+                InteractionHandClass.MAIN_HAND,
+                hit
+            )
+
+        } catch (error) {
+
+            /*
+             * If forwarding fails, log it but DO NOT attempt
+             * additional interaction behavior.
+             */
+
+            console.error(
+                '[PLC] gameMode.useItemOn() failed: '
+                +
+                String(error)
+            )
+
+            return
+
+        }
 
 
-        mc.gameMode.useItemOn(
-            mc.player,
-            InteractionHandClass.MAIN_HAND,
-            hit
-        )
-
-
-        /*
-         * ------------------------------------------------------
-         * CANCEL CREATE'S ORIGINAL MOUSE EVENT
-         * ------------------------------------------------------
+        /* ----------------------------------------------------
+         * CANCEL ORIGINAL MOUSE EVENT
+         * ----------------------------------------------------
+         *
+         * THIS is intentionally the final operation.
+         *
+         * Nothing else gets canceled.
          */
 
-        event.setCanceled(
-            true
-        )
+        try {
+
+            event.setCanceled(
+                true
+            )
+
+        } catch (error) {
+
+            console.error(
+                '[PLC] Failed to cancel original mouse event: '
+                +
+                String(error)
+            )
+
+            return
+
+        }
 
 
         console.info(
-            '[PLC] Original mouse event canceled.'
+            '[PLC] Original schematic mouse event canceled.'
         )
 
     } catch (error) {
+
+        /*
+         * Defensive top-level boundary.
+         *
+         * We never allow an exception in the interceptor to
+         * escape into the Forge EventBus.
+         */
 
         console.error(
             '[PLC] Client schematic interceptor error: '
@@ -520,13 +682,16 @@ function plcHandleMouse(
 var plcMouseConsumer =
     new ConsumerClass({
 
-        accept: function(event) {
-
-            plcHandleMouse(
+        accept:
+            function(
                 event
-            )
+            ) {
 
-        }
+                plcHandleMouse(
+                    event
+                )
+
+            }
 
     })
 
@@ -596,11 +761,39 @@ console.info(
 )
 
 console.info(
-    '[PLC] Right mouse: enabled'
+    '[PLC] Right mouse: filtered'
 )
 
 console.info(
-    '[PLC] Top face: required'
+    '[PLC] Held item: create:schematic ONLY'
+)
+
+console.info(
+    '[PLC] Target block: PLC Reader ONLY'
+)
+
+console.info(
+    '[PLC] Target face: TOP ONLY'
+)
+
+console.info(
+    '[PLC] GUI interaction: ignored'
+)
+
+console.info(
+    '[PLC] Empty hand: ignored'
+)
+
+console.info(
+    '[PLC] Non-schematic items: ignored'
+)
+
+console.info(
+    '[PLC] Modems: ignored'
+)
+
+console.info(
+    '[PLC] Ordinary Minecraft interactions: ignored'
 )
 
 console.info(

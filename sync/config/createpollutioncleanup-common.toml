@@ -1,0 +1,56 @@
+
+#Diagnostic tooltips for Create Pollution Cleanup machines.
+[diagnostics]
+	#Show fluid-capability health, simulated drain, and
+	#per-cycle capture metrics on the Pollution Collector's
+	#Engineer's Goggles tooltip and log output.
+	#Defaults to false.
+	collectorDebug = false
+
+#Gameplay balance parameters for Create Pollution Cleanup machines.
+[balance]
+	#Hard ceiling on capture rate at rated speed, in
+	#pollution units per tick.
+	#
+	#Each unit is 10 mB of fluid. A value of 8 means
+	#at 128 RPM the collector consumes at most 80 mB
+	#per tick, or 1600 mB per second.
+	#
+	#Set to 0 to disable capture entirely.
+	#This is a hard cap, not a target. Actual rate at
+	#lower RPM scales down per collectorMinRateFactor.
+	#Range: 0 ~ 1024
+	collectorMaxRatePerTick = 8
+	#Fraction of the maximum rate available at the
+	#collector's minimum active speed.
+	#
+	#With a value of 0.25, an idle-but-turning machine
+	#captures a quarter of the max rate. RPM scaling
+	#is logarithmic: doubling speed buys progressively
+	#less throughput, approaching the max from below.
+	#
+	#This makes RPM primarily a range control, with
+	#throughput as a modest secondary effect.
+	#
+	#Value is clamped to [0.0, 1.0].
+	#Range: 0.0 ~ 1.0
+	collectorMinRateFactor = 0.25
+	#Maximum block positions inspected per collection
+	#cycle by the block-state pass.
+	#
+	#The full intake cone at range 32 contains roughly
+	#43,680 positions. Iteration is nearest-first, so
+	#a machine surrounded by a polluted field spends
+	#its budget on nearby blocks; a machine in a clean
+	#field sweeps outward across successive cycles.
+	#
+	#Lower this if you place many collectors on a
+	#performance-sensitive server. 1024 is safe for
+	#dozens of machines on any modern CPU. 4096 is a
+	#reasonable upper bound for a single machine.
+	#
+	#Set to 0 to disable the block pass entirely; the
+	#entity pass will still run.
+	#Range: 0 ~ 65536
+	collectorMaxScanPerCycle = 1024
+
