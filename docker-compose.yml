@@ -77,14 +77,13 @@ services:
     image: itzg/mc-proxy:java25
     container_name: velocity-proxy
 
+    user: "1001:1001"
+
     restart: unless-stopped
 
     environment:
       TYPE: "VELOCITY"
       MEMORY: "512M"
-
-      PUID: "1001"
-      PGID: "1001"
 
     ports:
       - "25565:25565"

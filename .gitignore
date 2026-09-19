@@ -1,3 +1,15 @@
+# ==============================================================
+# DOCKER / MINECRAFT RUNTIME STATE
+# ==============================================================
+
+mods/
+velocity/
+survival/
+creative/
+bluemap/
+logs/
+www/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
