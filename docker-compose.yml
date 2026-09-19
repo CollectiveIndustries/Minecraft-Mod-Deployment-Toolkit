@@ -21,6 +21,9 @@ x-minecraft-environment: &minecraft-environment
 
   OVERRIDE_SERVER_PROPERTIES: "false"
 
+  ENABLE_RCON: "true"
+  RCON_PASSWORD_FILE: "/run/secrets/rcon_password"
+
 
 x-minecraft-healthcheck: &minecraft-healthcheck
   test: ["CMD-SHELL", "mc-health"]
@@ -147,6 +150,9 @@ services:
       <<: *minecraft-environment
       MEMORY: "6G"
 
+    secrets:
+      - rcon_password
+
     volumes:
 
       # --------------------------------------------------------
@@ -239,6 +245,9 @@ services:
     environment:
       <<: *minecraft-environment
       MEMORY: "4G"
+
+    secrets:
+      - rcon_password
 
     volumes:
 
@@ -547,6 +556,16 @@ volumes:
   bluemap-data:
 
   bluemap-web:
+
+
+# ==============================================================
+# DOCKER SECRETS
+# ==============================================================
+
+secrets:
+
+  rcon_password:
+    file: ./secrets/rcon_password
 
 
 # ==============================================================

@@ -73,6 +73,10 @@ bluemap/data/
 bluemap/config/packs/
 serverconfigs/svmm-player-configs/
 
+# rcon authentication files
+secrets/rcon_password
+secrets/.rcon_password.*
+
 # Sync folder – adjust as needed
 # If you want to keep sync/ as source of truth, comment out or remove the next line
 # sync/
