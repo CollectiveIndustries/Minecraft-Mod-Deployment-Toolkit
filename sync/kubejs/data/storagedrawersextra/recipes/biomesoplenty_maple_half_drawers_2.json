@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "group": "storagedrawersextra",
+  "key": {
+    "/": {
+      "item": "biomesoplenty:maple_slab"
+    },
+    "x": {
+      "tag": "forge:chests/wooden"
+    }
+  },
+  "pattern": [
+    "/x/",
+    "///",
+    "/x/"
+  ],
+  "result": {
+    "count": 2,
+    "item": "storagedrawersextra:biomesoplenty_maple_half_drawers_2"
+  },
+  "show_notification": true
+}

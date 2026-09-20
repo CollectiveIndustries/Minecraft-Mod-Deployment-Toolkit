@@ -1,0 +1,13 @@
+{
+  "parent": "storagedrawers:block/full_drawers_orientable",
+  "textures": {
+    "down": "biomesoplenty:block/maple_planks",
+    "east": "biomesoplenty:block/maple_planks",
+    "north": "biomesoplenty:block/maple_planks",
+    "particle": "biomesoplenty:block/maple_planks",
+    "south": "biomesoplenty:block/maple_planks",
+    "trim": "biomesoplenty:block/maple_planks",
+    "up": "biomesoplenty:block/maple_planks",
+    "west": "biomesoplenty:block/maple_planks"
+  }
+}

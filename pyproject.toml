@@ -9,6 +9,7 @@ dependencies = [
     "mcstatus>=14.0.0",
     "collective-cores",
     "nbtlib>=2.0.4",
+    "pillow>=12.3.0",
     ]
 
 
