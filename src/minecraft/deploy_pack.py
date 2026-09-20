@@ -35,6 +35,10 @@ Test modes:
                          --no-deploy to produce both www artifacts
                          without touching live servers and without
                          sending anything to Discord.
+
+    --debug-deps         Print the dependency closure for both sides
+                         and exit. Read-only against the index and
+                         the jars; touches nothing else.
 """
 
 import argparse
@@ -49,7 +53,7 @@ from pathlib import Path
 
 from LoggingCore import get_logger, setup_logging
 
-from .common import changelog, file_utils, notify, overrides, prism
+from .common import changelog, deps, file_utils, notify, overrides, prism
 from .common import config as cfg
 
 # ---------------------------------------------------------------------------
@@ -58,7 +62,21 @@ from .common import config as cfg
 
 
 def load_mod_list(prism_index: Path, config_dir: Path, target_side: str, logger) -> list:
-    """Load mod entries from a Prism index directory, filtered by target side."""
+    """Load mod entries from a Prism index directory, filtered by target side.
+
+    After the side filter runs, a dependency closure pulls in any
+    transitively-required entry that the filter would have excluded.
+    This prevents shipping a pack where Forge's load-time dependency
+    check fails with "mod X requires Y, Y is not installed".
+
+    The closure reads both the index's own dependency metadata
+    ([[x-prismlauncher-dependencies]] blocks, project-id namespace)
+    and each jar's META-INF/mods.toml (modId namespace). See
+    common/deps.py for details on how the two namespaces are bridged.
+
+    Nothing is written back to the index. When upstream metadata
+    improves, the closure simply gets smaller on the next build.
+    """
     if not prism_index.is_dir():
         raise ValueError(f"Prism index directory not found: {prism_index}")
     all_mods = prism.load_prism_index(prism_index)
@@ -74,7 +92,20 @@ def load_mod_list(prism_index: Path, config_dir: Path, target_side: str, logger)
 
     side_mods = prism.filter_prism_entries_by_side(all_mods, target_side)
     logger.info(f"Filtered to {len(side_mods)} mods for side '{target_side}'")
-    return side_mods
+
+    result = deps.expand_with_required(
+        all_entries=all_mods,
+        seed_entries=side_mods,
+        target_side=target_side,
+        modpack_dir=prism_index.parent,
+        logger=logger,
+    )
+    if result.forced_count:
+        logger.info(f"Dependency closure for side '{target_side}': force-included {result.forced_count} mod(s) not in the side filter")
+        for dependent, dependency, reason in result.forced:
+            logger.info(f"  {dependent.get('file')} -> {dependency.get('file')} ({reason})")
+
+    return result.entries
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +561,16 @@ def main():
         action="store_true",
         help=("With --dry-run: actually post the webhook message instead of only printing it. For testing the Discord format without touching live servers."),
     )
+    parser.add_argument(
+        "--debug-deps",
+        action="store_true",
+        help=(
+            "Print the dependency closure for both sides and exit. "
+            "Shows which entries the side filter excludes but the closure "
+            "pulls back in, and why. Reads the index and every jar's "
+            "manifest; touches nothing else. Safe to run on a live tree."
+        ),
+    )
     args, remaining = parser.parse_known_args()
 
     mode = "client" if args.client else "server"
@@ -603,6 +644,33 @@ def main():
 
     setup_logging(log_config)
     logger = get_logger(__name__)
+
+    # ------------------------------------------------------------------
+    # --debug-deps: read-only diagnostic. Exits before any deploy logic
+    # runs, so it is safe to invoke against a live tree.
+    # ------------------------------------------------------------------
+    if args.debug_deps:
+        if not prism_index_dir.is_dir():
+            logger.error(f"Prism index directory not found: {prism_index_dir}")
+            sys.exit(1)
+        all_mods = prism.load_prism_index(prism_index_dir)
+        if not all_mods:
+            logger.error(f"No mod entries found in {prism_index_dir}")
+            sys.exit(1)
+        override_path = config_dir / "side_overrides.toml"
+        overrides_data = overrides.load_side_overrides(override_path)
+        if overrides_data:
+            all_mods = overrides.apply_side_overrides(all_mods, overrides_data)
+        seeds = {side: prism.filter_prism_entries_by_side(all_mods, side) for side in ("client", "server")}
+        print(
+            deps.format_diagnostic(
+                all_entries=all_mods,
+                seeds=seeds,
+                modpack_dir=prism_index_dir.parent,
+                logger=logger,
+            )
+        )
+        return
 
     instances = load_instances(config, logger)
 

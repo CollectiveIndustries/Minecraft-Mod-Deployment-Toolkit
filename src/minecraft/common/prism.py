@@ -18,6 +18,11 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
       - download_url:(str | None) Direct download URL from [download] section.
       - hash_value:  (str | None) Expected hash from [download] section.
       - hash_format: (str | None) Hash algorithm (default 'sha512').
+      - dependencies:(list[dict]) REQUIRED/OPTIONAL/EMBEDDED edges from the
+                     [[x-prismlauncher-dependencies]] blocks, in the
+                     project-id namespace. Each dict has 'addon_id' (str)
+                     and 'type' (str, upper-cased). Empty when the index
+                     has no dep info for this entry.
 
     Returns None only if the file cannot be parsed or no filename is present.
     """
@@ -63,6 +68,28 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
     # Use the filename as a fallback ID if we have no project ID
     mod_id = str(project_id) if project_id else filename
 
+    # Dependency blocks from the Prism index. These are in the
+    # project-id namespace (CurseForge numeric ids, Modrinth slugs),
+    # NOT the modId namespace used inside the jars. The deps closure
+    # in common/deps.py bridges the two. Absent block -> empty list;
+    # this is indistinguishable from "source looked and found nothing",
+    # which is why the jar manifest fallback also exists.
+    raw_deps = data.get("x-prismlauncher-dependencies")
+    dependencies: list[dict] = []
+    if isinstance(raw_deps, list):
+        for block in raw_deps:
+            if not isinstance(block, dict):
+                continue
+            addon_id = block.get("addonId")
+            if addon_id is None:
+                continue
+            dependencies.append(
+                {
+                    "addon_id": str(addon_id),
+                    "type": str(block.get("type", "")).upper(),
+                }
+            )
+
     return {
         "id": mod_id,
         "file": filename,
@@ -74,6 +101,7 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
         "download_url": download_url,
         "hash_value": hash_value,
         "hash_format": hash_format,
+        "dependencies": dependencies,
     }
 
 
