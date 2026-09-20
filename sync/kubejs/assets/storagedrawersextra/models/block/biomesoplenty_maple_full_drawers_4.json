@@ -1,13 +1,9 @@
 {
-  "parent": "storagedrawers:block/full_drawers_orientable",
-  "textures": {
-    "down": "biomesoplenty:block/maple_planks",
-    "east": "biomesoplenty:block/maple_planks",
-    "north": "biomesoplenty:block/maple_planks",
-    "particle": "biomesoplenty:block/maple_planks",
-    "south": "biomesoplenty:block/maple_planks",
-    "trim": "biomesoplenty:block/maple_planks",
-    "up": "biomesoplenty:block/maple_planks",
-    "west": "biomesoplenty:block/maple_planks"
-  }
+    "parent": "storagedrawers:block/full_drawers_orientable",
+    "textures": {
+        "front": "storagedrawersextra:block/biomesoplenty/drawers_maple_front_4",
+        "side": "biomesoplenty:block/maple_planks",
+        "top": "biomesoplenty:block/maple_planks",
+        "trim": "biomesoplenty:block/maple_planks"
+    }
 }

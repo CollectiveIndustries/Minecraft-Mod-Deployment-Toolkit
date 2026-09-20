@@ -1,19 +1,20 @@
 {
-  "variants": {
-    "facing=east": {
-      "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4",
-      "y": 90
-    },
-    "facing=north": {
-      "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4"
-    },
-    "facing=south": {
-      "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4",
-      "y": 180
-    },
-    "facing=west": {
-      "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4",
-      "y": 270
+    "variants": {
+        "facing=north": {
+            "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4",
+            "y": 0
+        },
+        "facing=east": {
+            "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4",
+            "y": 90
+        },
+        "facing=south": {
+            "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4",
+            "y": 180
+        },
+        "facing=west": {
+            "model": "storagedrawersextra:block/biomesoplenty_maple_full_drawers_4",
+            "y": 270
+        }
     }
-  }
 }

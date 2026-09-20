@@ -1,4 +1,4 @@
-// kubejs/startup_scripts/storage_drawers_maple.js
+// kubejs/startup_scripts/060_integration/000_storage_drawers/biomesoplenty_maple.js
 
 const ResourceLocation = Java.loadClass('net.minecraft.resources.ResourceLocation');
 const VariantData = Java.loadClass(

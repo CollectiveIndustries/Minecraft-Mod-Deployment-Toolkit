@@ -1,47 +1,59 @@
 #!/usr/bin/env python3
 # src/minecraft/generate_drawers.py
 
-r"""Learn and generate Storage Drawers wooden front textures.
+r"""Generate Storage Drawers wooden front textures and metadata.
 
-Two models are available:
+The drawer face is a fixed 16x16 template of (palette_role, scale, bias)
+derived from the six vanilla woods. Rendering a new wood is a lookup
+and a per-channel affine apply:
 
-1. Template model (default, recommended).
+    front[(x, y)][c] = round(scale[c] * palette[role][c] + bias[c])
 
-   The drawer face is treated as a fixed 16x16 template of
-   (palette_role, scale, bias) derived from the six vanilla woods.
-   Rendering a new wood is a lookup and a per-channel affine apply:
+The per-channel scale and bias are fit from all six vanilla woods
+simultaneously, so they are wood-independent by construction and
+generalize to new woods. Interior pixels fit scale=(1,1,1) and
+bias=(0,0,0); structural pixels (drawer split lines, bevel seams) get
+their own per-channel affine that captures detail the scalar-shade
+model cannot represent.
 
-       front[(x, y)][c] = round(scale[c] * palette[role][c] + bias[c])
+The outer 1px ring is a geometry inset and is not rendered in-game.
+Those 60 pixels are per-wood in the source assets and are not scored.
+Only the 196 visible pixels per front are evaluated.
 
-   The per-channel scale and bias are fit from all six vanilla woods
-   simultaneously, so they are wood-independent by construction and
-   generalize to new woods. Interior pixels fit scale=(1,1,1) and
-   bias=(0,0,0); structural pixels (drawer split lines, bevel seams)
-   get their own per-channel affine that captures detail the
-   scalar-shade model cannot represent.
+Primary usage (generate a new wood):
 
-   The outer 1px ring is a geometry inset and is not rendered in-game.
-   Those 60 pixels are per-wood in the source assets and are not
-   scored. Only the 196 visible pixels per front are evaluated.
+    pdm run python src/minecraft/generate_drawers.py \
+        --input-jar sync/downloads/BiomesOPlenty-forge-1.20.1-19.0.0.96.jar \
+        --wood-type biomesoplenty:maple \
+        --output-root sync/kubejs
 
-2. Legacy model (--legacy-model).
-
-   The original per-pixel arbitrary-donor affine search. Retained for
-   comparison and as a fallback.
-
-Usage:
-
-    pdm run python src/minecraft/generate_drawers.py validate \
-        --storage-drawers-jar sync/downloads/StorageDrawers-forge-1.20.1-12.14.3.jar
-
-    pdm run python src/minecraft/generate_drawers.py generate \
-        --storage-drawers-jar sync/downloads/StorageDrawers-forge-1.20.1-12.14.3.jar \
-        --bop-jar sync/downloads/BiomesOPlenty-forge-1.20.1-19.0.0.96.jar
-
-    pdm run python src/minecraft/generate_drawers.py analyze \
-        --storage-drawers-jar sync/downloads/StorageDrawers-forge-1.20.1-12.14.3.jar
+Diagnostics:
 
     pdm run python src/minecraft/generate_drawers.py self-test
+    pdm run python src/minecraft/generate_drawers.py validate
+
+Flags:
+
+    --input-jar       Mod jar providing the wood's plank texture (required).
+    --wood-type       namespace:wood_name (e.g. biomesoplenty:maple, required).
+    --output-root     KubeJS root. Default: sync/kubejs
+    --storage-drawers Storage Drawers jar file, or a directory containing
+                      StorageDrawers-*.jar. Default: sync/downloads
+    --client-jar      Minecraft 1.20.1 client jar. Default: gradle cache.
+    --repo-root       Repository root. Default: grandparent of this file.
+
+Generated files per wood (25 total):
+
+    assets/storagedrawersextra/textures/block/<namespace>/drawers_<wood>_front_{1,2,4}.png   (3)
+    assets/storagedrawersextra/blockstates/<prefix>_{full,half}_drawers_{1,2,4}.json
+        + <prefix>_trim.json                                                                 (7)
+    assets/storagedrawersextra/models/block/<prefix>_{full,half}_drawers_{1,2,4}.json
+        + <prefix>_trim.json                                                                 (7)
+    assets/storagedrawersextra/models/item/<prefix>_{full,half}_drawers_{1,2,4}.json
+        + <prefix>_trim.json                                                                 (7)
+    startup_scripts/060_integration/000_storage_drawers/<prefix>.js                          (1)
+
+where <prefix> = <namespace>_<wood>.
 """
 
 from __future__ import annotations
@@ -76,38 +88,27 @@ FRONT_SHAPES = (1, 2, 4)
 TEXTURE_SIZE = (16, 16)
 HANDLE_SCALE_THRESHOLD = 0.5
 VISIBLE_PIXELS_PER_FRONT = 196
-DEFAULT_STORAGE_DRAWERS_GLOB = "StorageDrawers-forge-1.20.1-12.14.3.jar"
-DEFAULT_BOP_GLOB = "BiomesOPlenty-forge-1.20.1-19.0.0.96.jar"
-DEFAULT_OUTPUT_SUBDIR = "sync/kubejs/assets/storagedrawersextra/textures/block/biomesoplenty"
-DEFAULT_MAPLE_RESOURCE = "assets/biomesoplenty/textures/block/maple_planks.png"
+
+DEFAULT_STORAGE_DRAWERS_DIR = "sync/downloads"
+DEFAULT_STORAGE_DRAWERS_PATTERN = "StorageDrawers-*.jar"
+DEFAULT_OUTPUT_ROOT = "sync/kubejs"
+
+# Asset subpaths under --output-root.
+ASSET_NAMESPACE = "storagedrawersextra"
+TEXTURES_SUBPATH = ("assets", ASSET_NAMESPACE, "textures", "block")
+BLOCKSTATES_SUBPATH = ("assets", ASSET_NAMESPACE, "blockstates")
+MODELS_BLOCK_SUBPATH = ("assets", ASSET_NAMESPACE, "models", "block")
+MODELS_ITEM_SUBPATH = ("assets", ASSET_NAMESPACE, "models", "item")
+STARTUP_SCRIPTS_SUBPATH = (
+    "startup_scripts",
+    "060_integration",
+    "000_storage_drawers",
+)
 
 
 # ---------------------------------------------------------------------------
-# Shared data classes
+# Data classes
 # ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class PixelModel:
-    """Learned source coordinate and scalar color transform for one output pixel."""
-
-    source_x: int
-    source_y: int
-    scale: float
-    bias_r: float
-    bias_g: float
-    bias_b: float
-    rmse: float
-
-
-@dataclass(frozen=True)
-class FrontModel:
-    """Learned model for one of the three drawer front sizes (legacy)."""
-
-    width: int
-    height: int
-    pixels: tuple[PixelModel, ...]
-    alpha: tuple[int, ...]
-
 
 @dataclass(frozen=True)
 class TemplateModel:
@@ -164,10 +165,6 @@ class AssetArchive:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def find(self, predicate) -> list[str]:
-        """Return archive paths satisfying a predicate."""
-        return [name for name in self.names if predicate(name)]
-
     def read_image(self, resource_path: str) -> Image.Image:
         """Read a PNG resource and return it as RGBA."""
         try:
@@ -189,11 +186,6 @@ def image_pixels(image: Image.Image) -> list[tuple[int, int, int, int]]:
     return list(image.get_flattened_data())
 
 
-def rgb(pixel: tuple[int, int, int, int]) -> tuple[float, float, float]:
-    """Return an RGBA pixel as floating-point RGB."""
-    return float(pixel[0]), float(pixel[1]), float(pixel[2])
-
-
 def luminance(pixel: tuple[int, int, int, int]) -> float:
     """Perceptual luminance of an RGBA pixel."""
     return 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]
@@ -210,19 +202,6 @@ def extract_wood_palette(image: Image.Image, expected: int = 7) -> list[tuple[in
 # ---------------------------------------------------------------------------
 # Resource discovery
 # ---------------------------------------------------------------------------
-
-def discover_jar(root: Path, exact_name: str) -> Path:
-    """Locate a jar by exact filename under a repository root."""
-    direct = root / "sync" / "downloads" / exact_name
-    if direct.is_file():
-        return direct
-
-    matches = sorted(root.rglob(exact_name))
-    if matches:
-        return matches[0]
-
-    return Path()
-
 
 def find_resource_by_fragments(
     names: Iterable[str],
@@ -289,338 +268,32 @@ def locate_vanilla_front_resources(archive: AssetArchive, shape: int) -> dict[st
     return resources
 
 
-def locate_maple_planks(archive: AssetArchive) -> str:
-    """Locate the BOP Maple plank texture."""
-    expected = DEFAULT_MAPLE_RESOURCE
+def locate_wood_planks(archive: AssetArchive, namespace: str, wood: str) -> str:
+    """Locate ``assets/<namespace>/textures/block/<wood>_planks.png``.
+
+    Case-insensitive. Raises FileNotFoundError if the resource is
+    missing, or if the found path does not have the expected shape.
+    """
+    expected = f"assets/{namespace}/textures/block/{wood}_planks.png"
     if expected in archive.names:
         return expected
 
-    matches = find_resource_by_fragments(
-        archive.names,
-        ("textures/block", "maple_planks"),
-    )
-    if len(matches) == 1:
-        return matches[0]
-    raise FileNotFoundError(f"Could not uniquely locate Biomes O' Plenty Maple planks in {archive.path}.\nCandidates: {matches[:20]}")
+    target = f"textures/block/{wood}_planks.png".lower()
+    candidates = [
+        name for name in archive.names
+        if name.lower().endswith(target) and name.lower().startswith(f"assets/{namespace.lower()}/")
+    ]
+    if not candidates:
+        raise FileNotFoundError(
+            f"Could not find '{expected}' in {archive.path}"
+        )
+
+    candidates.sort(key=len)
+    return candidates[0]
 
 
 # ---------------------------------------------------------------------------
-# Legacy fitting
-# ---------------------------------------------------------------------------
-
-def fit_scalar_affine(
-    source_samples: list[tuple[float, float, float]],
-    target_samples: list[tuple[float, float, float]],
-) -> tuple[float, tuple[float, float, float], float]:
-    """Fit target ~= scale * source + per-channel bias."""
-    if len(source_samples) != len(target_samples):
-        raise ValueError("Source and target sample counts differ")
-    if not source_samples:
-        raise ValueError("Cannot fit an empty sample set")
-
-    mean_source = [0.0, 0.0, 0.0]
-    mean_target = [0.0, 0.0, 0.0]
-    for source, target in zip(source_samples, target_samples, strict=True):
-        for channel in range(3):
-            mean_source[channel] += source[channel]
-            mean_target[channel] += target[channel]
-    count = float(len(source_samples))
-    for channel in range(3):
-        mean_source[channel] /= count
-        mean_target[channel] /= count
-
-    numerator = 0.0
-    denominator = 0.0
-    for source, target in zip(source_samples, target_samples, strict=True):
-        for channel in range(3):
-            source_center = source[channel] - mean_source[channel]
-            target_center = target[channel] - mean_target[channel]
-            numerator += source_center * target_center
-            denominator += source_center * source_center
-
-    if denominator > 1e-9:
-        scale = numerator / denominator
-    else:
-        scale = 1.0
-
-    bias = (
-        mean_target[0] - scale * mean_source[0],
-        mean_target[1] - scale * mean_source[1],
-        mean_target[2] - scale * mean_source[2],
-    )
-
-    squared_error = 0.0
-    sample_count = 0
-    for source, target in zip(source_samples, target_samples, strict=True):
-        for channel in range(3):
-            predicted = scale * source[channel] + bias[channel]
-            difference = predicted - target[channel]
-            squared_error += difference * difference
-            sample_count += 1
-    rmse = math.sqrt(squared_error / float(sample_count))
-    return scale, bias, rmse
-
-
-def fit_zero_intercept_scalar(
-    source_samples: list[tuple[float, float, float]],
-    target_samples: list[tuple[float, float, float]],
-) -> tuple[float, float]:
-    """Fit target ~= scale * source with one scalar scale and return RMSE."""
-    numerator = 0.0
-    denominator = 0.0
-    for source, target in zip(source_samples, target_samples, strict=True):
-        for channel in range(3):
-            numerator += source[channel] * target[channel]
-            denominator += source[channel] * source[channel]
-    scale = 1.0
-    if denominator > 1e-9:
-        scale = numerator / denominator
-
-    squared_error = 0.0
-    sample_count = 0
-    for source, target in zip(source_samples, target_samples, strict=True):
-        for channel in range(3):
-            difference = scale * source[channel] - target[channel]
-            squared_error += difference * difference
-            sample_count += 1
-    rmse = math.sqrt(squared_error / float(sample_count))
-    return scale, rmse
-
-
-def donor_distance(source_index: int, target_index: int) -> int:
-    """Return Manhattan distance between two 16x16 pixel coordinates."""
-    target_x = target_index % 16
-    target_y = target_index // 16
-    source_x = source_index % 16
-    source_y = source_index // 16
-    return abs(target_x - source_x) + abs(target_y - source_y)
-
-
-def train_front(
-    source_images: dict[str, Image.Image],
-    target_images: dict[str, Image.Image],
-    allow_relocated_donor: bool = True,
-    same_coordinate_epsilon: float = 0.08,
-) -> FrontModel:
-    """Legacy per-pixel donor-search trainer."""
-    source_pixels = {wood: image_pixels(image) for wood, image in source_images.items()}
-    target_pixels = {wood: image_pixels(image) for wood, image in target_images.items()}
-
-    all_target = target_pixels[VANILLA_WOODS[0]]
-    width, height = TEXTURE_SIZE
-    alpha = tuple(pixel[3] for pixel in all_target)
-    learned: list[PixelModel] = []
-
-    for target_index in range(width * height):
-        target_samples = [target_pixels[wood][target_index] for wood in VANILLA_WOODS]
-        candidate_indices = range(width * height)
-        if not allow_relocated_donor:
-            candidate_indices = (target_index,)
-
-        candidates: list[tuple[int, float, float, float, float, float]] = []
-        for source_index in candidate_indices:
-            source_samples = [source_pixels[wood][source_index] for wood in VANILLA_WOODS]
-            source_rgb = [rgb(pixel) for pixel in source_samples]
-            target_rgb = [rgb(pixel) for pixel in target_samples]
-            scale, bias, rmse = fit_scalar_affine(source_rgb, target_rgb)
-            candidates.append((source_index, scale, bias[0], bias[1], bias[2], rmse))
-
-        minimum_rmse = min(candidate[5] for candidate in candidates)
-        same_coordinate_candidate = None
-        for candidate in candidates:
-            if candidate[0] == target_index:
-                same_coordinate_candidate = candidate
-                break
-
-        selected = candidates[0]
-        if same_coordinate_candidate is not None and same_coordinate_candidate[5] <= minimum_rmse + same_coordinate_epsilon:
-            selected = same_coordinate_candidate
-        else:
-            selected = min(
-                candidates,
-                key=lambda candidate: (candidate[5], donor_distance(candidate[0], target_index), candidate[0]),
-            )
-
-        source_index, scale, bias_r, bias_g, bias_b, rmse = selected
-        best = PixelModel(
-            source_x=source_index % width,
-            source_y=source_index // width,
-            scale=scale,
-            bias_r=bias_r,
-            bias_g=bias_g,
-            bias_b=bias_b,
-            rmse=rmse,
-        )
-
-        if best is None:
-            raise RuntimeError(f"No donor candidate found for pixel {target_index}")
-        learned.append(best)
-
-    return FrontModel(width=width, height=height, pixels=tuple(learned), alpha=alpha)
-
-
-def apply_model(model: FrontModel, source_image: Image.Image) -> Image.Image:
-    """Legacy renderer for the donor-search model."""
-    source = image_pixels(source_image)
-    if source_image.size != TEXTURE_SIZE:
-        raise ValueError(f"Expected source texture to be 16x16, got {source_image.size}")
-
-    output = Image.new("RGBA", TEXTURE_SIZE)
-    out_pixels: list[tuple[int, int, int, int]] = []
-    for target_index, pixel_model in enumerate(model.pixels):
-        source_index = pixel_model.source_y * model.width + pixel_model.source_x
-        src = source[source_index]
-        channels = (
-            pixel_model.scale * float(src[0]) + pixel_model.bias_r,
-            pixel_model.scale * float(src[1]) + pixel_model.bias_g,
-            pixel_model.scale * float(src[2]) + pixel_model.bias_b,
-        )
-        rgb_values = tuple(max(0, min(255, round(value))) for value in channels)
-        out_pixels.append((rgb_values[0], rgb_values[1], rgb_values[2], model.alpha[target_index]))
-    output.putdata(out_pixels)
-    return output
-
-
-def validation_metrics(actual: Image.Image, predicted: Image.Image) -> ValidationMetrics:
-    """Compare two 16x16 textures using RGB absolute and squared error."""
-    actual_pixels = image_pixels(actual)
-    predicted_pixels = image_pixels(predicted)
-    if len(actual_pixels) != len(predicted_pixels):
-        raise ValueError("Image pixel counts differ")
-
-    errors: list[float] = []
-    exact = 0
-    for actual_pixel, predicted_pixel in zip(actual_pixels, predicted_pixels, strict=True):
-        if actual_pixel[:3] == predicted_pixel[:3]:
-            exact += 1
-        channel_squared = 0.0
-        for channel in range(3):
-            difference = float(actual_pixel[channel]) - float(predicted_pixel[channel])
-            channel_squared += difference * difference
-        errors.append(math.sqrt(channel_squared / 3.0))
-
-    mae = statistics.mean(errors)
-    rmse = math.sqrt(statistics.mean(error * error for error in errors))
-    ordered = sorted(errors)
-    p95_index = min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)
-    return ValidationMetrics(
-        exact_pixels=exact,
-        total_pixels=len(errors),
-        exact_ratio=exact / len(errors),
-        mae=mae,
-        rmse=rmse,
-        max_error=max(errors),
-        p95_error=ordered[p95_index],
-    )
-
-
-def model_metrics(model: FrontModel) -> dict[str, float | int]:
-    """Summarize the training fit of a learned front model."""
-    rmses = [pixel.rmse for pixel in model.pixels]
-    return {
-        "pixels": len(rmses),
-        "rmse_le_0_1": sum(rmse <= 0.1 for rmse in rmses),
-        "rmse_le_0_5": sum(rmse <= 0.5 for rmse in rmses),
-        "rmse_le_1_0": sum(rmse <= 1.0 for rmse in rmses),
-        "rmse_le_2_0": sum(rmse <= 2.0 for rmse in rmses),
-        "rmse_le_3_0": sum(rmse <= 3.0 for rmse in rmses),
-        "rmse_le_5_0": sum(rmse <= 5.0 for rmse in rmses),
-        "training_mean_pixel_rmse": statistics.mean(rmses),
-        "training_max_pixel_rmse": max(rmses),
-    }
-
-
-def leave_one_out_validation(
-    source_images: dict[str, Image.Image],
-    target_images: dict[str, Image.Image],
-    allow_relocated_donor: bool,
-) -> dict[str, ValidationMetrics]:
-    """Legacy leave-one-out validation."""
-    results: dict[str, ValidationMetrics] = {}
-    original_woods = tuple(VANILLA_WOODS)
-
-    for holdout in original_woods:
-        training_woods = tuple(wood for wood in original_woods if wood != holdout)
-        train_sources = {wood: source_images[wood] for wood in training_woods}
-        train_targets = {wood: target_images[wood] for wood in training_woods}
-
-        model = train_front_subset(
-            train_sources,
-            train_targets,
-            allow_relocated_donor=allow_relocated_donor,
-        )
-        predicted = apply_model(model, source_images[holdout])
-        results[holdout] = validation_metrics(target_images[holdout], predicted)
-
-    return results
-
-
-def train_front_subset(
-    source_images: dict[str, Image.Image],
-    target_images: dict[str, Image.Image],
-    allow_relocated_donor: bool,
-) -> FrontModel:
-    """Legacy trainer on an arbitrary subset of vanilla woods."""
-    woods = tuple(source_images.keys())
-    if not woods:
-        raise ValueError("Cannot train on zero woods")
-
-    source_pixels = {wood: image_pixels(image) for wood, image in source_images.items()}
-    target_pixels = {wood: image_pixels(image) for wood, image in target_images.items()}
-
-    width, height = TEXTURE_SIZE
-    alpha_source = target_pixels[woods[0]]
-    alpha = tuple(pixel[3] for pixel in alpha_source)
-    learned: list[PixelModel] = []
-
-    for target_index in range(width * height):
-        target_rgb = [rgb(target_pixels[wood][target_index]) for wood in woods]
-        candidate_indices = range(width * height)
-        if not allow_relocated_donor:
-            candidate_indices = (target_index,)
-
-        candidates: list[tuple[int, float, float, float, float, float]] = []
-        for source_index in candidate_indices:
-            source_rgb = [rgb(source_pixels[wood][source_index]) for wood in woods]
-            scale, bias, rmse = fit_scalar_affine(source_rgb, target_rgb)
-            candidates.append((source_index, scale, bias[0], bias[1], bias[2], rmse))
-
-        minimum_rmse = min(candidate[5] for candidate in candidates)
-        same_coordinate_candidate = None
-        for candidate in candidates:
-            if candidate[0] == target_index:
-                same_coordinate_candidate = candidate
-                break
-
-        selected = candidates[0]
-        if same_coordinate_candidate is not None and same_coordinate_candidate[5] <= minimum_rmse + 0.08:
-            selected = same_coordinate_candidate
-        else:
-            selected = min(
-                candidates,
-                key=lambda candidate: (candidate[5], donor_distance(candidate[0], target_index), candidate[0]),
-            )
-
-        source_index, scale, bias_r, bias_g, bias_b, rmse = selected
-        best = PixelModel(
-            source_x=source_index % width,
-            source_y=source_index // width,
-            scale=scale,
-            bias_r=bias_r,
-            bias_g=bias_g,
-            bias_b=bias_b,
-            rmse=rmse,
-        )
-
-        if best is None:
-            raise RuntimeError(f"No donor candidate found for pixel {target_index}")
-        learned.append(best)
-
-    return FrontModel(width=width, height=height, pixels=tuple(learned), alpha=alpha)
-
-
-# ---------------------------------------------------------------------------
-# Template fitting (default)
+# Template fitting
 # ---------------------------------------------------------------------------
 
 def fit_channel_affine(xs: list[float], ys: list[float]) -> tuple[float, float]:
@@ -781,6 +454,39 @@ def template_metrics(model: TemplateModel) -> dict[str, float | int]:
     }
 
 
+def validation_metrics(actual: Image.Image, predicted: Image.Image) -> ValidationMetrics:
+    """Compare two 16x16 textures using RGB absolute and squared error."""
+    actual_pixels = image_pixels(actual)
+    predicted_pixels = image_pixels(predicted)
+    if len(actual_pixels) != len(predicted_pixels):
+        raise ValueError("Image pixel counts differ")
+
+    errors: list[float] = []
+    exact = 0
+    for actual_pixel, predicted_pixel in zip(actual_pixels, predicted_pixels, strict=True):
+        if actual_pixel[:3] == predicted_pixel[:3]:
+            exact += 1
+        channel_squared = 0.0
+        for channel in range(3):
+            difference = float(actual_pixel[channel]) - float(predicted_pixel[channel])
+            channel_squared += difference * difference
+        errors.append(math.sqrt(channel_squared / 3.0))
+
+    mae = statistics.mean(errors)
+    rmse = math.sqrt(statistics.mean(error * error for error in errors))
+    ordered = sorted(errors)
+    p95_index = min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)
+    return ValidationMetrics(
+        exact_pixels=exact,
+        total_pixels=len(errors),
+        exact_ratio=exact / len(errors),
+        mae=mae,
+        rmse=rmse,
+        max_error=max(errors),
+        p95_error=ordered[p95_index],
+    )
+
+
 def leave_one_out_template_validation(
     source_images: dict[str, Image.Image],
     target_images: dict[str, Image.Image],
@@ -905,31 +611,6 @@ def load_vanilla_dataset(
 # Reporting
 # ---------------------------------------------------------------------------
 
-def emit_training_summary(shape: int, model: FrontModel) -> None:
-    """Print a compact summary of learned pixel transforms (legacy)."""
-    summary = model_metrics(model)
-    print(f"FRONT_{shape}")
-    print(f"  training fit: {summary['rmse_le_0_1']}/256 <= 0.1 RMSE")
-    print(f"  training fit: {summary['rmse_le_0_5']}/256 <= 0.5 RMSE")
-    print(f"  training fit: {summary['rmse_le_3_0']}/256 <= 3.0 RMSE")
-    print(f"  training mean pixel RMSE: {summary['training_mean_pixel_rmse']:.3f}")
-    print(f"  training max pixel RMSE: {summary['training_max_pixel_rmse']:.3f}")
-
-    scales = [pixel.scale for pixel in model.pixels]
-    print(
-        "  scale clusters: "
-        + ", ".join(
-            f"{rounded:.3f}={sum(abs(scale - rounded) < 0.006 for scale in scales)}" for rounded in (0.215, 0.267, 0.833, 0.837, 0.865, 0.875, 0.990, 1.000)
-        )
-    )
-
-    same_coordinate_count = 0
-    for index, pixel in enumerate(model.pixels):
-        if pixel.source_x == index % 16 and pixel.source_y == index // 16:
-            same_coordinate_count += 1
-    print(f"  same-coordinate donor pixels: {same_coordinate_count}/256")
-
-
 def emit_template_summary(shape: int, model: TemplateModel) -> None:
     """Print a compact summary of a learned template."""
     summary = template_metrics(model)
@@ -962,57 +643,380 @@ def emit_band_table(bands: dict[str, dict[str, tuple[int, int, float, float]]]) 
 
 
 # ---------------------------------------------------------------------------
+# File writers
+# ---------------------------------------------------------------------------
+
+def write_json(path: Path, data, indent: int = 4) -> None:
+    """Write a dict to path as JSON with a trailing newline."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(data, indent=indent) + "\n"
+    path.write_text(text, encoding="utf-8")
+
+
+def write_text_file(path: Path, text: str) -> None:
+    """Write text to path with parent directories created."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# JSON generation
+# ---------------------------------------------------------------------------
+
+def drawer_blockstate(model_id: str) -> dict:
+    """Return blockstate JSON for a drawers block (4 cardinal facings)."""
+    return {
+        "variants": {
+            "facing=north": {"model": model_id, "y": 0},
+            "facing=east": {"model": model_id, "y": 90},
+            "facing=south": {"model": model_id, "y": 180},
+            "facing=west": {"model": model_id, "y": 270},
+        }
+    }
+
+
+def trim_blockstate(model_id: str) -> dict:
+    """Return blockstate JSON for the trim block (single variant)."""
+    return {"variants": {"": {"model": model_id}}}
+
+
+def full_drawer_model(namespace: str, wood: str, shape: int) -> dict:
+    """Return block model JSON for a full-drawer variant."""
+    return {
+        "parent": "storagedrawers:block/full_drawers_orientable",
+        "textures": {
+            "front": f"storagedrawersextra:block/{namespace}/drawers_{wood}_front_{shape}",
+            "side": f"{namespace}:block/{wood}_planks",
+            "top": f"{namespace}:block/{wood}_planks",
+            "trim": f"{namespace}:block/{wood}_planks",
+        },
+    }
+
+
+def half_drawer_model(namespace: str, wood: str, shape: int) -> dict:
+    """Return block model JSON for a half-drawer variant."""
+    return {
+        "parent": "storagedrawers:block/half_drawers_orientable",
+        "textures": {
+            "front": f"storagedrawersextra:block/{namespace}/drawers_{wood}_front_{shape}",
+            "back": f"{namespace}:block/{wood}_planks",
+            "side": f"{namespace}:block/{wood}_planks",
+            "top": f"{namespace}:block/{wood}_planks",
+            "trim": f"{namespace}:block/{wood}_planks",
+        },
+    }
+
+
+def trim_model(namespace: str, wood: str) -> dict:
+    """Return block model JSON for the trim block."""
+    return {
+        "parent": "minecraft:block/cube_all",
+        "textures": {"all": f"{namespace}:block/{wood}_planks"},
+    }
+
+
+def item_model(block_model_id: str) -> dict:
+    """Return item model JSON that inherits from a block model."""
+    return {"parent": block_model_id}
+
+
+# ---------------------------------------------------------------------------
+# KubeJS startup script generation
+# ---------------------------------------------------------------------------
+
+def kubejs_startup_script(wood: str, prefix: str) -> str:
+    """Return the KubeJS startup script that registers this wood variant.
+
+    Registers the wood's drawer variant with StorageDrawersExtras through
+    the ModBlockVariants API. The material ResourceLocation is
+    ``storagedrawersextra:<prefix>``, where ``<prefix>`` matches the
+    blockstate / model file prefix that the rest of this tool generates.
+
+    Class paths must match the actual package structure:
+
+        com.jaquadro.minecraft.storagedrawers.core.ModBlockVariants
+        com.jaquadro.minecraft.storagedrawers.core.ModBlockVariants$VariantData
+        com.jaquadro.minecraft.storagedrawersextra.core.ModBlocks
+        com.jaquadro.minecraft.storagedrawersextra.core.ModItems
+    """
+    wood_display = " ".join(part.capitalize() for part in wood.split("_"))
+
+    return f"""// kubejs/startup_scripts/060_integration/000_storage_drawers/{prefix}.js
+
+const ResourceLocation = Java.loadClass('net.minecraft.resources.ResourceLocation');
+const VariantData = Java.loadClass(
+    'com.jaquadro.minecraft.storagedrawers.core.ModBlockVariants$VariantData'
+);
+const ModBlockVariants = Java.loadClass(
+    'com.jaquadro.minecraft.storagedrawers.core.ModBlockVariants'
+);
+const ExtraBlocks = Java.loadClass(
+    'com.jaquadro.minecraft.storagedrawersextra.core.ModBlocks'
+);
+const ExtraItems = Java.loadClass(
+    'com.jaquadro.minecraft.storagedrawersextra.core.ModItems'
+);
+
+console.info('[SD {wood_display}] loading');
+
+const material = new ResourceLocation(
+    'storagedrawersextra',
+    '{prefix}'
+);
+
+const data = new VariantData(material);
+
+ModBlockVariants.registerVariant(
+    ExtraBlocks.BLOCK_REGISTER,
+    data
+);
+
+ModBlockVariants.registerVariantItem(
+    ExtraItems.ITEM_REGISTER,
+    data
+);
+
+console.info('[SD {wood_display}] registered blocks and items');
+"""
+
+
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+def resolve_client_jar(arg: Path | None, repo_root: Path) -> Path:
+    """Return the Minecraft client jar path."""
+    if arg is None:
+        return (
+            Path.home()
+            / ".gradle" / "caches" / "forge_gradle"
+            / "minecraft_repo" / "versions" / "1.20.1" / "client.jar"
+        )
+    p = Path(arg).expanduser()
+    if not p.is_absolute():
+        p = repo_root / p
+    return p
+
+
+def resolve_storage_drawers_jar(arg: Path | None, repo_root: Path) -> Path:
+    """Return the Storage Drawers jar path.
+
+    Accepts either a jar file, or a directory containing a
+    StorageDrawers-*.jar. Relative paths resolve against repo_root.
+    """
+    if arg is None:
+        candidate = repo_root / DEFAULT_STORAGE_DRAWERS_DIR
+    else:
+        candidate = Path(arg).expanduser()
+        if not candidate.is_absolute():
+            candidate = repo_root / candidate
+
+    if candidate.is_file():
+        return candidate
+
+    if candidate.is_dir():
+        matches = sorted(candidate.glob(DEFAULT_STORAGE_DRAWERS_PATTERN))
+        if not matches:
+            raise FileNotFoundError(
+                f"No {DEFAULT_STORAGE_DRAWERS_PATTERN} found in {candidate}"
+            )
+        return matches[0]
+
+    raise FileNotFoundError(
+        f"Storage Drawers jar or directory not found: {candidate}"
+    )
+
+
+def resolve_input_jar(arg: Path | None, repo_root: Path) -> Path:
+    """Return the input mod jar path."""
+    if arg is None:
+        raise ValueError("--input-jar is required to generate a wood")
+    p = Path(arg).expanduser()
+    if not p.is_absolute():
+        p = repo_root / p
+    if not p.is_file():
+        raise FileNotFoundError(f"Input jar not found: {p}")
+    return p
+
+
+def resolve_output_root(arg: Path | None, repo_root: Path) -> Path:
+    """Return the KubeJS output root path."""
+    if arg is None:
+        return repo_root / DEFAULT_OUTPUT_ROOT
+    p = Path(arg).expanduser()
+    if not p.is_absolute():
+        p = repo_root / p
+    return p
+
+
+def parse_wood_type(spec: str | None) -> tuple[str, str]:
+    """Parse ``namespace:wood`` into (namespace, wood)."""
+    if spec is None:
+        raise ValueError("--wood-type is required to generate a wood")
+    parts = spec.split(":", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(
+            f"--wood-type must be 'namespace:wood' (e.g. biomesoplenty:maple); "
+            f"got {spec!r}"
+        )
+    return parts[0].strip(), parts[1].strip()
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
-def _resolve_client_jar(args: argparse.Namespace) -> Path:
-    """Return the Minecraft client jar path from args or the default cache."""
-    if args.client_jar:
-        return Path(args.client_jar).expanduser()
-    return Path.home() / ".gradle" / "caches" / "forge_gradle" / "minecraft_repo" / "versions" / "1.20.1" / "client.jar"
+def cmd_generate(args: argparse.Namespace) -> int:
+    """Generate all assets and metadata for a new wood.
 
+    Reads the wood's plank texture from --input-jar, fits the template
+    model on the six vanilla woods, generates front_1/front_2/front_4
+    PNGs, writes the JSON metadata, then writes the KubeJS startup
+    script that registers the variant with StorageDrawersExtras. All
+    output lands under --output-root.
+    """
+    repo_root = Path(args.repo_root).expanduser().resolve()
+    client_jar = resolve_client_jar(args.client_jar, repo_root)
+    storage_jar = resolve_storage_drawers_jar(args.storage_drawers, repo_root)
+    input_jar = resolve_input_jar(args.input_jar, repo_root)
+    output_root = resolve_output_root(args.output_root, repo_root)
+    namespace, wood = parse_wood_type(args.wood_type)
 
-def _resolve_storage_jar(args: argparse.Namespace, repo_root: Path) -> Path:
-    """Return the Storage Drawers jar path from args or discovery."""
-    if args.storage_drawers_jar:
-        return Path(args.storage_drawers_jar).expanduser()
-    return discover_jar(repo_root, DEFAULT_STORAGE_DRAWERS_GLOB)
+    if not client_jar.is_file():
+        raise FileNotFoundError(f"Minecraft 1.20.1 client jar not found: {client_jar}")
+    if not storage_jar.is_file():
+        raise FileNotFoundError(f"Storage Drawers jar not found: {storage_jar}")
+    if not input_jar.is_file():
+        raise FileNotFoundError(f"Input jar not found: {input_jar}")
 
+    with AssetArchive(input_jar) as mod:
+        plank_resource = locate_wood_planks(mod, namespace, wood)
+        plank_image = mod.read_image(plank_resource)
 
-def _resolve_bop_jar(args: argparse.Namespace, repo_root: Path) -> Path:
-    """Return the Biomes O' Plenty jar path from args or discovery."""
-    if args.bop_jar:
-        return Path(args.bop_jar).expanduser()
-    return discover_jar(repo_root, DEFAULT_BOP_GLOB)
+    palette = extract_wood_palette(plank_image)
+
+    prefix = f"{namespace}_{wood}"
+
+    print("=== Storage Drawers wood generation ===")
+    print(f"Input jar:     {input_jar}")
+    print(f"Namespace:     {namespace}")
+    print(f"Wood:          {wood}")
+    print(f"Plank texture: {plank_resource}")
+    print(f"Storage jar:   {storage_jar}")
+    print(f"Client jar:    {client_jar}")
+    print(f"Output root:   {output_root}")
+    print("Palette:")
+    for i, c in enumerate(palette):
+        print(f"  P{i:02d} = {c[0]:02X}{c[1]:02X}{c[2]:02X}")
+    print()
+
+    # --- Textures -----------------------------------------------------
+    texture_dir = output_root.joinpath(*TEXTURES_SUBPATH) / namespace
+    texture_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Generating textures:")
+    for shape in FRONT_SHAPES:
+        sources, targets, _, _ = load_vanilla_dataset(client_jar, storage_jar, shape)
+        tmodel = fit_template_from_images(sources, targets)
+        generated = render_template(tmodel, palette)
+        out_path = texture_dir / f"drawers_{wood}_front_{shape}.png"
+        generated.save(out_path)
+        print(f"  {out_path}")
+    print()
+
+    # --- Blockstates --------------------------------------------------
+    blockstate_dir = output_root.joinpath(*BLOCKSTATES_SUBPATH)
+    blockstate_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Generating blockstates:")
+    for shape in FRONT_SHAPES:
+        for kind in ("full", "half"):
+            name = f"{prefix}_{kind}_drawers_{shape}"
+            path = blockstate_dir / f"{name}.json"
+            write_json(path, drawer_blockstate(f"storagedrawersextra:block/{name}"))
+            print(f"  {path}")
+
+    name = f"{prefix}_trim"
+    path = blockstate_dir / f"{name}.json"
+    write_json(path, trim_blockstate(f"storagedrawersextra:block/{name}"))
+    print(f"  {path}")
+    print()
+
+    # --- Block models -------------------------------------------------
+    model_dir = output_root.joinpath(*MODELS_BLOCK_SUBPATH)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Generating block models:")
+    for shape in FRONT_SHAPES:
+        name = f"{prefix}_full_drawers_{shape}"
+        path = model_dir / f"{name}.json"
+        write_json(path, full_drawer_model(namespace, wood, shape))
+        print(f"  {path}")
+
+        name = f"{prefix}_half_drawers_{shape}"
+        path = model_dir / f"{name}.json"
+        write_json(path, half_drawer_model(namespace, wood, shape))
+        print(f"  {path}")
+
+    name = f"{prefix}_trim"
+    path = model_dir / f"{name}.json"
+    write_json(path, trim_model(namespace, wood))
+    print(f"  {path}")
+    print()
+
+    # --- Item models --------------------------------------------------
+    item_dir = output_root.joinpath(*MODELS_ITEM_SUBPATH)
+    item_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Generating item models:")
+    item_names = []
+    for shape in FRONT_SHAPES:
+        for kind in ("full", "half"):
+            item_names.append(f"{prefix}_{kind}_drawers_{shape}")
+    item_names.append(f"{prefix}_trim")
+
+    for name in item_names:
+        path = item_dir / f"{name}.json"
+        write_json(path, item_model(f"storagedrawersextra:block/{name}"), indent=2)
+        print(f"  {path}")
+    print()
+
+    # --- KubeJS startup script ----------------------------------------
+    script_dir = output_root.joinpath(*STARTUP_SCRIPTS_SUBPATH)
+    script_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Generating KubeJS startup script:")
+    script_path = script_dir / f"{prefix}.js"
+    write_text_file(script_path, kubejs_startup_script(wood, prefix))
+    print(f"  {script_path}")
+    print()
+
+    print("Done.")
+    return 0
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
     """Run leave-one-out validation for fronts 1, 2, and 4."""
     repo_root = Path(args.repo_root).expanduser().resolve()
-    client_jar = _resolve_client_jar(args)
-    storage_jar = _resolve_storage_jar(args, repo_root)
+    client_jar = resolve_client_jar(args.client_jar, repo_root)
+    storage_jar = resolve_storage_drawers_jar(args.storage_drawers, repo_root)
 
     if not client_jar.is_file():
         raise FileNotFoundError(f"Minecraft 1.20.1 client jar not found: {client_jar}")
     if not storage_jar.is_file():
-        raise FileNotFoundError(f"Storage Drawers 1.20.1-12.14.3 jar not found. Expected under {repo_root}/sync/downloads/ or supply --storage-drawers-jar.")
-
-    if args.legacy_model:
-        mode = "legacy"
-    else:
-        mode = "template"
+        raise FileNotFoundError(f"Storage Drawers jar not found: {storage_jar}")
 
     overall: dict[str, object] = {
         "minecraft_client": str(client_jar),
         "storage_drawers": str(storage_jar),
-        "mode": mode,
+        "mode": "template",
         "fronts": {},
     }
 
     print("=== Storage Drawers 1.20.1 texture validation ===")
     print(f"Minecraft client: {client_jar}")
     print(f"Storage Drawers:  {storage_jar}")
-    print(f"Model:            {mode}")
+    print("Model:            template")
     print()
 
     for shape in FRONT_SHAPES:
@@ -1028,14 +1032,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         for wood in VANILLA_WOODS:
             print(f"  {wood:8s} {target_resources[wood]}")
 
-        if args.legacy_model:
-            results = leave_one_out_validation(
-                sources,
-                targets,
-                allow_relocated_donor=not args.same_coordinate_only,
-            )
-        else:
-            results = leave_one_out_template_validation(sources, targets)
+        results = leave_one_out_template_validation(sources, targets)
 
         overall_front: dict[str, object] = {}
         for wood, metrics in results.items():
@@ -1048,13 +1045,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
             )
         overall["fronts"][f"front_{shape}"] = overall_front
 
-        if not args.legacy_model:
-            full_model = fit_template_from_images(sources, targets)
-            bands = band_exact_summary(sources, targets, full_model)
-            emit_band_table(bands)
-            print(f"  visible (non-border) pixels per front: {VISIBLE_PIXELS_PER_FRONT}/256")
-            print()
-
+        full_model = fit_template_from_images(sources, targets)
+        bands = band_exact_summary(sources, targets, full_model)
+        emit_band_table(bands)
+        print(f"  visible (non-border) pixels per front: {VISIBLE_PIXELS_PER_FRONT}/256")
+        print()
         print()
 
     if args.report:
@@ -1066,128 +1061,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_analyze(args: argparse.Namespace) -> int:
-    """Train on all six vanilla woods and print learned model statistics."""
-    repo_root = Path(args.repo_root).expanduser().resolve()
-    client_jar = _resolve_client_jar(args)
-    storage_jar = _resolve_storage_jar(args, repo_root)
-
-    if args.legacy_model:
-        model_name = "legacy"
-    else:
-        model_name = "template"
-
-    print(f"=== Learned Storage Drawers front construction ({model_name}) ===")
-    for shape in FRONT_SHAPES:
-        sources, targets, _, _ = load_vanilla_dataset(client_jar, storage_jar, shape)
-
-        if args.legacy_model:
-            model = train_front(sources, targets, allow_relocated_donor=not args.same_coordinate_only)
-            emit_training_summary(shape, model)
-        else:
-            tmodel = fit_template_from_images(sources, targets)
-            emit_template_summary(shape, tmodel)
-
-            print("  role map:")
-            for y in range(16):
-                print("    " + " ".join(f"{tmodel.role_map[y][x]:2d}" for x in range(16)))
-            print("  scale map (mean of R,G,B):")
-            for y in range(16):
-                row = []
-                for x in range(16):
-                    s = tmodel.scale_map[y][x]
-                    row.append(f"{(s[0] + s[1] + s[2]) / 3.0:.2f}")
-                print("    " + " ".join(row))
-            print("  bias map (R,G,B):")
-            for y in range(16):
-                cells = []
-                for x in range(16):
-                    b = tmodel.bias_map[y][x]
-                    cells.append(f"{b[0]:+.1f},{b[1]:+.1f},{b[2]:+.1f}")
-                print("    " + " ".join(cells))
-            print()
-        print()
-    return 0
-
-
-def cmd_generate(args: argparse.Namespace) -> int:
-    """Generate Maple drawer front textures after validation."""
-    repo_root = Path(args.repo_root).expanduser().resolve()
-    client_jar = _resolve_client_jar(args)
-    storage_jar = _resolve_storage_jar(args, repo_root)
-    bop_jar = _resolve_bop_jar(args, repo_root)
-
-    if args.output_dir:
-        output_dir = Path(args.output_dir).expanduser()
-    else:
-        output_dir = repo_root / DEFAULT_OUTPUT_SUBDIR
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    if not client_jar.is_file():
-        raise FileNotFoundError(f"Minecraft 1.20.1 client jar not found: {client_jar}")
-    if not storage_jar.is_file():
-        raise FileNotFoundError(f"Storage Drawers jar not found: {storage_jar}")
-    if not bop_jar.is_file():
-        raise FileNotFoundError(f"Biomes O' Plenty 1.20.1-19.0.0.96 jar not found. Expected under {repo_root}/sync/downloads/ or supply --bop-jar.")
-
-    with AssetArchive(bop_jar) as bop_archive:
-        maple_resource = locate_maple_planks(bop_archive)
-        maple_image = bop_archive.read_image(maple_resource)
-
-    maple_palette = extract_wood_palette(maple_image)
-
-    if args.legacy_model:
-        mode = "legacy"
-    else:
-        mode = "template"
-
-    print(f"=== Storage Drawers Maple texture generation ({mode}) ===")
-    print(f"BOP source: {bop_jar}!{maple_resource}")
-    print(f"Output:     {output_dir}")
-    print("Maple palette:")
-    for i, c in enumerate(maple_palette):
-        print(f"  P{i:02d} = {c[0]:02X}{c[1]:02X}{c[2]:02X}")
-    print()
-
-    for shape in FRONT_SHAPES:
-        sources, targets, _, _ = load_vanilla_dataset(client_jar, storage_jar, shape)
-
-        if args.legacy_model:
-            model = train_front(sources, targets, allow_relocated_donor=not args.same_coordinate_only)
-            generated = apply_model(model, maple_image)
-        else:
-            tmodel = fit_template_from_images(sources, targets)
-            generated = render_template(tmodel, maple_palette)
-
-        output_path = output_dir / f"drawers_maple_front_{shape}.png"
-        generated.save(output_path)
-        print(f"front_{shape}: {output_path}")
-
-    return 0
-
-
 def cmd_self_test(args: argparse.Namespace) -> int:
     """Exercise the fitting and reconstruction math without Minecraft assets."""
     print("=== generator self-test ===")
-
-    source: list[tuple[float, float, float]] = []
-    target: list[tuple[float, float, float]] = []
-    for base in range(20, 140, 20):
-        source.append((float(base), float(base + 5), float(base + 10)))
-        target.append(
-            (
-                0.875 * base + 4.0,
-                0.875 * (base + 5) + 3.0,
-                0.875 * (base + 10) + 2.0,
-            )
-        )
-
-    scale, _bias, rmse = fit_scalar_affine(source, target)
-    print(f"legacy fit: scale={scale:.6f} rmse={rmse:.9f}")
-    if abs(scale - 0.875) > 1e-6:
-        raise AssertionError("scalar scale regression failed")
-    if rmse > 1e-6:
-        raise AssertionError("affine regression should reconstruct the synthetic samples exactly")
 
     palette_a: list[tuple[int, int, int, int]] = [
         (10, 20, 30, 255),
@@ -1239,8 +1115,31 @@ def cmd_self_test(args: argparse.Namespace) -> int:
                 border_count += 1
     if border_count != 60:
         raise AssertionError(f"border band should have 60 pixels, found {border_count}")
-    if VISIBLE_PIXELS_PER_FRONT != 256 - border_count:
+    if 256 - border_count != VISIBLE_PIXELS_PER_FRONT:
         raise AssertionError("VISIBLE_PIXELS_PER_FRONT is out of sync with border band count")
+
+    script = kubejs_startup_script("maple", "biomesoplenty_maple")
+    if "biomesoplenty_maple" not in script:
+        raise AssertionError("startup script missing material prefix")
+    if "[SD Maple]" not in script:
+        raise AssertionError("startup script missing display name")
+
+    required_class_paths = (
+        "com.jaquadro.minecraft.storagedrawers.core.ModBlockVariants$VariantData",
+        "com.jaquadro.minecraft.storagedrawers.core.ModBlockVariants",
+        "com.jaquadro.minecraft.storagedrawersextra.core.ModBlocks",
+        "com.jaquadro.minecraft.storagedrawersextra.core.ModItems",
+    )
+    for path in required_class_paths:
+        if path not in script:
+            raise AssertionError(f"startup script missing class path: {path}")
+
+    if "com.jaquadro.storagedrawers." in script and "com.jaquadro.minecraft.storagedrawers." not in script:
+        raise AssertionError("startup script missing '.minecraft.' package segment")
+
+    script_multi = kubejs_startup_script("twilight_oak", "twilightforest_twilight_oak")
+    if "[SD Twilight Oak]" not in script_multi:
+        raise AssertionError("multi-word wood display name did not title-case correctly")
 
     print("PASS")
     return 0
@@ -1252,43 +1151,65 @@ def cmd_self_test(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser."""
-    parser = argparse.ArgumentParser(description="Learn and generate Storage Drawers 1.20.1 wooden front textures.")
+    parser = argparse.ArgumentParser(
+        description="Generate Storage Drawers wooden front textures and metadata.",
+    )
     parser.add_argument(
         "--repo-root",
         type=Path,
         default=Path(__file__).resolve().parents[2],
-        help="Minecraft repo root; defaults to the grandparent of this file (the repo root).",
+        help="Repository root. Default: grandparent of this file.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    self_test = subparsers.add_parser("self-test", help="Run math self-tests without Minecraft assets.")
-    self_test.set_defaults(func=cmd_self_test)
-
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--client-jar", type=Path, help="Path to the Minecraft 1.20.1 client.jar.")
-    common.add_argument("--storage-drawers-jar", type=Path, help="Path to Storage Drawers 1.20.1-12.14.3 jar.")
-    common.add_argument(
-        "--legacy-model",
-        action="store_true",
-        help="Use the original donor-search model instead of the template model.",
+    parser.add_argument(
+        "--client-jar",
+        type=Path,
+        default=None,
+        help="Minecraft 1.20.1 client jar. Default: gradle cache.",
     )
-    common.add_argument(
-        "--same-coordinate-only",
-        action="store_true",
-        help="Legacy-only: disable relocated donor search and force target(x,y) to use source(x,y).",
+    parser.add_argument(
+        "--storage-drawers",
+        type=Path,
+        default=None,
+        help=(
+            "Storage Drawers jar, or a directory containing "
+            f"{DEFAULT_STORAGE_DRAWERS_PATTERN}. "
+            f"Default: {DEFAULT_STORAGE_DRAWERS_DIR}"
+        ),
+    )
+    parser.add_argument(
+        "--input-jar",
+        type=Path,
+        default=None,
+        help="Mod jar providing the wood's plank texture (required to generate).",
+    )
+    parser.add_argument(
+        "--wood-type",
+        type=str,
+        default=None,
+        help="Wood identifier as 'namespace:wood' (e.g. biomesoplenty:maple).",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=None,
+        help=f"KubeJS root. Default: {DEFAULT_OUTPUT_ROOT}",
     )
 
-    validate = subparsers.add_parser("validate", parents=[common], help="Leave-one-out validation against all six vanilla woods.")
+    subparsers = parser.add_subparsers(dest="command")
+
+    validate = subparsers.add_parser(
+        "validate",
+        help="Leave-one-out validation against all six vanilla woods.",
+    )
     validate.add_argument("--report", type=Path, help="Write JSON validation results to this path.")
     validate.set_defaults(func=cmd_validate)
 
-    analyze = subparsers.add_parser("analyze", parents=[common], help="Train from all six woods and print model statistics.")
-    analyze.set_defaults(func=cmd_analyze)
+    self_test = subparsers.add_parser(
+        "self-test",
+        help="Run math self-tests without Minecraft assets.",
+    )
+    self_test.set_defaults(func=cmd_self_test)
 
-    generate = subparsers.add_parser("generate", parents=[common], help="Generate BOP Maple front_1/front_2/front_4 textures.")
-    generate.add_argument("--bop-jar", type=Path, help="Path to Biomes O' Plenty 1.20.1-19.0.0.96 jar.")
-    generate.add_argument("--output-dir", type=Path, help="Directory for generated front PNGs.")
-    generate.set_defaults(func=cmd_generate)
     return parser
 
 
@@ -1296,8 +1217,14 @@ def main() -> int:
     """Run the command-line tool."""
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command is None:
+        func = cmd_generate
+    else:
+        func = args.func
+
     try:
-        return args.func(args)
+        return func(args)
     except (FileNotFoundError, ValueError, OSError, zipfile.BadZipFile) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

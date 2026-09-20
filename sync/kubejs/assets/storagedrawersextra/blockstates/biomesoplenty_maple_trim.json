@@ -1,7 +1,7 @@
 {
-  "variants": {
-    "": {
-      "model": "storagedrawersextra:block/biomesoplenty_maple_trim"
+    "variants": {
+        "": {
+            "model": "storagedrawersextra:block/biomesoplenty_maple_trim"
+        }
     }
-  }
 }
