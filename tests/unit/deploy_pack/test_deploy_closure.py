@@ -292,13 +292,20 @@ class TestServerClosureInModsDir:
         assert "client_lib.jar" in deployed, "client_lib was required by server_user but did not reach mods/"
 
     def test_server_closure_is_logged(self, closure_repo, monkeypatch):
-        """The server side reports its own force-include with the right reason."""
-        _run_main(monkeypatch, closure_repo, "--server", "--dry-run")
+        """The server side reports its own force-include with the right reason.
+
+        Uses --no-zip rather than --dry-run: --dry-run implies --no-deploy,
+        which skips the server deploy path entirely and therefore never
+        calls load_mod_list(..., 'server', ...). --no-zip runs the server
+        path for real while still producing no client artifacts.
+        """
+        _run_main(monkeypatch, closure_repo, "--server", "--no-zip", "--no-notify")
 
         log_text = _log_text(closure_repo)
         assert "Dependency closure for side 'server'" in log_text
         assert "force-included 1 mod(s)" in log_text
         assert "server_user.jar -> client_lib.jar" in log_text
+        assert "jar modId=client_lib" in log_text
 
 
 # ---------------------------------------------------------------------------

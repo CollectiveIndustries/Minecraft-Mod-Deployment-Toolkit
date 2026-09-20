@@ -12,12 +12,14 @@ Multi-instance model:
 
 After the client ZIP is written, the deploy publishes an HTML changelog
 page to www_dir and posts a short announcement to Discord pointing at
-that page. The page carries the download link, the SHA-256, and the
-source-vs-target diff. Discord carries only a short pointer plus the
-SHA-256 so the announcement itself is verifiable at a glance.
+that page. The page describes what changed in the CLIENT PACK since the
+previous client ZIP, and carries the download link, the SHA-256, and the
+mod/KubeJS diff. Discord carries only a short pointer plus the SHA-256
+so the announcement itself is verifiable at a glance.
 
 No network calls are made to any model service. The changelog is
-computed locally by diffing source and target directories.
+computed locally by diffing the current staging tree against the most
+recent previous client ZIP in www_dir.
 
 Test modes:
 
@@ -322,6 +324,23 @@ def deploy_shared_items(
         dest_path = resolve_shared_dest(dest_rel, www_dir, mods_dir)
         _copy_item_to(item, dest_path, exclude_patterns, logger)
         logger.info(f"Copied shared item {rel} -> {dest_path}")
+
+
+def find_previous_client_zip(output_dir: Path) -> Path | None:
+    """Return the most recent client ZIP in output_dir, or None.
+
+    Called BEFORE the current build's ZIP is written, so the most
+    recent ZIP present at that moment is the previous build's. On a
+    first build, output_dir contains no client ZIP and the caller
+    reports the pack as an initial build.
+
+    Same-day reruns find the earlier same-day build here, so the
+    changelog describes only what changed between the two runs.
+    """
+    candidates = [p for p in output_dir.glob("minecraft_client_*.zip") if p.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def create_client_zip(
@@ -718,29 +737,6 @@ def main():
     exclude_patterns = file_utils.get_exclude_patterns(exclude_file, logger)
     protect_patterns = file_utils.get_protect_patterns(protect_file, logger)
 
-    # ------------------------------------------------------------------
-    # Pre-deploy snapshot: what will change when this deploy runs.
-    #
-    # Computed BEFORE we touch anything, because after the deploy the
-    # target will match the source and the diff would always be empty.
-    # Errors here are non-fatal.
-    # ------------------------------------------------------------------
-    pre_deploy_report: changelog.DiffReport = changelog.DiffReport()
-    if mode == "server" and not args.no_zip:
-        try:
-            server_mods_for_diff = load_mod_list(prism_index_dir, config_dir, "server", logger)
-            wanted_mod_files = [e["file"] for e in server_mods_for_diff if e.get("file")]
-            first_instance_kubejs = (instances[0][1] / "kubejs") if instances else Path()
-            pre_deploy_report = changelog.build_diff_report(
-                wanted_mod_files=wanted_mod_files,
-                target_mods_dir=mods_dir,
-                source_kubejs=sync_root / "kubejs",
-                target_kubejs=first_instance_kubejs,
-            )
-            logger.info(f"Pre-deploy changelog: {pre_deploy_report.summary_line()}")
-        except (ValueError, FileNotFoundError) as exc:
-            logger.warning(f"Could not build pre-deploy diff: {exc}")
-
     try:
         # Ensure the output directory exists. Only do this when we are
         # actually going to write to it, and only ever a directory that
@@ -815,6 +811,18 @@ def main():
                     logger,
                 )
                 try:
+                    # Capture the previous ZIP BEFORE writing the new one.
+                    # The changelog describes the client pack, so its
+                    # baseline is the previous client pack in the same
+                    # output directory.
+                    previous_zip = find_previous_client_zip(output_dir)
+
+                    report = changelog.build_client_diff_report(
+                        staging_dir=staging_client,
+                        previous_zip=previous_zip,
+                        logger=logger,
+                    )
+
                     client_zip = create_client_zip(
                         staging_client,
                         output_dir,
@@ -824,7 +832,7 @@ def main():
                     )
                     publish_release(
                         client_zip=client_zip,
-                        report=pre_deploy_report,
+                        report=report,
                         config=config,
                         output_dir=output_dir,
                         logger=logger,

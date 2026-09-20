@@ -1,49 +1,75 @@
 # src/minecraft/common/changelog.py
 
-"""Changelog generation: diff source vs target, render human-readable HTML.
+"""Changelog generation: diff the current client pack against the
+previous one and render human-readable HTML.
 
-Read-only against both source and target. The only file this module
-writes is the final HTML page, which lands in www_dir alongside the
-client ZIP.
+The page describes the CLIENT PACK - what changed in it since the last
+build. The page is titled after the client ZIP, and the ZIP is what
+users download, so the diff must be about the ZIP's contents.
 
-"Human-readable" here means a structured list of what changed, not a
-unified diff dump. The page lists:
+Baseline is the most recent prior client ZIP in the same directory,
+read before the current ZIP is written. On a first build with no
+previous ZIP, the page reports the initial contents rather than an
+empty diff.
 
-  - added mods (by jar filename)
-  - added KubeJS files (by path)
-  - modified KubeJS files (by path)
-  - removed KubeJS files (by path)
+The page lists:
 
-No network calls, no LLM, no git. The output is deterministic and can
-be diffed across builds.
-"""
+  - mods added (in the new ZIP, not in the previous)
+  - mods removed (in the previous, not in the new)
+  - KubeJS files added / modified / removed (by content hash)
+
+Mods are compared by filename only. A version bump produces a new
+filename, so it appears as one addition and one removal - an honest
+description of what the user sees.
+
+No network calls, no LLM, no git. Output is deterministic and can be
+diffed across builds.
+"""  # noqa: D205
 
 from __future__ import annotations
 
+import hashlib
 import html
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class DiffReport:
-    """What changed between source and target at the moment of build."""
+    """What changed in the client pack since the previous build."""
 
     added_mods: list[str] = field(default_factory=list)
+    removed_mods: list[str] = field(default_factory=list)
     added_kubejs: list[str] = field(default_factory=list)
     modified_kubejs: list[str] = field(default_factory=list)
     removed_kubejs: list[str] = field(default_factory=list)
+    initial_build: bool = False
+    total_mods: int = 0
 
     def is_empty(self) -> bool:
-        """Checks whether there are no tracked modifications."""
-        return not (self.added_mods or self.added_kubejs or self.modified_kubejs or self.removed_kubejs)
+        """True when there is nothing to report. Initial builds are never empty."""
+        if self.initial_build:
+            return False
+        return not (self.added_mods or self.removed_mods or self.added_kubejs or self.modified_kubejs or self.removed_kubejs)
 
     def summary_line(self) -> str:
         """One-line teaser suitable for a Discord message body."""
+        if self.initial_build:
+            n = self.total_mods
+            plural = "s" if n != 1 else ""
+            return f"Initial build * {n} mod{plural} in pack"
         parts: list[str] = []
         if self.added_mods:
             n = len(self.added_mods)
             parts.append(f"{n} mod{('s' if n != 1 else '')} added")
+        if self.removed_mods:
+            n = len(self.removed_mods)
+            parts.append(f"{n} mod{('s' if n != 1 else '')} removed")
         if self.added_kubejs:
             n = len(self.added_kubejs)
             parts.append(f"{n} KubeJS file{('s' if n != 1 else '')} added")
@@ -58,57 +84,152 @@ class DiffReport:
         return " * ".join(parts)
 
 
-def _relative_files(root: Path) -> set[Path]:
-    """Return all files under root as paths relative to root."""
+# ---------------------------------------------------------------------------
+# Hashing and ZIP reads
+# ---------------------------------------------------------------------------
+
+
+def _hash_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def _zip_names(zip_path: Path, prefix: str) -> set[str]:
+    """Relative paths of files under prefix in the zip. Directories excluded."""
+    result: set[str] = set()
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            if not name.startswith(prefix):
+                continue
+            rel = name[len(prefix) :]
+            if not rel or rel.endswith("/"):
+                continue
+            result.add(rel)
+    return result
+
+
+def _zip_hashes(zip_path: Path, prefix: str) -> dict[str, str]:
+    """{relative_path: sha256} for files under prefix in the zip."""
+    result: dict[str, str] = {}
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            if not name.startswith(prefix):
+                continue
+            rel = name[len(prefix) :]
+            if not rel or rel.endswith("/"):
+                continue
+            result[rel] = _hash_bytes(zf.read(name))
+    return result
+
+
+def _staging_hashes(root: Path) -> dict[str, str]:
+    """{relative_path: sha256} for every file under root."""
     if not root.is_dir():
-        return set()
-    return {p.relative_to(root) for p in root.rglob("*") if p.is_file()}
+        return {}
+    result: dict[str, str] = {}
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = str(p.relative_to(root)).replace("\\", "/")
+        result[rel] = _hash_bytes(p.read_bytes())
+    return result
 
 
-def compute_mod_diff(wanted_files: list[str], target_mods_dir: Path) -> list[str]:
-    """Return mod filenames that are wanted but not yet in target_mods_dir.
+# ---------------------------------------------------------------------------
+# Diffs
+# ---------------------------------------------------------------------------
 
-    ``wanted_files`` is the list of jar filenames for the side being
-    deployed (already filtered from the Prism index). The target is the
-    shared mods directory. Order is alphabetical for stable output.
+
+def compute_mod_diff(
+    current_mods: set[str],
+    previous_zip: Path | None,
+) -> tuple[list[str], list[str]]:
+    """Return (added, removed) mod filenames.
+
+    Comparison is by filename only. A version bump shows up as one
+    addition and one removal, which is what changed in the pack for
+    the user.
     """
-    current: set[str] = set()
-    if target_mods_dir.is_dir():
-        current = {p.name for p in target_mods_dir.glob("*.jar")}
-    return sorted(name for name in wanted_files if name not in current)
+    if previous_zip is None or not previous_zip.is_file():
+        return (sorted(current_mods), [])
+    previous_mods = _zip_names(previous_zip, "mods/")
+    added = sorted(current_mods - previous_mods)
+    removed = sorted(previous_mods - current_mods)
+    return (added, removed)
 
 
-def compute_kubejs_diff(source_kubejs: Path, target_kubejs: Path) -> tuple[list[str], list[str], list[str]]:
+def compute_kubejs_diff(
+    staging_kubejs: Path,
+    previous_zip: Path | None,
+) -> tuple[list[str], list[str], list[str]]:
     """Return (added, modified, removed) KubeJS paths.
 
-    Paths are relative to the kubejs directory and use forward slashes
-    for stability across platforms.
+    Paths are relative to the kubejs directory and use forward slashes.
+    Comparison is by content hash, so whitespace-only changes register
+    as modifications.
     """
-    src = _relative_files(source_kubejs)
-    tgt = _relative_files(target_kubejs)
-    added = sorted(str(p).replace("\\", "/") for p in src - tgt)
-    removed = sorted(str(p).replace("\\", "/") for p in tgt - src)
-    modified: list[str] = []
-    for rel in sorted(src & tgt):
-        try:
-            if (source_kubejs / rel).read_bytes() != (target_kubejs / rel).read_bytes():
-                modified.append(str(rel).replace("\\", "/"))
-        except OSError:
-            continue
+    current = _staging_hashes(staging_kubejs)
+    if previous_zip is None or not previous_zip.is_file():
+        return (sorted(current.keys()), [], [])
+    previous = _zip_hashes(previous_zip, "kubejs/")
+    added = sorted(set(current) - set(previous))
+    removed = sorted(set(previous) - set(current))
+    modified = sorted(p for p in set(current) & set(previous) if current[p] != previous[p])
     return (added, modified, removed)
 
 
-def build_diff_report(wanted_mod_files: list[str], target_mods_dir: Path, source_kubejs: Path, target_kubejs: Path) -> DiffReport:
-    """Build a DiffReport from the source/target inputs."""
-    added, modified, removed = compute_kubejs_diff(source_kubejs, target_kubejs)
-    return DiffReport(added_mods=compute_mod_diff(wanted_mod_files, target_mods_dir), added_kubejs=added, modified_kubejs=modified, removed_kubejs=removed)
+def build_client_diff_report(
+    staging_dir: Path,
+    previous_zip: Path | None,
+    logger,
+) -> DiffReport:
+    """Build a DiffReport from the current client staging vs previous ZIP.
+
+    ``staging_dir`` is the directory that will become the new client
+    ZIP. ``previous_zip`` is the most recent prior client ZIP, or None
+    on a first build. In the None case the report is marked as an
+    initial build and reports the total mod count instead of a diff.
+    """
+    staging_mods_dir = staging_dir / "mods"
+    if staging_mods_dir.is_dir():
+        current_mods = {p.name for p in staging_mods_dir.glob("*.jar")}
+    else:
+        current_mods = set()
+
+    staging_kubejs = staging_dir / "kubejs"
+
+    added_mods, removed_mods = compute_mod_diff(current_mods, previous_zip)
+    added_kjs, modified_kjs, removed_kjs = compute_kubejs_diff(staging_kubejs, previous_zip)
+
+    is_initial = previous_zip is None or not previous_zip.is_file()
+    report = DiffReport(
+        added_mods=added_mods,
+        removed_mods=removed_mods,
+        added_kubejs=added_kjs,
+        modified_kubejs=modified_kjs,
+        removed_kubejs=removed_kjs,
+        initial_build=is_initial,
+        total_mods=len(current_mods),
+    )
+    logger.info(f"Client pack diff: {report.summary_line()}")
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
 
 
 def _esc(text: str) -> str:
     return html.escape(text, quote=True)
 
 
-def render_changelog_html(report: DiffReport, artifact_name: str, artifact_url: str, sha256sum: str, timestamp: str) -> str:
+def render_changelog_html(
+    report: DiffReport,
+    artifact_name: str,
+    artifact_url: str,
+    sha256sum: str,
+    timestamp: str,
+) -> str:
     """Render the changelog page as a self-contained HTML document."""
     lines: list[str] = []
     lines.append("<!DOCTYPE html>")
@@ -126,7 +247,12 @@ def render_changelog_html(report: DiffReport, artifact_name: str, artifact_url: 
     lines.append(f"<p>SHA-256: <code>{_esc(sha256sum)}</code></p>")
     lines.append("<h2>Changelog</h2>")
     lines.append('<div class="changelog">')
-    if report.is_empty():
+
+    if report.initial_build:
+        n = report.total_mods
+        plural = "s" if n != 1 else ""
+        lines.append(f'<p class="empty">Initial build - no previous pack to compare against. This pack contains {n} mod{plural}.</p>')
+    elif report.is_empty():
         lines.append('<p class="empty">No changes since last build.</p>')
     else:
         if report.added_mods:
@@ -134,6 +260,11 @@ def render_changelog_html(report: DiffReport, artifact_name: str, artifact_url: 
             for mod in report.added_mods:
                 lines.append(f"<li>{_esc(mod)}</li>")
             lines.append("</ol>")
+        if report.removed_mods:
+            lines.append("<h3>Removed mods</h3><ul>")
+            for mod in report.removed_mods:
+                lines.append(f"<li>{_esc(mod)}</li>")
+            lines.append("</ul>")
         if report.added_kubejs:
             lines.append("<h3>Added KubeJS files</h3><ul>")
             for path in report.added_kubejs:
@@ -149,12 +280,20 @@ def render_changelog_html(report: DiffReport, artifact_name: str, artifact_url: 
             for path in report.removed_kubejs:
                 lines.append(f"<li><code>{_esc(path)}</code></li>")
             lines.append("</ul>")
+
     lines.append("</div>")
     lines.append("</body></html>")
     return "\n".join(lines)
 
 
-def write_changelog(report: DiffReport, artifact_name: str, artifact_url: str, sha256sum: str, timestamp: str, output_path: Path) -> None:
+def write_changelog(
+    report: DiffReport,
+    artifact_name: str,
+    artifact_url: str,
+    sha256sum: str,
+    timestamp: str,
+    output_path: Path,
+) -> None:
     """Write the changelog HTML page to output_path."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     html_text = render_changelog_html(report, artifact_name, artifact_url, sha256sum, timestamp)
