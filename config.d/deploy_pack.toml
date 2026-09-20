@@ -3,6 +3,13 @@
 # ---------------------------------------------------------------------
 # This file controls the modpack deployment tool.
 # All paths can be absolute or relative to the working directory.
+#
+# SECRETS (Discord webhook URL, etc.) do NOT belong in this file.
+# Put them in config.d/.env (gitignored):
+#
+#     DEPLOYPACK_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
+#
+# ConfigCore picks that up as the `webhook_url` key automatically.
 
 # === Core paths ========================================================
 
@@ -16,11 +23,20 @@ mods_dir = "./mods"
 # Public web directory. Receives resourcepacks, the client ZIP, BlueMap, etc.
 www_dir = "./www"
 
-# File containing rsync‑style exclude patterns (e.g., *.bak, *.tmp).
+# File containing rsync-style exclude patterns (e.g., *.bak, *.tmp).
 # Applied recursively during both staging and live deployment.
 exclude_file = "./.rsync_exclude"
 
+# File listing paths that must NEVER be deleted during a clean deploy
+# (server-authored files that live only at the target, not in git).
+# Committed to the repo. Same format as the exclude file.
+# A missing file causes the clean phase to abort rather than silently
+# delete everything — see file_utils.get_protect_patterns for details.
+protect_file = "./.deploy_protect"
+
 # Template for the output ZIP filename. {date} -> YYYYMMDD.
+# If you want same-day builds to coexist, use a timestamp:
+#     "minecraft_client_{date}_%H%M%S.zip"
 output_filename = "minecraft_client_{date}.zip"
 
 # Directory where mod JAR files are stored (populated by PrismLauncher).
@@ -52,6 +68,46 @@ multimc_base = "/home/admiral/.local/share/multimc/instances"
 
 # Name of the MultiMC instance to deploy to (client mode only).
 instance_name = "Mike_N_Ike"
+
+# === Client pack notification ==========================================
+# After the client ZIP is written, deploy_pack generates an HTML
+# changelog page in www_dir and posts a short announcement to Discord
+# pointing at that page. The page carries the download link, the
+# SHA-256, and the full source-vs-target diff.
+#
+# The webhook URL itself is a secret and lives in config.d/.env as
+# DEPLOYPACK_WEBHOOK_URL. The keys below are non-secret.
+#
+# A failed notification is logged but never fails the deploy.
+
+download_base_url = "https://mc.example.com/packs"
+
+# Placeholders available in the message template:
+#   {artifact}       — client ZIP filename
+#   {url}            — direct download URL (download_base_url + artifact)
+#   {changelog_url}  — URL of the generated changelog HTML page
+#   {sha256sum}      — SHA-256 of the client ZIP
+#   {timestamp}      — build time, UTC
+#   {summary}        — one-line teaser, e.g. "3 mods added · 5 KubeJS
+#                      files modified"
+#
+# The message body is trimmed at a blank-line boundary if it exceeds
+# Discord's 2000 character limit.
+
+webhook_message_template = """
+**Minecraft Client Pack Published**
+
+**Update notes:** {changelog_url}
+**Download:** {url}
+
+**SHA-256**
+`{sha256sum}`
+
+**Summary**
+{summary}
+
+Built {timestamp} UTC
+"""
 
 # === Sync mapping ======================================================
 # Maps top-level items in `sync_root` to destination paths.

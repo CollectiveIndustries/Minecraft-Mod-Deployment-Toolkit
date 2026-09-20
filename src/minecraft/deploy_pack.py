@@ -9,6 +9,32 @@ Multi-instance model:
                ──► shared mods    (from Prism index, deployed once)
                ──► shared www     (@www/... destinations)
                ──► client ZIP     (www_dir/minecraft_client_<date>.zip)
+
+After the client ZIP is written, the deploy publishes an HTML changelog
+page to www_dir and posts a short announcement to Discord pointing at
+that page. The page carries the download link, the SHA-256, and the
+source-vs-target diff. Discord carries only a short pointer plus the
+SHA-256 so the announcement itself is verifiable at a glance.
+
+No network calls are made to any model service. The changelog is
+computed locally by diffing source and target directories.
+
+Test modes:
+
+    --dry-run            Build ZIP and changelog into <www_dir>/dry_run/,
+                         skip every live-server write, and print the
+                         Discord payload to the console instead of
+                         posting it. Implies --no-deploy.
+
+    --dry-run-notify     With --dry-run, actually post the webhook
+                         message. For testing Discord format without
+                         touching the live servers.
+
+    --no-notify          Build the ZIP and changelog HTML but do not
+                         post the Discord webhook. Combine with
+                         --no-deploy to produce both www artifacts
+                         without touching live servers and without
+                         sending anything to Discord.
 """
 
 import argparse
@@ -23,8 +49,8 @@ from pathlib import Path
 
 from LoggingCore import get_logger, setup_logging
 
+from .common import changelog, file_utils, notify, overrides, prism
 from .common import config as cfg
-from .common import file_utils, overrides, prism
 
 # ---------------------------------------------------------------------------
 # Mod loading
@@ -198,7 +224,6 @@ def prepare_client_staging(
     staging = Path(tempfile.mkdtemp(prefix="deploy_client_"))
     logger.info(f"Client staging directory: {staging}")
 
-    # 1. Client mods
     mods_dir = staging / "mods"
     mods_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -221,7 +246,6 @@ def prepare_client_staging(
         copied += 1
     logger.info(f"Copied {copied}/{len(client_mods)} mod files to client staging")
 
-    # 2. Client-mapped sync items
     for rel, item in iter_sync_items(sync_root, exclude_patterns, logger):
         key = str(rel)
         mapping_value = sync_mapping.get(key)
@@ -231,7 +255,6 @@ def prepare_client_staging(
         if dest_rel is None:
             continue
         if is_shared_dest(dest_rel):
-            # @-prefixed items point outside the ZIP; skip them here.
             logger.debug(f"Skipping shared item for client ZIP: {key} -> {dest_rel}")
             continue
         dest_path = staging / dest_rel
@@ -272,30 +295,155 @@ def deploy_shared_items(
 
 def create_client_zip(
     staging_dir: Path,
-    www_dir: Path,
+    output_dir: Path,
     filename_template: str,
     exclude_patterns: list,
     logger,
 ) -> Path:
-    """Create a ZIP archive from the staging directory and return its path."""
+    """Create a ZIP archive from the staging directory and return its path.
+
+    ``output_dir`` is the directory the ZIP lands in. In a normal deploy
+    that is ``www_dir``. In a dry-run it is ``<www_dir>/dry_run``.
+    """
     date_str = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
     zip_name = filename_template.format(date=date_str)
-    output_zip = www_dir / zip_name
+    output_zip = output_dir / zip_name
     logger.info(f"Creating zip: {output_zip}")
     file_utils.create_zip_from_staging(staging_dir, output_zip, exclude_patterns, logger)
     logger.info(f"Client pack created successfully at {output_zip}")
     return output_zip
 
 
+def publish_release(
+    client_zip: Path,
+    report: "changelog.DiffReport",
+    config,
+    output_dir: Path,
+    logger,
+    dry_run: bool = False,
+    dry_run_notify: bool = False,
+    no_notify: bool = False,
+) -> None:
+    """Write the changelog HTML page and post the announcement to Discord.
+
+    ``output_dir`` is where the changelog HTML lands. In a normal deploy
+    that is ``www_dir``. In a dry-run it is ``<www_dir>/dry_run``.
+
+    Notification modes (mutually exclusive behavior, checked in order):
+
+      - no_notify:           skip Discord entirely. HTML still written.
+      - dry_run + !notify:   print the payload, do not post.
+      - dry_run + notify:    post the payload (format test).
+      - neither flag:        post the payload (normal deploy).
+
+    A failed post is logged but never raised - a notification problem
+    must not fail a deploy.
+    """
+    artifact_name = client_zip.name
+    download_base = config.get("download_base_url", "") or ""
+
+    if download_base:
+        artifact_url = download_base.rstrip("/") + "/" + artifact_name
+    else:
+        artifact_url = artifact_name
+
+    try:
+        sha256sum = file_utils.compute_file_hash(client_zip, "sha256")
+    except OSError as exc:
+        logger.warning(f"Could not compute SHA-256 for {client_zip}: {exc}")
+        sha256sum = "unavailable"
+
+    timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
+    date_str = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
+
+    # --- Write the changelog page ------------------------------------
+    changelog_name = f"changelog_{date_str}.html"
+    changelog_path = output_dir / changelog_name
+    changelog.write_changelog(
+        report=report,
+        artifact_name=artifact_name,
+        artifact_url=artifact_url,
+        sha256sum=sha256sum,
+        timestamp=timestamp,
+        output_path=changelog_path,
+    )
+    logger.info(f"Wrote changelog page: {changelog_path}")
+
+    if download_base:
+        changelog_url = download_base.rstrip("/") + "/" + changelog_name
+    else:
+        changelog_url = changelog_name
+
+    # --- Skip Discord entirely if asked ------------------------------
+    if no_notify:
+        logger.info("Skipping Discord notification (--no-notify).")
+        return
+
+    # --- Build the webhook message -----------------------------------
+    template = config.get(
+        "webhook_message_template",
+        "**Minecraft Client Pack Published**\n\n"
+        "**Update notes:** {changelog_url}\n"
+        "**Download:** {url}\n\n"
+        "**SHA-256**\n`{sha256sum}`\n\n"
+        "**Summary**\n{summary}\n\n"
+        "Built {timestamp} UTC",
+    )
+    context = {
+        "artifact": artifact_name,
+        "url": artifact_url,
+        "changelog_url": changelog_url,
+        "sha256sum": sha256sum,
+        "timestamp": timestamp,
+        "summary": report.summary_line(),
+    }
+    try:
+        content = template.format(**context)
+    except KeyError as exc:
+        logger.error(f"Unknown placeholder in webhook_message_template: {exc}")
+        content = f"New client pack: {changelog_url}"
+
+    # --- Dry-run: print instead of posting ---------------------------
+    if dry_run and not dry_run_notify:
+        logger.info("=" * 72)
+        logger.info("DRY-RUN: Discord payload that would be posted")
+        logger.info("-" * 72)
+        for line in content.splitlines():
+            logger.info(f"  {line}")
+        logger.info("-" * 72)
+        logger.info(f"  payload length: {len(content)} chars (limit 2000)")
+        logger.info("=" * 72)
+        return
+
+    # --- Real send ---------------------------------------------------
+    webhook_url = config.get("webhook_url")
+    if not webhook_url:
+        logger.debug("No webhook_url configured, skipping notification")
+        return
+
+    if notify.post_discord_webhook(webhook_url, content):
+        logger.info("Posted client pack announcement")
+    else:
+        logger.warning("Client pack announcement failed (deploy succeeded)")
+
+
 def deploy_to_server(
     staging_dir: Path,
     live_server: Path,
     exclude_patterns: list,
+    protect_patterns: list,
     logger,
 ):
     """Copy staging contents to a live server instance (with cleanup)."""
     logger.info(f"Deploying to live_server: {live_server}")
-    file_utils.copy_with_exclusions(staging_dir, live_server, exclude_patterns, logger, clean=True)
+    file_utils.copy_with_exclusions(
+        staging_dir,
+        live_server,
+        exclude_patterns,
+        logger,
+        clean=True,
+        protect_patterns=protect_patterns,
+    )
     logger.info("Live server updated successfully (cleaned).")
 
 
@@ -358,11 +506,41 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug logging and full traceback")
     parser.add_argument("--no-deploy", action="store_true", help="With --server: skip writing to instances/mods/www (only create ZIP).")
     parser.add_argument("--no-zip", action="store_true", help="With --server: skip creating the client ZIP (only deploy server side).")
+    parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help=(
+            "With --server: build the client ZIP and changelog HTML but do "
+            "not post the Discord webhook. Combine with --no-deploy to "
+            "produce both www artifacts without touching live servers."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "With --server: skip every live-server write. Build the client "
+            "ZIP and changelog HTML into <www_dir>/dry_run/. Print the "
+            "Discord payload to the console instead of posting it. Implies "
+            "--no-deploy."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run-notify",
+        action="store_true",
+        help=("With --dry-run: actually post the webhook message instead of only printing it. For testing the Discord format without touching live servers."),
+    )
     args, remaining = parser.parse_known_args()
 
     mode = "client" if args.client else "server"
 
-    # Config directory resolution
+    # --dry-run implies --no-deploy.
+    if args.dry_run and not args.no_deploy:
+        args.no_deploy = True
+
+    if args.dry_run_notify and not args.dry_run:
+        parser.error("--dry-run-notify requires --dry-run")
+
     if args.config_dir:
         config_dir = Path(args.config_dir)
         if config_dir.is_file():
@@ -381,6 +559,8 @@ def main():
     if args.debug:
         print("=== Loaded configuration ===")
         for key, value in config.as_dict().items():
+            if any(token in key.lower() for token in ("webhook", "secret", "token", "password")):
+                value = "<redacted>"
             print(f"{key} = {value}")
         print("============================")
 
@@ -392,6 +572,7 @@ def main():
     mods_dir = get_path("mods_dir", "./mods")
     www_dir = get_path("www_dir", "./www")
     exclude_file = get_path("exclude_file", "./.rsync_exclude")
+    protect_file = get_path("protect_file", "./.deploy_protect")
     output_filename = config.get("output_filename", "minecraft_client_{date}.zip")
     modpack_dir = get_path("modpack_dir", "./sync/downloads")
     sync_mapping = config.get("sync_mapping", {})
@@ -400,7 +581,13 @@ def main():
 
     prism_index_dir = modpack_dir / ".index"
 
-    # Logging setup
+    # Output directory for ZIP + changelog HTML. In a dry-run it is a
+    # subdirectory of www_dir so nothing overwrites the live artifacts.
+    if args.dry_run:
+        output_dir = www_dir / "dry_run"
+    else:
+        output_dir = www_dir
+
     log_config = config.get("logging")
     if not log_config:
         log_config = {
@@ -419,20 +606,36 @@ def main():
 
     instances = load_instances(config, logger)
 
-    logger.info(f"Mode: {mode}")
-    logger.info(f"  config_dir   = {config_dir}")
-    logger.info(f"  sync_root    = {sync_root}")
-    logger.info(f"  mods_dir     = {mods_dir}")
-    logger.info(f"  www_dir      = {www_dir}")
-    logger.info(f"  modpack_dir  = {modpack_dir}")
-    logger.info(f"  prism_index  = {prism_index_dir}")
-    logger.info(f"  exclude_file = {exclude_file}")
-    logger.info(f"  instances    = {[(n, str(p)) for n, p in instances]}")
-    if mode == "client":
-        logger.info(f"  multimc_base = {multimc_base}")
-        logger.info(f"  instance_name= {instance_name}")
+    if args.dry_run:
+        logger.info("=" * 72)
+        logger.info("DRY-RUN MODE")
+        logger.info("  Live servers, shared mods, and shared www items will")
+        logger.info("  NOT be touched. Output goes to:")
+        logger.info(f"    {output_dir}")
+        if args.dry_run_notify:
+            logger.info("  Webhook WILL be posted (--dry-run-notify).")
+        else:
+            logger.info("  Webhook payload will be printed, not posted.")
+        logger.info("=" * 72)
 
-    # Validation
+    if args.no_notify and not args.dry_run:
+        logger.info("--no-notify: Discord webhook will be skipped.")
+
+    logger.info(f"Mode: {mode}")
+    logger.info(f"  config_dir    = {config_dir}")
+    logger.info(f"  sync_root     = {sync_root}")
+    logger.info(f"  mods_dir      = {mods_dir}")
+    logger.info(f"  www_dir       = {www_dir}")
+    logger.info(f"  output_dir    = {output_dir}")
+    logger.info(f"  modpack_dir   = {modpack_dir}")
+    logger.info(f"  prism_index   = {prism_index_dir}")
+    logger.info(f"  exclude_file  = {exclude_file}")
+    logger.info(f"  protect_file  = {protect_file}")
+    logger.info(f"  instances     = {[(n, str(p)) for n, p in instances]}")
+    if mode == "client":
+        logger.info(f"  multimc_base  = {multimc_base}")
+        logger.info(f"  instance_name = {instance_name}")
+
     if mode == "client" and not instance_name:
         logger.error("instance_name must be set for client mode")
         sys.exit(1)
@@ -445,8 +648,42 @@ def main():
         logger.warning("Both --no-zip and --no-deploy specified - nothing will be done.")
 
     exclude_patterns = file_utils.get_exclude_patterns(exclude_file, logger)
+    protect_patterns = file_utils.get_protect_patterns(protect_file, logger)
+
+    # ------------------------------------------------------------------
+    # Pre-deploy snapshot: what will change when this deploy runs.
+    #
+    # Computed BEFORE we touch anything, because after the deploy the
+    # target will match the source and the diff would always be empty.
+    # Errors here are non-fatal.
+    # ------------------------------------------------------------------
+    pre_deploy_report: changelog.DiffReport = changelog.DiffReport()
+    if mode == "server" and not args.no_zip:
+        try:
+            server_mods_for_diff = load_mod_list(prism_index_dir, config_dir, "server", logger)
+            wanted_mod_files = [e["file"] for e in server_mods_for_diff if e.get("file")]
+            first_instance_kubejs = (instances[0][1] / "kubejs") if instances else Path()
+            pre_deploy_report = changelog.build_diff_report(
+                wanted_mod_files=wanted_mod_files,
+                target_mods_dir=mods_dir,
+                source_kubejs=sync_root / "kubejs",
+                target_kubejs=first_instance_kubejs,
+            )
+            logger.info(f"Pre-deploy changelog: {pre_deploy_report.summary_line()}")
+        except (ValueError, FileNotFoundError) as exc:
+            logger.warning(f"Could not build pre-deploy diff: {exc}")
 
     try:
+        # Ensure the output directory exists. Only do this when we are
+        # actually going to write to it, and only ever a directory that
+        # is either the real www_dir or its dry_run/ subdirectory.
+        #
+        # This runs inside the try block so that a permission error on
+        # the target filesystem is logged with the same traceback
+        # handling as every other failure in the deploy pipeline.
+        if not args.no_zip:
+            output_dir.mkdir(parents=True, exist_ok=True)
+
         if mode == "server":
             # ---------- Server deployment ----------
             if not args.no_deploy:
@@ -456,7 +693,14 @@ def main():
                 try:
                     mods_src = staging_mods / "mods"
                     if mods_src.is_dir():
-                        file_utils.copy_with_exclusions(mods_src, mods_dir, exclude_patterns, logger, clean=True)
+                        file_utils.copy_with_exclusions(
+                            mods_src,
+                            mods_dir,
+                            exclude_patterns,
+                            logger,
+                            clean=True,
+                            protect_patterns=protect_patterns,
+                        )
                 finally:
                     shutil.rmtree(staging_mods, ignore_errors=True)
 
@@ -465,7 +709,13 @@ def main():
                     logger.info(f"--- Deploying to instance '{inst_name}' ({inst_path}) ---")
                     staging = prepare_instance_staging(sync_root, "server", exclude_patterns, sync_mapping, logger)
                     try:
-                        deploy_to_server(staging, inst_path, exclude_patterns, logger)
+                        deploy_to_server(
+                            staging,
+                            inst_path,
+                            exclude_patterns,
+                            protect_patterns,
+                            logger,
+                        )
                     finally:
                         shutil.rmtree(staging, ignore_errors=True)
 
@@ -480,9 +730,12 @@ def main():
                     logger,
                 )
             else:
-                logger.info("Skipping deployment (--no-deploy).")
+                if args.dry_run:
+                    logger.info("Skipping deployment (dry-run).")
+                else:
+                    logger.info("Skipping deployment (--no-deploy).")
 
-            # ---------- Client ZIP ----------
+            # ---------- Client ZIP + changelog + announcement ----------
             if not args.no_zip:
                 client_mods = load_mod_list(prism_index_dir, config_dir, "client", logger)
                 staging_client = prepare_client_staging(
@@ -494,12 +747,22 @@ def main():
                     logger,
                 )
                 try:
-                    create_client_zip(
+                    client_zip = create_client_zip(
                         staging_client,
-                        www_dir,
+                        output_dir,
                         output_filename,
                         exclude_patterns,
                         logger,
+                    )
+                    publish_release(
+                        client_zip=client_zip,
+                        report=pre_deploy_report,
+                        config=config,
+                        output_dir=output_dir,
+                        logger=logger,
+                        dry_run=args.dry_run,
+                        dry_run_notify=args.dry_run_notify,
+                        no_notify=args.no_notify,
                     )
                 finally:
                     shutil.rmtree(staging_client, ignore_errors=True)

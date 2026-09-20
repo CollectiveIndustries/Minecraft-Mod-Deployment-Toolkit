@@ -1,0 +1,137 @@
+# .deploy_protect
+#
+# Paths that must NEVER be deleted during a clean deploy.
+#
+# This file is committed to the repository and is the single source of
+# truth for what survives a clean. It replaces the old hardcoded
+# PROTECTED_PATHS set that used to live inside file_utils.py.
+#
+# HOW MATCHING WORKS
+# ------------------
+# One glob per line. A path is protected if EITHER:
+#   - the full relative path matches a pattern
+#     (e.g. "config/something/tokens.json")
+#   - any single path component matches a pattern
+#     (e.g. "tokens.json" matches at any depth)
+#
+# Blank lines and lines starting with # are ignored.
+# A single trailing slash is stripped ("world/" behaves like "world").
+#
+# WHY THIS EXISTS
+# ---------------
+# A clean deploy wipes every file in the target directory that is not
+# part of the source sync. That is correct for modpack-managed files
+# and catastrophic for server-generated ones. Anything the server
+# writes at runtime and that is not reproducible from the repo must be
+# listed here, or it will be destroyed on the next clean deploy.
+#
+# WHEN TO ADD
+# -----------
+# When in doubt, add it. A false positive just means the deploy leaves
+# the file in place instead of removing it — harmless. A false negative
+# destroys data on the next clean deploy.
+
+# ===========================================================================
+# MINECRAFT SERVER RUNTIME
+# ===========================================================================
+# Standard files and directories the vanilla/Forge server writes on its
+# own. None of these are in the git repo; all of them must survive.
+
+server.properties
+eula.txt
+ops.json
+whitelist.json
+banned-ips.json
+banned-players.json
+usercache.json
+usernamecache.json
+
+# World data. Never touch.
+world
+world_nether
+world_the_end
+
+# Runtime logs and crash dumps.
+logs
+crash-reports
+
+# Server launcher state written by the run scripts.
+user_jvm_args.txt
+.run-forge.env
+.forge-manifest.json
+.rcon-cli.env
+.rcon-cli.yaml
+run.sh
+run.bat
+
+# ===========================================================================
+# PROXY / MULTI-INSTANCE
+# ===========================================================================
+# Files that tie each backend instance to the Velocity proxy, plus the
+# proxy's own forwarding secret. All three are server-generated and
+# must never be part of the git repo or the deployed source tree.
+#
+# Bare filenames are used (not full paths) because the clean phase
+# matches against the path relative to each target instance. The
+# velocity target sees "forwarding.secret" at its root; the survival
+# and creative targets each see "config/proxy-compatible-forge.toml".
+# One pattern covers both backend instances.
+
+forwarding.secret
+proxy-compatible-forge.toml
+
+# ===========================================================================
+# SERVER-AUTHORED MOD STATE
+# ===========================================================================
+# Mods that write their own config on first boot. These are the ones
+# that bit us before — a clean deploy destroys them and the mod
+# regenerates a fresh default, silently dropping any customized state.
+#
+# Add any mod that manages its own files under config/ or in the server
+# root. Keep the list grouped by mod for legibility.
+
+patchouli_books
+schematics
+defaultconfigs
+
+# ===========================================================================
+# JVM / FORGE / LAUNCHER
+# ===========================================================================
+# Forge's extracted libraries and binary tools. Deleting them forces a
+# full re-extract on next boot. Not destructive, but slow.
+
+bin
+libraries
+
+# ===========================================================================
+# CACHE / EPHEMERAL
+# ===========================================================================
+# Safe to regenerate, but expensive or disruptive to force during a
+# deploy. Protected as a matter of operational convenience.
+
+local
+.cache
+.mixin.out
+
+# ===========================================================================
+# PROJECT-SPECIFIC ADDITIONS
+# ===========================================================================
+# Add below. Anything the server generates that is not in the repo
+# belongs here. Examples that are commonly needed:
+
+# --- auth / session / secrets ----------------------------------------------
+# tokens.json
+# .env
+# .env.*
+# *.secret
+# auth/
+# sessions/
+# config/<your-auth-mod>/
+
+# --- mods that generate server-side state ----------------------------------
+# config/dynmap/
+# config/bluemap/
+# config/journeymap/
+# config/simple-voice-chat/
+
+# --- anything else ---------------------------------------------------------

@@ -1,0 +1,1894 @@
+{
+  "generated": "2026-09-20T17:32:18.030208+00:00",
+  "jars_scanned": 141,
+  "ore_count": 44,
+  "materials": {
+    "aluminum": {
+      "ore_blocks": [
+        "immersiveengineering:deepslate_ore_aluminum",
+        "immersiveengineering:ore_aluminum"
+      ],
+      "distinct_normal_drops": [
+        "immersiveengineering:raw_aluminum"
+      ],
+      "distinct_silk_touch_drops": [
+        "immersiveengineering:deepslate_ore_aluminum",
+        "immersiveengineering:ore_aluminum"
+      ],
+      "drops_by_ore": {
+        "immersiveengineering:deepslate_ore_aluminum": {
+          "normal": [
+            "immersiveengineering:raw_aluminum"
+          ],
+          "silk_touch": [
+            "immersiveengineering:deepslate_ore_aluminum"
+          ]
+        },
+        "immersiveengineering:ore_aluminum": {
+          "normal": [
+            "immersiveengineering:raw_aluminum"
+          ],
+          "silk_touch": [
+            "immersiveengineering:ore_aluminum"
+          ]
+        }
+      }
+    },
+    "electrotine": {
+      "ore_blocks": [
+        "projectred_exploration:deepslate_electrotine_ore",
+        "projectred_exploration:electrotine_ore"
+      ],
+      "distinct_normal_drops": [
+        "projectred_core:electrotine_dust"
+      ],
+      "distinct_silk_touch_drops": [
+        "projectred_exploration:deepslate_electrotine_ore",
+        "projectred_exploration:electrotine_ore"
+      ],
+      "drops_by_ore": {
+        "projectred_exploration:deepslate_electrotine_ore": {
+          "normal": [
+            "projectred_core:electrotine_dust"
+          ],
+          "silk_touch": [
+            "projectred_exploration:deepslate_electrotine_ore"
+          ]
+        },
+        "projectred_exploration:electrotine_ore": {
+          "normal": [
+            "projectred_core:electrotine_dust"
+          ],
+          "silk_touch": [
+            "projectred_exploration:electrotine_ore"
+          ]
+        }
+      }
+    },
+    "kerbilanite": {
+      "ore_blocks": [
+        "create_decoration:kerbilanite_ore"
+      ],
+      "distinct_normal_drops": [],
+      "distinct_silk_touch_drops": [],
+      "drops_by_ore": {
+        "create_decoration:kerbilanite_ore": {
+          "normal": [],
+          "silk_touch": []
+        }
+      }
+    },
+    "lead": {
+      "ore_blocks": [
+        "createnuclear:deepslate_lead_ore",
+        "createnuclear:lead_ore",
+        "immersiveengineering:deepslate_ore_lead",
+        "immersiveengineering:ore_lead",
+        "tfmg:deepslate_lead_ore",
+        "tfmg:lead_ore"
+      ],
+      "distinct_normal_drops": [
+        "createnuclear:raw_lead",
+        "immersiveengineering:raw_lead",
+        "tfmg:raw_lead"
+      ],
+      "distinct_silk_touch_drops": [
+        "createnuclear:deepslate_lead_ore",
+        "createnuclear:lead_ore",
+        "immersiveengineering:deepslate_ore_lead",
+        "immersiveengineering:ore_lead",
+        "tfmg:deepslate_lead_ore",
+        "tfmg:lead_ore"
+      ],
+      "drops_by_ore": {
+        "createnuclear:deepslate_lead_ore": {
+          "normal": [
+            "createnuclear:raw_lead"
+          ],
+          "silk_touch": [
+            "createnuclear:deepslate_lead_ore"
+          ]
+        },
+        "createnuclear:lead_ore": {
+          "normal": [
+            "createnuclear:raw_lead"
+          ],
+          "silk_touch": [
+            "createnuclear:lead_ore"
+          ]
+        },
+        "immersiveengineering:deepslate_ore_lead": {
+          "normal": [
+            "immersiveengineering:raw_lead"
+          ],
+          "silk_touch": [
+            "immersiveengineering:deepslate_ore_lead"
+          ]
+        },
+        "immersiveengineering:ore_lead": {
+          "normal": [
+            "immersiveengineering:raw_lead"
+          ],
+          "silk_touch": [
+            "immersiveengineering:ore_lead"
+          ]
+        },
+        "tfmg:deepslate_lead_ore": {
+          "normal": [
+            "tfmg:raw_lead"
+          ],
+          "silk_touch": [
+            "tfmg:deepslate_lead_ore"
+          ]
+        },
+        "tfmg:lead_ore": {
+          "normal": [
+            "tfmg:raw_lead"
+          ],
+          "silk_touch": [
+            "tfmg:lead_ore"
+          ]
+        }
+      }
+    },
+    "lithium": {
+      "ore_blocks": [
+        "tfmg:deepslate_lithium_ore",
+        "tfmg:lithium_ore"
+      ],
+      "distinct_normal_drops": [
+        "tfmg:raw_lithium"
+      ],
+      "distinct_silk_touch_drops": [
+        "tfmg:deepslate_lithium_ore",
+        "tfmg:lithium_ore"
+      ],
+      "drops_by_ore": {
+        "tfmg:deepslate_lithium_ore": {
+          "normal": [
+            "tfmg:raw_lithium"
+          ],
+          "silk_touch": [
+            "tfmg:deepslate_lithium_ore"
+          ]
+        },
+        "tfmg:lithium_ore": {
+          "normal": [
+            "tfmg:raw_lithium"
+          ],
+          "silk_touch": [
+            "tfmg:lithium_ore"
+          ]
+        }
+      }
+    },
+    "nickel": {
+      "ore_blocks": [
+        "immersiveengineering:deepslate_ore_nickel",
+        "immersiveengineering:ore_nickel",
+        "tfmg:deepslate_nickel_ore",
+        "tfmg:nickel_ore"
+      ],
+      "distinct_normal_drops": [
+        "immersiveengineering:raw_nickel",
+        "tfmg:raw_nickel"
+      ],
+      "distinct_silk_touch_drops": [
+        "immersiveengineering:deepslate_ore_nickel",
+        "immersiveengineering:ore_nickel",
+        "tfmg:deepslate_nickel_ore",
+        "tfmg:nickel_ore"
+      ],
+      "drops_by_ore": {
+        "immersiveengineering:deepslate_ore_nickel": {
+          "normal": [
+            "immersiveengineering:raw_nickel"
+          ],
+          "silk_touch": [
+            "immersiveengineering:deepslate_ore_nickel"
+          ]
+        },
+        "immersiveengineering:ore_nickel": {
+          "normal": [
+            "immersiveengineering:raw_nickel"
+          ],
+          "silk_touch": [
+            "immersiveengineering:ore_nickel"
+          ]
+        },
+        "tfmg:deepslate_nickel_ore": {
+          "normal": [
+            "tfmg:raw_nickel"
+          ],
+          "silk_touch": [
+            "tfmg:deepslate_nickel_ore"
+          ]
+        },
+        "tfmg:nickel_ore": {
+          "normal": [
+            "tfmg:raw_nickel"
+          ],
+          "silk_touch": [
+            "tfmg:nickel_ore"
+          ]
+        }
+      }
+    },
+    "nitrate": {
+      "ore_blocks": [
+        "createnuclear:deepslate_nitrate_ore",
+        "createnuclear:nitrate_ore"
+      ],
+      "distinct_normal_drops": [
+        "createnuclear:nitrate"
+      ],
+      "distinct_silk_touch_drops": [
+        "createnuclear:deepslate_nitrate_ore",
+        "createnuclear:nitrate_ore"
+      ],
+      "drops_by_ore": {
+        "createnuclear:deepslate_nitrate_ore": {
+          "normal": [
+            "createnuclear:nitrate"
+          ],
+          "silk_touch": [
+            "createnuclear:deepslate_nitrate_ore"
+          ]
+        },
+        "createnuclear:nitrate_ore": {
+          "normal": [
+            "createnuclear:nitrate"
+          ],
+          "silk_touch": [
+            "createnuclear:nitrate_ore"
+          ]
+        }
+      }
+    },
+    "peridot": {
+      "ore_blocks": [
+        "projectred_exploration:deepslate_peridot_ore",
+        "projectred_exploration:peridot_ore"
+      ],
+      "distinct_normal_drops": [
+        "projectred_core:peridot"
+      ],
+      "distinct_silk_touch_drops": [
+        "projectred_exploration:deepslate_peridot_ore",
+        "projectred_exploration:peridot_ore"
+      ],
+      "drops_by_ore": {
+        "projectred_exploration:deepslate_peridot_ore": {
+          "normal": [
+            "projectred_core:peridot"
+          ],
+          "silk_touch": [
+            "projectred_exploration:deepslate_peridot_ore"
+          ]
+        },
+        "projectred_exploration:peridot_ore": {
+          "normal": [
+            "projectred_core:peridot"
+          ],
+          "silk_touch": [
+            "projectred_exploration:peridot_ore"
+          ]
+        }
+      }
+    },
+    "ruby": {
+      "ore_blocks": [
+        "projectred_exploration:deepslate_ruby_ore",
+        "projectred_exploration:ruby_ore"
+      ],
+      "distinct_normal_drops": [
+        "projectred_core:ruby"
+      ],
+      "distinct_silk_touch_drops": [
+        "projectred_exploration:deepslate_ruby_ore",
+        "projectred_exploration:ruby_ore"
+      ],
+      "drops_by_ore": {
+        "projectred_exploration:deepslate_ruby_ore": {
+          "normal": [
+            "projectred_core:ruby"
+          ],
+          "silk_touch": [
+            "projectred_exploration:deepslate_ruby_ore"
+          ]
+        },
+        "projectred_exploration:ruby_ore": {
+          "normal": [
+            "projectred_core:ruby"
+          ],
+          "silk_touch": [
+            "projectred_exploration:ruby_ore"
+          ]
+        }
+      }
+    },
+    "sapphire": {
+      "ore_blocks": [
+        "projectred_exploration:deepslate_sapphire_ore",
+        "projectred_exploration:sapphire_ore"
+      ],
+      "distinct_normal_drops": [
+        "projectred_core:sapphire"
+      ],
+      "distinct_silk_touch_drops": [
+        "projectred_exploration:deepslate_sapphire_ore",
+        "projectred_exploration:sapphire_ore"
+      ],
+      "drops_by_ore": {
+        "projectred_exploration:deepslate_sapphire_ore": {
+          "normal": [
+            "projectred_core:sapphire"
+          ],
+          "silk_touch": [
+            "projectred_exploration:deepslate_sapphire_ore"
+          ]
+        },
+        "projectred_exploration:sapphire_ore": {
+          "normal": [
+            "projectred_core:sapphire"
+          ],
+          "silk_touch": [
+            "projectred_exploration:sapphire_ore"
+          ]
+        }
+      }
+    },
+    "silver": {
+      "ore_blocks": [
+        "immersiveengineering:deepslate_ore_silver",
+        "immersiveengineering:ore_silver",
+        "projectred_exploration:deepslate_silver_ore",
+        "projectred_exploration:silver_ore"
+      ],
+      "distinct_normal_drops": [
+        "immersiveengineering:raw_silver",
+        "projectred_exploration:raw_silver"
+      ],
+      "distinct_silk_touch_drops": [
+        "immersiveengineering:deepslate_ore_silver",
+        "immersiveengineering:ore_silver",
+        "projectred_exploration:deepslate_silver_ore",
+        "projectred_exploration:silver_ore"
+      ],
+      "drops_by_ore": {
+        "immersiveengineering:deepslate_ore_silver": {
+          "normal": [
+            "immersiveengineering:raw_silver"
+          ],
+          "silk_touch": [
+            "immersiveengineering:deepslate_ore_silver"
+          ]
+        },
+        "immersiveengineering:ore_silver": {
+          "normal": [
+            "immersiveengineering:raw_silver"
+          ],
+          "silk_touch": [
+            "immersiveengineering:ore_silver"
+          ]
+        },
+        "projectred_exploration:deepslate_silver_ore": {
+          "normal": [
+            "projectred_exploration:raw_silver"
+          ],
+          "silk_touch": [
+            "projectred_exploration:deepslate_silver_ore"
+          ]
+        },
+        "projectred_exploration:silver_ore": {
+          "normal": [
+            "projectred_exploration:raw_silver"
+          ],
+          "silk_touch": [
+            "projectred_exploration:silver_ore"
+          ]
+        }
+      }
+    },
+    "sulfur": {
+      "ore_blocks": [
+        "create_more_features:sulfur_ore"
+      ],
+      "distinct_normal_drops": [
+        "create_more_features:sulfur"
+      ],
+      "distinct_silk_touch_drops": [],
+      "drops_by_ore": {
+        "create_more_features:sulfur_ore": {
+          "normal": [
+            "create_more_features:sulfur"
+          ],
+          "silk_touch": []
+        }
+      }
+    },
+    "sulfur_basalt": {
+      "ore_blocks": [
+        "create_more_features:sulfur_basalt_ore"
+      ],
+      "distinct_normal_drops": [
+        "create_more_features:sulfur"
+      ],
+      "distinct_silk_touch_drops": [],
+      "drops_by_ore": {
+        "create_more_features:sulfur_basalt_ore": {
+          "normal": [
+            "create_more_features:sulfur"
+          ],
+          "silk_touch": []
+        }
+      }
+    },
+    "thorium": {
+      "ore_blocks": [
+        "create_new_age:thorium_ore",
+        "createnuclear:deepslate_thorium_ore",
+        "createnuclear:thorium_ore"
+      ],
+      "distinct_normal_drops": [
+        "create_new_age:thorium",
+        "createnuclear:raw_thorium"
+      ],
+      "distinct_silk_touch_drops": [
+        "create_new_age:thorium_ore",
+        "createnuclear:deepslate_thorium_ore",
+        "createnuclear:thorium_ore"
+      ],
+      "drops_by_ore": {
+        "create_new_age:thorium_ore": {
+          "normal": [
+            "create_new_age:thorium"
+          ],
+          "silk_touch": [
+            "create_new_age:thorium_ore"
+          ]
+        },
+        "createnuclear:deepslate_thorium_ore": {
+          "normal": [
+            "createnuclear:raw_thorium"
+          ],
+          "silk_touch": [
+            "createnuclear:deepslate_thorium_ore"
+          ]
+        },
+        "createnuclear:thorium_ore": {
+          "normal": [
+            "createnuclear:raw_thorium"
+          ],
+          "silk_touch": [
+            "createnuclear:thorium_ore"
+          ]
+        }
+      }
+    },
+    "tin": {
+      "ore_blocks": [
+        "create_ironworks:deepslate_tin_ore",
+        "create_ironworks:tin_ore",
+        "projectred_exploration:deepslate_tin_ore",
+        "projectred_exploration:tin_ore"
+      ],
+      "distinct_normal_drops": [
+        "create_ironworks:raw_tin",
+        "projectred_exploration:raw_tin"
+      ],
+      "distinct_silk_touch_drops": [
+        "create_ironworks:deepslate_tin_ore",
+        "create_ironworks:tin_ore",
+        "projectred_exploration:deepslate_tin_ore",
+        "projectred_exploration:tin_ore"
+      ],
+      "drops_by_ore": {
+        "create_ironworks:deepslate_tin_ore": {
+          "normal": [
+            "create_ironworks:raw_tin"
+          ],
+          "silk_touch": [
+            "create_ironworks:deepslate_tin_ore"
+          ]
+        },
+        "create_ironworks:tin_ore": {
+          "normal": [
+            "create_ironworks:raw_tin"
+          ],
+          "silk_touch": [
+            "create_ironworks:tin_ore"
+          ]
+        },
+        "projectred_exploration:deepslate_tin_ore": {
+          "normal": [
+            "projectred_exploration:raw_tin"
+          ],
+          "silk_touch": [
+            "projectred_exploration:deepslate_tin_ore"
+          ]
+        },
+        "projectred_exploration:tin_ore": {
+          "normal": [
+            "projectred_exploration:raw_tin"
+          ],
+          "silk_touch": [
+            "projectred_exploration:tin_ore"
+          ]
+        }
+      }
+    },
+    "uranium": {
+      "ore_blocks": [
+        "createnuclear:deepslate_uranium_ore",
+        "createnuclear:uranium_ore",
+        "immersiveengineering:deepslate_ore_uranium",
+        "immersiveengineering:ore_uranium"
+      ],
+      "distinct_normal_drops": [
+        "createnuclear:raw_uranium",
+        "immersiveengineering:raw_uranium"
+      ],
+      "distinct_silk_touch_drops": [
+        "createnuclear:deepslate_uranium_ore",
+        "createnuclear:uranium_ore",
+        "immersiveengineering:deepslate_ore_uranium",
+        "immersiveengineering:ore_uranium"
+      ],
+      "drops_by_ore": {
+        "createnuclear:deepslate_uranium_ore": {
+          "normal": [
+            "createnuclear:raw_uranium"
+          ],
+          "silk_touch": [
+            "createnuclear:deepslate_uranium_ore"
+          ]
+        },
+        "createnuclear:uranium_ore": {
+          "normal": [
+            "createnuclear:raw_uranium"
+          ],
+          "silk_touch": [
+            "createnuclear:uranium_ore"
+          ]
+        },
+        "immersiveengineering:deepslate_ore_uranium": {
+          "normal": [
+            "immersiveengineering:raw_uranium"
+          ],
+          "silk_touch": [
+            "immersiveengineering:deepslate_ore_uranium"
+          ]
+        },
+        "immersiveengineering:ore_uranium": {
+          "normal": [
+            "immersiveengineering:raw_uranium"
+          ],
+          "silk_touch": [
+            "immersiveengineering:ore_uranium"
+          ]
+        }
+      }
+    },
+    "zinc": {
+      "ore_blocks": [
+        "create:deepslate_zinc_ore",
+        "create:zinc_ore"
+      ],
+      "distinct_normal_drops": [
+        "create:raw_zinc"
+      ],
+      "distinct_silk_touch_drops": [
+        "create:deepslate_zinc_ore",
+        "create:zinc_ore"
+      ],
+      "drops_by_ore": {
+        "create:deepslate_zinc_ore": {
+          "normal": [
+            "create:raw_zinc"
+          ],
+          "silk_touch": [
+            "create:deepslate_zinc_ore"
+          ]
+        },
+        "create:zinc_ore": {
+          "normal": [
+            "create:raw_zinc"
+          ],
+          "silk_touch": [
+            "create:zinc_ore"
+          ]
+        }
+      }
+    }
+  },
+  "ores": {
+    "create:deepslate_zinc_ore": {
+      "block_id": "create:deepslate_zinc_ore",
+      "source_jar": "create-1.20.1-6.0.8.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/zinc",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "create:zinc_ore"
+      ],
+      "loot_table": "create:blocks/deepslate_zinc_ore",
+      "drops": {
+        "normal": [
+          "create:raw_zinc"
+        ],
+        "silk_touch": [
+          "create:deepslate_zinc_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "zinc"
+    },
+    "create:zinc_ore": {
+      "block_id": "create:zinc_ore",
+      "source_jar": "create-1.20.1-6.0.8.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/zinc",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "create:zinc_ore"
+      ],
+      "loot_table": "create:blocks/zinc_ore",
+      "drops": {
+        "normal": [
+          "create:raw_zinc"
+        ],
+        "silk_touch": [
+          "create:zinc_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "zinc"
+    },
+    "create_decoration:kerbilanite_ore": {
+      "block_id": "create_decoration:kerbilanite_ore",
+      "source_jar": "createdecorations-1.20.1-forge-1,5.jar",
+      "tags": [
+        "minecraft:mineable/pickaxe"
+      ],
+      "worldgen_features": [],
+      "loot_table": null,
+      "drops": {
+        "normal": [],
+        "silk_touch": []
+      },
+      "classification": [
+        "NAME"
+      ],
+      "material": "kerbilanite"
+    },
+    "create_ironworks:deepslate_tin_ore": {
+      "block_id": "create_ironworks:deepslate_tin_ore",
+      "source_jar": "create_ironworks-3.5.0-forge-1.20.1.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/tin",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "create_ironworks:deepslate_tin_ore"
+      ],
+      "loot_table": "create_ironworks:blocks/deepslate_tin_ore",
+      "drops": {
+        "normal": [
+          "create_ironworks:raw_tin"
+        ],
+        "silk_touch": [
+          "create_ironworks:deepslate_tin_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "tin"
+    },
+    "create_ironworks:tin_ore": {
+      "block_id": "create_ironworks:tin_ore",
+      "source_jar": "create_ironworks-3.5.0-forge-1.20.1.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/tin",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "create_ironworks:tin_ore"
+      ],
+      "loot_table": "create_ironworks:blocks/tin_ore",
+      "drops": {
+        "normal": [
+          "create_ironworks:raw_tin"
+        ],
+        "silk_touch": [
+          "create_ironworks:tin_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "tin"
+    },
+    "create_more_features:sulfur_basalt_ore": {
+      "block_id": "create_more_features:sulfur_basalt_ore",
+      "source_jar": "create_more_features-0.8.0-forge-1.20.1.jar",
+      "tags": [
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "create_more_features:sulfur_basalt_ore"
+      ],
+      "loot_table": "create_more_features:blocks/sulfur_basalt_ore",
+      "drops": {
+        "normal": [
+          "create_more_features:sulfur"
+        ],
+        "silk_touch": []
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "WORLDGEN"
+      ],
+      "material": "sulfur_basalt"
+    },
+    "create_more_features:sulfur_ore": {
+      "block_id": "create_more_features:sulfur_ore",
+      "source_jar": "create_more_features-0.8.0-forge-1.20.1.jar",
+      "tags": [
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "create_more_features:sulfur_ore"
+      ],
+      "loot_table": "create_more_features:blocks/sulfur_ore",
+      "drops": {
+        "normal": [
+          "create_more_features:sulfur"
+        ],
+        "silk_touch": []
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "WORLDGEN"
+      ],
+      "material": "sulfur"
+    },
+    "create_new_age:thorium_ore": {
+      "block_id": "create_new_age:thorium_ore",
+      "source_jar": "create-new-age-1.2.0+forge-mc1.20.1.jar",
+      "tags": [
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "create_new_age:thorium_ore"
+      ],
+      "loot_table": "create_new_age:blocks/thorium_ore",
+      "drops": {
+        "normal": [
+          "create_new_age:thorium"
+        ],
+        "silk_touch": [
+          "create_new_age:thorium_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "WORLDGEN"
+      ],
+      "material": "thorium"
+    },
+    "createnuclear:deepslate_lead_ore": {
+      "block_id": "createnuclear:deepslate_lead_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/lead",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:lead_ore"
+      ],
+      "loot_table": "createnuclear:blocks/deepslate_lead_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:raw_lead"
+        ],
+        "silk_touch": [
+          "createnuclear:deepslate_lead_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "lead"
+    },
+    "createnuclear:deepslate_nitrate_ore": {
+      "block_id": "createnuclear:deepslate_nitrate_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/nitrate",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:nitrate_ore"
+      ],
+      "loot_table": "createnuclear:blocks/deepslate_nitrate_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:nitrate"
+        ],
+        "silk_touch": [
+          "createnuclear:deepslate_nitrate_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "nitrate"
+    },
+    "createnuclear:deepslate_thorium_ore": {
+      "block_id": "createnuclear:deepslate_thorium_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/thorium",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_diamond_tool",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:thorium_ore"
+      ],
+      "loot_table": "createnuclear:blocks/deepslate_thorium_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:raw_thorium"
+        ],
+        "silk_touch": [
+          "createnuclear:deepslate_thorium_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "thorium"
+    },
+    "createnuclear:deepslate_uranium_ore": {
+      "block_id": "createnuclear:deepslate_uranium_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/uranium",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_diamond_tool",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:uranium_ore"
+      ],
+      "loot_table": "createnuclear:blocks/deepslate_uranium_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:raw_uranium"
+        ],
+        "silk_touch": [
+          "createnuclear:deepslate_uranium_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "uranium"
+    },
+    "createnuclear:lead_ore": {
+      "block_id": "createnuclear:lead_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/lead",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:lead_ore"
+      ],
+      "loot_table": "createnuclear:blocks/lead_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:raw_lead"
+        ],
+        "silk_touch": [
+          "createnuclear:lead_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "lead"
+    },
+    "createnuclear:nitrate_ore": {
+      "block_id": "createnuclear:nitrate_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/nitrate",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:nitrate_ore"
+      ],
+      "loot_table": "createnuclear:blocks/nitrate_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:nitrate"
+        ],
+        "silk_touch": [
+          "createnuclear:nitrate_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "nitrate"
+    },
+    "createnuclear:thorium_ore": {
+      "block_id": "createnuclear:thorium_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/thorium",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_diamond_tool",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:thorium_ore"
+      ],
+      "loot_table": "createnuclear:blocks/thorium_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:raw_thorium"
+        ],
+        "silk_touch": [
+          "createnuclear:thorium_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "thorium"
+    },
+    "createnuclear:uranium_ore": {
+      "block_id": "createnuclear:uranium_ore",
+      "source_jar": "createnuclear-1.20.1-2.0.0-forge.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/uranium",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_diamond_tool",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "createnuclear:uranium_ore"
+      ],
+      "loot_table": "createnuclear:blocks/uranium_ore",
+      "drops": {
+        "normal": [
+          "createnuclear:raw_uranium"
+        ],
+        "silk_touch": [
+          "createnuclear:uranium_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "uranium"
+    },
+    "immersiveengineering:deepslate_ore_aluminum": {
+      "block_id": "immersiveengineering:deepslate_ore_aluminum",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/aluminum",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/deepslate_ore_aluminum",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_aluminum"
+        ],
+        "silk_touch": [
+          "immersiveengineering:deepslate_ore_aluminum"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "aluminum"
+    },
+    "immersiveengineering:deepslate_ore_lead": {
+      "block_id": "immersiveengineering:deepslate_ore_lead",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/lead",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/deepslate_ore_lead",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_lead"
+        ],
+        "silk_touch": [
+          "immersiveengineering:deepslate_ore_lead"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "lead"
+    },
+    "immersiveengineering:deepslate_ore_nickel": {
+      "block_id": "immersiveengineering:deepslate_ore_nickel",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/nickel",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/deepslate_ore_nickel",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_nickel"
+        ],
+        "silk_touch": [
+          "immersiveengineering:deepslate_ore_nickel"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "nickel"
+    },
+    "immersiveengineering:deepslate_ore_silver": {
+      "block_id": "immersiveengineering:deepslate_ore_silver",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/silver",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/deepslate_ore_silver",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_silver"
+        ],
+        "silk_touch": [
+          "immersiveengineering:deepslate_ore_silver"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "silver"
+    },
+    "immersiveengineering:deepslate_ore_uranium": {
+      "block_id": "immersiveengineering:deepslate_ore_uranium",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/uranium",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/deepslate_ore_uranium",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_uranium"
+        ],
+        "silk_touch": [
+          "immersiveengineering:deepslate_ore_uranium"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "uranium"
+    },
+    "immersiveengineering:ore_aluminum": {
+      "block_id": "immersiveengineering:ore_aluminum",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/aluminum",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/ore_aluminum",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_aluminum"
+        ],
+        "silk_touch": [
+          "immersiveengineering:ore_aluminum"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "aluminum"
+    },
+    "immersiveengineering:ore_lead": {
+      "block_id": "immersiveengineering:ore_lead",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/lead",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/ore_lead",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_lead"
+        ],
+        "silk_touch": [
+          "immersiveengineering:ore_lead"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "lead"
+    },
+    "immersiveengineering:ore_nickel": {
+      "block_id": "immersiveengineering:ore_nickel",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/nickel",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/ore_nickel",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_nickel"
+        ],
+        "silk_touch": [
+          "immersiveengineering:ore_nickel"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "nickel"
+    },
+    "immersiveengineering:ore_silver": {
+      "block_id": "immersiveengineering:ore_silver",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/silver",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/ore_silver",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_silver"
+        ],
+        "silk_touch": [
+          "immersiveengineering:ore_silver"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "silver"
+    },
+    "immersiveengineering:ore_uranium": {
+      "block_id": "immersiveengineering:ore_uranium",
+      "source_jar": "ImmersiveEngineering-1.20.1-10.2.0-183.jar",
+      "tags": [
+        "forge:ore_rates/singular",
+        "forge:ores",
+        "forge:ores/uranium",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [],
+      "loot_table": "immersiveengineering:blocks/ore_uranium",
+      "drops": {
+        "normal": [
+          "immersiveengineering:raw_uranium"
+        ],
+        "silk_touch": [
+          "immersiveengineering:ore_uranium"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG"
+      ],
+      "material": "uranium"
+    },
+    "projectred_exploration:deepslate_electrotine_ore": {
+      "block_id": "projectred_exploration:deepslate_electrotine_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/electrotine",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:electrotine_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/deepslate_electrotine_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:electrotine_dust"
+        ],
+        "silk_touch": [
+          "projectred_exploration:deepslate_electrotine_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "electrotine"
+    },
+    "projectred_exploration:deepslate_peridot_ore": {
+      "block_id": "projectred_exploration:deepslate_peridot_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/peridot",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:peridot_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/deepslate_peridot_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:peridot"
+        ],
+        "silk_touch": [
+          "projectred_exploration:deepslate_peridot_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "peridot"
+    },
+    "projectred_exploration:deepslate_ruby_ore": {
+      "block_id": "projectred_exploration:deepslate_ruby_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/ruby",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:ruby_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/deepslate_ruby_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:ruby"
+        ],
+        "silk_touch": [
+          "projectred_exploration:deepslate_ruby_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "ruby"
+    },
+    "projectred_exploration:deepslate_sapphire_ore": {
+      "block_id": "projectred_exploration:deepslate_sapphire_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/sapphire",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:sapphire_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/deepslate_sapphire_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:sapphire"
+        ],
+        "silk_touch": [
+          "projectred_exploration:deepslate_sapphire_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "sapphire"
+    },
+    "projectred_exploration:deepslate_silver_ore": {
+      "block_id": "projectred_exploration:deepslate_silver_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/silver",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:silver_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/deepslate_silver_ore",
+      "drops": {
+        "normal": [
+          "projectred_exploration:raw_silver"
+        ],
+        "silk_touch": [
+          "projectred_exploration:deepslate_silver_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "silver"
+    },
+    "projectred_exploration:deepslate_tin_ore": {
+      "block_id": "projectred_exploration:deepslate_tin_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/tin",
+        "forge:ores_in_ground/deepslate",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:tin_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/deepslate_tin_ore",
+      "drops": {
+        "normal": [
+          "projectred_exploration:raw_tin"
+        ],
+        "silk_touch": [
+          "projectred_exploration:deepslate_tin_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "tin"
+    },
+    "projectred_exploration:electrotine_ore": {
+      "block_id": "projectred_exploration:electrotine_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/electrotine",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:electrotine_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/electrotine_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:electrotine_dust"
+        ],
+        "silk_touch": [
+          "projectred_exploration:electrotine_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "electrotine"
+    },
+    "projectred_exploration:peridot_ore": {
+      "block_id": "projectred_exploration:peridot_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/peridot",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:peridot_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/peridot_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:peridot"
+        ],
+        "silk_touch": [
+          "projectred_exploration:peridot_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "peridot"
+    },
+    "projectred_exploration:ruby_ore": {
+      "block_id": "projectred_exploration:ruby_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/ruby",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:ruby_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/ruby_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:ruby"
+        ],
+        "silk_touch": [
+          "projectred_exploration:ruby_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "ruby"
+    },
+    "projectred_exploration:sapphire_ore": {
+      "block_id": "projectred_exploration:sapphire_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/sapphire",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:sapphire_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/sapphire_ore",
+      "drops": {
+        "normal": [
+          "projectred_core:sapphire"
+        ],
+        "silk_touch": [
+          "projectred_exploration:sapphire_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "sapphire"
+    },
+    "projectred_exploration:silver_ore": {
+      "block_id": "projectred_exploration:silver_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/silver",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_iron_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:silver_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/silver_ore",
+      "drops": {
+        "normal": [
+          "projectred_exploration:raw_silver"
+        ],
+        "silk_touch": [
+          "projectred_exploration:silver_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "silver"
+    },
+    "projectred_exploration:tin_ore": {
+      "block_id": "projectred_exploration:tin_ore",
+      "source_jar": "ProjectRed-1.20.1-4.21.0-exploration.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/tin",
+        "forge:ores_in_ground/stone",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "projectred_exploration:tin_ore"
+      ],
+      "loot_table": "projectred_exploration:blocks/tin_ore",
+      "drops": {
+        "normal": [
+          "projectred_exploration:raw_tin"
+        ],
+        "silk_touch": [
+          "projectred_exploration:tin_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "tin"
+    },
+    "tfmg:deepslate_lead_ore": {
+      "block_id": "tfmg:deepslate_lead_ore",
+      "source_jar": "tfmg-1.0.2f.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/lead",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "tfmg:lead_ore"
+      ],
+      "loot_table": "tfmg:blocks/deepslate_lead_ore",
+      "drops": {
+        "normal": [
+          "tfmg:raw_lead"
+        ],
+        "silk_touch": [
+          "tfmg:deepslate_lead_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "lead"
+    },
+    "tfmg:deepslate_lithium_ore": {
+      "block_id": "tfmg:deepslate_lithium_ore",
+      "source_jar": "tfmg-1.0.2f.jar",
+      "tags": [
+        "forge:ores",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "tfmg:lithium_ore"
+      ],
+      "loot_table": "tfmg:blocks/deepslate_lithium_ore",
+      "drops": {
+        "normal": [
+          "tfmg:raw_lithium"
+        ],
+        "silk_touch": [
+          "tfmg:deepslate_lithium_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "lithium"
+    },
+    "tfmg:deepslate_nickel_ore": {
+      "block_id": "tfmg:deepslate_nickel_ore",
+      "source_jar": "tfmg-1.0.2f.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/nickel",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "tfmg:nickel_ore"
+      ],
+      "loot_table": "tfmg:blocks/deepslate_nickel_ore",
+      "drops": {
+        "normal": [
+          "tfmg:raw_nickel"
+        ],
+        "silk_touch": [
+          "tfmg:deepslate_nickel_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "nickel"
+    },
+    "tfmg:lead_ore": {
+      "block_id": "tfmg:lead_ore",
+      "source_jar": "tfmg-1.0.2f.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/lead",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "tfmg:lead_ore"
+      ],
+      "loot_table": "tfmg:blocks/lead_ore",
+      "drops": {
+        "normal": [
+          "tfmg:raw_lead"
+        ],
+        "silk_touch": [
+          "tfmg:lead_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "lead"
+    },
+    "tfmg:lithium_ore": {
+      "block_id": "tfmg:lithium_ore",
+      "source_jar": "tfmg-1.0.2f.jar",
+      "tags": [
+        "forge:ores",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "tfmg:lithium_ore"
+      ],
+      "loot_table": "tfmg:blocks/lithium_ore",
+      "drops": {
+        "normal": [
+          "tfmg:raw_lithium"
+        ],
+        "silk_touch": [
+          "tfmg:lithium_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "lithium"
+    },
+    "tfmg:nickel_ore": {
+      "block_id": "tfmg:nickel_ore",
+      "source_jar": "tfmg-1.0.2f.jar",
+      "tags": [
+        "forge:ores",
+        "forge:ores/nickel",
+        "minecraft:mineable/pickaxe",
+        "minecraft:needs_stone_tool"
+      ],
+      "worldgen_features": [
+        "tfmg:nickel_ore"
+      ],
+      "loot_table": "tfmg:blocks/nickel_ore",
+      "drops": {
+        "normal": [
+          "tfmg:raw_nickel"
+        ],
+        "silk_touch": [
+          "tfmg:nickel_ore"
+        ]
+      },
+      "classification": [
+        "LOOT",
+        "NAME",
+        "TAG",
+        "WORLDGEN"
+      ],
+      "material": "nickel"
+    }
+  }
+}

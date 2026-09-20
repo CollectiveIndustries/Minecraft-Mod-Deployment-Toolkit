@@ -12,42 +12,39 @@ from pathlib import Path
 import requests
 from requests.exceptions import RequestException
 
-PROTECTED_PATHS = {
-    "server.properties",
-    "eula.txt",
-    "ops.json",
-    "whitelist.json",
-    "banned-ips.json",
-    "banned-players.json",
-    "usercache.json",
-    "usernamecache.json",
-    "user_jvm_args.txt",
-    ".run-forge.env",
-    ".forge-manifest.json",
-    ".rcon-cli.env",
-    ".rcon-cli.yaml",
-    "run.sh",
-    "run.bat",
-    "logs",
-    "world",
-    "world_nether",
-    "world_the_end",
-    "crash-reports",
-    "patchouli_books",
-    "schematics",
-    "local",
-    ".cache",
-    ".mixin.out",
-    "bin",
-    "libraries",
-    "defaultconfigs",
-}
 
+def is_protected_path(rel_path: Path, protect_patterns: list[str] | None = None) -> bool:
+    """Return True if rel_path must never be deleted during a clean.
 
-def _is_protected(rel_path: Path) -> bool:
-    """Return True if the relative path (or any parent) is protected."""
+    All protection is driven by the ``protect_patterns`` list, which is
+    loaded from ``.deploy_protect`` at the repo root. A path is
+    protected if either:
+
+      - the full relative path matches a pattern
+        (e.g. ``config/something/tokens.json``)
+      - any single path component matches a pattern
+        (e.g. ``tokens.json`` matches at any depth)
+
+    Patterns use ``fnmatch`` glob syntax. There is no built-in baseline
+    set anymore -- every protected path lives in ``.deploy_protect`` so
+    there is exactly one place to look and one place to edit.
+
+    An empty or missing pattern list means nothing is protected. That
+    is a footgun for operations, but it is the correct failure mode for
+    a data-driven policy: if the file is missing, the deploy refuses to
+    be clever.
+    """
+    if not protect_patterns:
+        return False
     parts = rel_path.parts
-    return any(parts[i] in PROTECTED_PATHS for i in range(len(parts)))
+    rel_str = str(rel_path).replace("\\", "/")
+    for pat in protect_patterns:
+        if fnmatch.fnmatch(rel_str, pat):
+            return True
+        for part in parts:
+            if fnmatch.fnmatch(part, pat):
+                return True
+    return False
 
 
 def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
@@ -67,10 +64,41 @@ def get_exclude_patterns(exclude_file_path: Path, logger) -> list:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Normalize a single trailing slash: "world/" -> "world".
             if line.endswith("/") and len(line) > 1:
                 line = line.rstrip("/")
             patterns.append(line)
+    return patterns
+
+
+def get_protect_patterns(protect_file_path: Path, logger) -> list:
+    """Reads ``.deploy_protect`` and returns the list of protection globs.
+
+    Same format as the exclude file: one glob per line, blank lines and
+    ``#`` comments ignored, single trailing slash stripped.
+
+    Because ``.deploy_protect`` is committed to the repo and is the ONLY
+    source of clean-phase protection, a missing file is treated as a
+    fatal configuration error rather than a silent no-op. A pack whose
+    protection list has been accidentally deleted is one deploy away
+    from destroying server state; refusing to run is the safer default.
+    """
+    if not protect_file_path.is_file():
+        raise FileNotFoundError(
+            f"Protection file not found: {protect_file_path}. Create it or pass --no-deploy. Refusing to run a clean deploy without a protection list."
+        )
+    patterns: list[str] = []
+    with protect_file_path.open("r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.endswith("/") and len(line) > 1:
+                line = line.rstrip("/")
+            patterns.append(line)
+    if not patterns:
+        logger.warning(f"Protection file is empty: {protect_file_path}")
+    else:
+        logger.info(f"Loaded {len(patterns)} protect pattern(s) from {protect_file_path}")
     return patterns
 
 
@@ -92,11 +120,28 @@ def copy_directory_contents(src: Path, dst: Path, logger):
     logger.debug(f"Copied {src} -> {dst}")
 
 
-def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger, clean: bool = False):
+def copy_with_exclusions(
+    src: Path,
+    dst: Path,
+    exclude_patterns: list,
+    logger,
+    clean: bool = False,
+    protect_patterns: list | None = None,
+):
     """Copy contents of src into dst, skipping excluded patterns.
 
-    If clean=True, remove any files/dirs in dst that are not in src,
-    EXCEPT those that are permanently protected (PROTECTED_PATHS) or excluded.
+    If clean=True, remove any files and directories in dst that are not
+    part of the incoming sync, with two safety carve-outs:
+
+      - files matching a pattern in ``protect_patterns`` are never removed
+      - directories are only removed if they are empty after file removal
+
+    The second rule is what makes protection work at any depth. A
+    directory like ``config/`` is not itself protected when
+    ``.deploy_protect`` lists ``tokens.json``, but its contents are. A
+    naive directory sweep would rmtree ``config/`` and destroy the
+    protected file inside it. By only removing empty directories, any
+    directory containing a protected descendant survives automatically.
     """
     if not src.is_dir():
         raise NotADirectoryError(f"Source not found: {src}")
@@ -105,35 +150,45 @@ def copy_with_exclusions(src: Path, dst: Path, exclude_patterns: list, logger, c
     def is_excluded(rel_path: str | Path) -> bool:
         return any(fnmatch.fnmatch(str(rel_path), pat) for pat in exclude_patterns)
 
-    src_files = set()
-    src_dirs = set()
+    src_files: set[Path] = set()
     for root, _dirs, files in os.walk(src):
         rel_root = Path(root).relative_to(src)
-        if rel_root != Path("."):
-            src_dirs.add(rel_root)
         for file in files:
-            full_path = Path(root) / file
             rel_path = rel_root / file
             if not is_excluded(rel_path):
                 src_files.add(rel_path)
+
     if clean and dst.exists():
-        for root, dirs, files in os.walk(dst):
+        # Pass 1: remove stale files (unprotected, unexcluded).
+        for root, _dirs, files in os.walk(dst):
             rel_root = Path(root).relative_to(dst)
             for file in files:
                 rel_path = rel_root / file
-                if rel_path not in src_files and (not is_excluded(rel_path)) and (not _is_protected(rel_path)):
+                if rel_path not in src_files and not is_excluded(rel_path) and not is_protected_path(rel_path, protect_patterns):
                     (dst / rel_path).unlink()
                     logger.debug(f"Removed extra file: {rel_path}")
-            for dir_name in dirs:
-                rel_dir = rel_root / dir_name
-                if (
-                    rel_dir not in src_dirs
-                    and (not any(p.parent == rel_dir for p in src_files))
-                    and (not is_excluded(rel_dir))
-                    and (not _is_protected(rel_dir))
-                ):
-                    shutil.rmtree(dst / rel_dir)
-                    logger.debug(f"Removed extra directory: {rel_dir}")
+
+        # Pass 2: remove empty directories bottom-up. A directory is
+        # only removed if it is now empty, which means every file inside
+        # was either removed as stale or never existed. Any directory
+        # containing a protected file will fail rmdir and be kept.
+        for root, _dirs, _files in os.walk(dst, topdown=False):
+            rel_dir = Path(root).relative_to(dst)
+            if rel_dir == Path("."):
+                continue
+            if is_excluded(rel_dir):
+                continue
+            if is_protected_path(rel_dir, protect_patterns):
+                continue
+            try:
+                (dst / rel_dir).rmdir()
+                logger.debug(f"Removed empty directory: {rel_dir}")
+            except OSError:
+                # Directory is not empty: something inside it is
+                # protected, excluded, or was just written by an
+                # earlier pass. Leave it alone.
+                pass
+
     for root, _dirs, files in os.walk(src):
         rel_root = Path(root).relative_to(src)
         for file in files:

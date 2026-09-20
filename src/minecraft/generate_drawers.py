@@ -110,6 +110,7 @@ STARTUP_SCRIPTS_SUBPATH = (
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class TemplateModel:
     """Template model for one drawer front size.
@@ -147,6 +148,7 @@ class ValidationMetrics:
 # Asset archive
 # ---------------------------------------------------------------------------
 
+
 class AssetArchive:
     """Read PNG resources from a Minecraft/mod JAR without extracting it."""
 
@@ -181,6 +183,7 @@ class AssetArchive:
 # Basic pixel helpers
 # ---------------------------------------------------------------------------
 
+
 def image_pixels(image: Image.Image) -> list[tuple[int, int, int, int]]:
     """Return RGBA pixels in row-major order."""
     return list(image.get_flattened_data())
@@ -202,6 +205,7 @@ def extract_wood_palette(image: Image.Image, expected: int = 7) -> list[tuple[in
 # ---------------------------------------------------------------------------
 # Resource discovery
 # ---------------------------------------------------------------------------
+
 
 def find_resource_by_fragments(
     names: Iterable[str],
@@ -261,9 +265,7 @@ def locate_vanilla_front_resources(archive: AssetArchive, shape: int) -> dict[st
             continue
 
         raise FileNotFoundError(
-            f"Could not uniquely locate Storage Drawers {wood} front_{shape} texture.\n"
-            f"Expected: {expected}\n"
-            f"Basename candidates: {exact[:20]}"
+            f"Could not uniquely locate Storage Drawers {wood} front_{shape} texture.\nExpected: {expected}\nBasename candidates: {exact[:20]}"
         )
     return resources
 
@@ -279,14 +281,9 @@ def locate_wood_planks(archive: AssetArchive, namespace: str, wood: str) -> str:
         return expected
 
     target = f"textures/block/{wood}_planks.png".lower()
-    candidates = [
-        name for name in archive.names
-        if name.lower().endswith(target) and name.lower().startswith(f"assets/{namespace.lower()}/")
-    ]
+    candidates = [name for name in archive.names if name.lower().endswith(target) and name.lower().startswith(f"assets/{namespace.lower()}/")]
     if not candidates:
-        raise FileNotFoundError(
-            f"Could not find '{expected}' in {archive.path}"
-        )
+        raise FileNotFoundError(f"Could not find '{expected}' in {archive.path}")
 
     candidates.sort(key=len)
     return candidates[0]
@@ -295,6 +292,7 @@ def locate_wood_planks(archive: AssetArchive, namespace: str, wood: str) -> str:
 # ---------------------------------------------------------------------------
 # Template fitting
 # ---------------------------------------------------------------------------
+
 
 def fit_channel_affine(xs: list[float], ys: list[float]) -> tuple[float, float]:
     """Fit y ~= slope * x + intercept by ordinary least squares.
@@ -512,6 +510,7 @@ def leave_one_out_template_validation(
 # Band classification (reporting)
 # ---------------------------------------------------------------------------
 
+
 def band_of(x: int, y: int, mean_scale: float) -> str:
     """Classify a pixel by its coordinate and mean fitted scale value.
 
@@ -547,9 +546,7 @@ def band_exact_summary(
     """Return {band: {wood: (exact, total, mae, rmse)}}."""
     woods = tuple(target_images.keys())
     palettes = {w: extract_wood_palette(source_images[w]) for w in woods}
-    out: dict[str, dict[str, tuple[int, int, float, float]]] = {
-        band: {} for band in ("interior", "inner_ring", "handle", "border")
-    }
+    out: dict[str, dict[str, tuple[int, int, float, float]]] = {band: {} for band in ("interior", "inner_ring", "handle", "border")}
 
     for band, band_dict in out.items():
         for w in woods:
@@ -566,10 +563,7 @@ def band_exact_summary(
                     scale = model.scale_map[y][x]
                     bias = model.bias_map[y][x]
                     src = palettes[w][role][:3]
-                    pred = tuple(
-                        max(0, min(255, round(scale[c] * src[c] + bias[c])))
-                        for c in range(3)
-                    )
+                    pred = tuple(max(0, min(255, round(scale[c] * src[c] + bias[c]))) for c in range(3))
                     tgt = target_images[w].getpixel((x, y))[:3]
                     if pred == tgt:
                         exact += 1
@@ -593,6 +587,7 @@ def band_exact_summary(
 # Dataset loading
 # ---------------------------------------------------------------------------
 
+
 def load_vanilla_dataset(
     client_jar: Path,
     storage_drawers_jar: Path,
@@ -610,6 +605,7 @@ def load_vanilla_dataset(
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
+
 
 def emit_template_summary(shape: int, model: TemplateModel) -> None:
     """Print a compact summary of a learned template."""
@@ -646,6 +642,7 @@ def emit_band_table(bands: dict[str, dict[str, tuple[int, int, float, float]]]) 
 # File writers
 # ---------------------------------------------------------------------------
 
+
 def write_json(path: Path, data, indent: int = 4) -> None:
     """Write a dict to path as JSON with a trailing newline."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -662,6 +659,7 @@ def write_text_file(path: Path, text: str) -> None:
 # ---------------------------------------------------------------------------
 # JSON generation
 # ---------------------------------------------------------------------------
+
 
 def drawer_blockstate(model_id: str) -> dict:
     """Return blockstate JSON for a drawers block (4 cardinal facings)."""
@@ -724,6 +722,7 @@ def item_model(block_model_id: str) -> dict:
 # KubeJS startup script generation
 # ---------------------------------------------------------------------------
 
+
 def kubejs_startup_script(wood: str, prefix: str) -> str:
     """Return the KubeJS startup script that registers this wood variant.
 
@@ -784,14 +783,11 @@ console.info('[SD {wood_display}] registered blocks and items');
 # Path resolution
 # ---------------------------------------------------------------------------
 
+
 def resolve_client_jar(arg: Path | None, repo_root: Path) -> Path:
     """Return the Minecraft client jar path."""
     if arg is None:
-        return (
-            Path.home()
-            / ".gradle" / "caches" / "forge_gradle"
-            / "minecraft_repo" / "versions" / "1.20.1" / "client.jar"
-        )
+        return Path.home() / ".gradle" / "caches" / "forge_gradle" / "minecraft_repo" / "versions" / "1.20.1" / "client.jar"
     p = Path(arg).expanduser()
     if not p.is_absolute():
         p = repo_root / p
@@ -817,14 +813,10 @@ def resolve_storage_drawers_jar(arg: Path | None, repo_root: Path) -> Path:
     if candidate.is_dir():
         matches = sorted(candidate.glob(DEFAULT_STORAGE_DRAWERS_PATTERN))
         if not matches:
-            raise FileNotFoundError(
-                f"No {DEFAULT_STORAGE_DRAWERS_PATTERN} found in {candidate}"
-            )
+            raise FileNotFoundError(f"No {DEFAULT_STORAGE_DRAWERS_PATTERN} found in {candidate}")
         return matches[0]
 
-    raise FileNotFoundError(
-        f"Storage Drawers jar or directory not found: {candidate}"
-    )
+    raise FileNotFoundError(f"Storage Drawers jar or directory not found: {candidate}")
 
 
 def resolve_input_jar(arg: Path | None, repo_root: Path) -> Path:
@@ -855,16 +847,14 @@ def parse_wood_type(spec: str | None) -> tuple[str, str]:
         raise ValueError("--wood-type is required to generate a wood")
     parts = spec.split(":", 1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ValueError(
-            f"--wood-type must be 'namespace:wood' (e.g. biomesoplenty:maple); "
-            f"got {spec!r}"
-        )
+        raise ValueError(f"--wood-type must be 'namespace:wood' (e.g. biomesoplenty:maple); got {spec!r}")
     return parts[0].strip(), parts[1].strip()
 
 
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
 
 def cmd_generate(args: argparse.Namespace) -> int:
     """Generate all assets and metadata for a new wood.
@@ -1020,9 +1010,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     print()
 
     for shape in FRONT_SHAPES:
-        sources, targets, source_resources, target_resources = load_vanilla_dataset(
-            client_jar, storage_jar, shape
-        )
+        sources, targets, source_resources, target_resources = load_vanilla_dataset(client_jar, storage_jar, shape)
 
         print(f"===== FRONT_{shape} =====")
         print("source:")
@@ -1149,6 +1137,7 @@ def cmd_self_test(args: argparse.Namespace) -> int:
 # Parser
 # ---------------------------------------------------------------------------
 
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the command-line parser."""
     parser = argparse.ArgumentParser(
@@ -1170,11 +1159,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--storage-drawers",
         type=Path,
         default=None,
-        help=(
-            "Storage Drawers jar, or a directory containing "
-            f"{DEFAULT_STORAGE_DRAWERS_PATTERN}. "
-            f"Default: {DEFAULT_STORAGE_DRAWERS_DIR}"
-        ),
+        help=(f"Storage Drawers jar, or a directory containing {DEFAULT_STORAGE_DRAWERS_PATTERN}. Default: {DEFAULT_STORAGE_DRAWERS_DIR}"),
     )
     parser.add_argument(
         "--input-jar",

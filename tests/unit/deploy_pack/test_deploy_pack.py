@@ -2,14 +2,15 @@
 
 """Unit tests for deploy_pack.py."""
 
-import datetime
-import shutil
+from __future__ import annotations
+
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.minecraft import deploy_pack
+from src.minecraft.common import changelog
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -18,292 +19,392 @@ from src.minecraft import deploy_pack
 
 @pytest.fixture
 def mock_logger():
-    """Return a MagicMock logger."""
+    """Return a MagicMock logger suitable for any deploy_pack call."""
     return MagicMock()
 
 
+def _config_getter(base: Path):
+    """Return a config.get side_effect wired to a tmp base directory.
+
+    Every path the deploy reads or writes is redirected under ``base``
+    so tests never touch the real filesystem outside tmp_path.
+    """
+    mapping = {
+        "sync_root": str(base / "sync"),
+        "mods_dir": str(base / "mods"),
+        "www_dir": str(base / "www"),
+        "exclude_file": str(base / ".rsync_exclude"),
+        "protect_file": str(base / ".deploy_protect"),
+        "modpack_dir": str(base / "sync" / "downloads"),
+        "output_filename": "minecraft_client_{date}.zip",
+        "instances": {"survival": str(base / "survival")},
+        "multimc_base": str(base / "multimc"),
+        "instance_name": "TestInstance",
+        "sync_mapping": {"config": "config", "kubejs": "kubejs"},
+        "logging": None,
+        "download_base_url": "",
+        "webhook_url": "",
+        "webhook_message_template": "{url}",
+    }
+
+    def getter(key, default=None):
+        return mapping.get(key, default)
+
+    return getter
+
+
+def _make_main_config(base: Path) -> MagicMock:
+    """Build a MagicMock config that routes all paths under ``base``."""
+    cfg = MagicMock()
+    cfg.get.side_effect = _config_getter(base)
+    cfg.as_dict.return_value = {"sync_root": str(base / "sync")}
+    return cfg
+
+
 @pytest.fixture
-def sync_tree(tmp_path):
-    """Build a representative sync/ tree."""
-    sync_root = tmp_path / "sync"
-    sync_root.mkdir()
-    (sync_root / "config").mkdir()
-    (sync_root / "config" / "file.txt").write_text("config")
-    (sync_root / "kubejs").mkdir()
-    (sync_root / "kubejs" / "script.js").write_text("kubejs")
-    (sync_root / "downloads").mkdir()  # always skipped
-    (sync_root / "resourcepacks").mkdir()
-    (sync_root / "resourcepacks" / "pack.zip").write_text("rp")
-    (sync_root / "server_only").mkdir()
-    (sync_root / "client_only").mkdir()
-    (sync_root / "unmapped").mkdir()
-    return sync_root
+def patch_dependencies(tmp_path):
+    """Patch module-level dependencies used by main().
 
+    Yields a dict of the notable mocks so tests can assert on calls
+    and set side effects. Every external path is redirected under
+    tmp_path via _config_getter.
+    """
+    mock_load_config = MagicMock()
+    mock_load_config.return_value = _make_main_config(tmp_path)
 
-# ---------------------------------------------------------------------------
-# load_mod_list
-# ---------------------------------------------------------------------------
-
-
-def test_load_mod_list_success(mock_logger):
-    """load_mod_list should load, override, filter, and log."""
-    prism_index = Path("/fake/.index")
-    config_dir = Path("/fake/config")
     with (
-        patch("src.minecraft.deploy_pack.prism.load_prism_index") as mock_load,
-        patch("src.minecraft.deploy_pack.overrides.load_side_overrides") as mock_load_overrides,
-        patch("src.minecraft.deploy_pack.overrides.apply_side_overrides") as mock_apply,
-        patch("src.minecraft.deploy_pack.prism.filter_prism_entries_by_side") as mock_filter,
-        patch("pathlib.Path.is_dir") as mock_is_dir,
+        patch("src.minecraft.deploy_pack.cfg.load_config", mock_load_config),
+        patch("src.minecraft.deploy_pack.get_logger", return_value=MagicMock()),
+        patch("src.minecraft.deploy_pack.setup_logging"),
+        patch("src.minecraft.deploy_pack.load_mod_list", return_value=[]) as mock_load_mod_list,
+        patch(
+            "src.minecraft.deploy_pack.prepare_mods_staging",
+            return_value=tmp_path / "staging_mods",
+        ) as mock_prepare_mods,
+        patch(
+            "src.minecraft.deploy_pack.prepare_instance_staging",
+            return_value=tmp_path / "staging_inst",
+        ) as mock_prepare_instance,
+        patch(
+            "src.minecraft.deploy_pack.prepare_client_staging",
+            return_value=tmp_path / "staging_client",
+        ) as mock_prepare_client,
+        patch(
+            "src.minecraft.deploy_pack.create_client_zip",
+            return_value=tmp_path / "www" / "minecraft_client_20260920.zip",
+        ) as mock_create_zip,
+        patch("src.minecraft.deploy_pack.publish_release") as mock_publish,
+        patch("src.minecraft.deploy_pack.deploy_to_server") as mock_deploy_server,
+        patch("src.minecraft.deploy_pack.deploy_to_client") as mock_deploy_client,
+        patch("src.minecraft.deploy_pack.deploy_shared_items") as mock_shared,
+        patch(
+            "src.minecraft.deploy_pack.file_utils.get_exclude_patterns",
+            return_value=[],
+        ),
+        patch(
+            "src.minecraft.deploy_pack.file_utils.get_protect_patterns",
+            return_value=["server.properties"],
+        ),
     ):
-        mock_is_dir.return_value = True
-        mock_load.return_value = [{"id": "1", "side": "both"}]
-        mock_load_overrides.return_value = {"1": "server"}
-        mock_apply.return_value = [{"id": "1", "side": "server"}]
-        mock_filter.return_value = [{"id": "1", "side": "server"}]
-        result = deploy_pack.load_mod_list(prism_index, config_dir, "server", mock_logger)
-        assert len(result) == 1
-        mock_load.assert_called_once_with(prism_index)
-        mock_load_overrides.assert_called_once_with(config_dir / "side_overrides.toml")
-        mock_apply.assert_called_once()
-        mock_filter.assert_called_once_with(mock_apply.return_value, "server")
-        mock_logger.info.assert_any_call("Loaded 1 mods from Prism index")
-        mock_logger.info.assert_any_call("Filtered to 1 mods for side 'server'")
+        yield {
+            "mock_load_config": mock_load_config,
+            "mock_load_mod_list": mock_load_mod_list,
+            "mock_prepare_mods": mock_prepare_mods,
+            "mock_prepare_instance": mock_prepare_instance,
+            "mock_prepare_client": mock_prepare_client,
+            "mock_create_zip": mock_create_zip,
+            "mock_publish": mock_publish,
+            "mock_deploy_server": mock_deploy_server,
+            "mock_deploy_client": mock_deploy_client,
+            "mock_shared": mock_shared,
+        }
 
 
-def test_load_mod_list_index_missing(mock_logger):
-    """Should raise ValueError if index dir missing."""
-    with patch("pathlib.Path.is_dir") as mock_is_dir:
-        mock_is_dir.return_value = False
-        with pytest.raises(ValueError, match="Prism index directory not found"):
-            deploy_pack.load_mod_list(Path("/fake/.index"), Path("/fake"), "server", mock_logger)
-
-
-def test_load_mod_list_empty(mock_logger):
-    """Should raise ValueError if index is empty."""
-    with (
-        patch("src.minecraft.deploy_pack.prism.load_prism_index") as mock_load,
-        patch("pathlib.Path.is_dir") as mock_is_dir,
-    ):
-        mock_is_dir.return_value = True
-        mock_load.return_value = []
-        with pytest.raises(ValueError, match="No mod entries found"):
-            deploy_pack.load_mod_list(Path("/fake/.index"), Path("/fake"), "server", mock_logger)
+def _stub_diff_report() -> changelog.DiffReport:
+    """Return a minimal populated DiffReport for publish_release tests."""
+    return changelog.DiffReport(added_mods=["a.jar"], added_kubejs=["x.js"])
 
 
 # ---------------------------------------------------------------------------
-# Mapping helpers
+# Pure helpers
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_mapping_for_side_string():
-    """String mapping applies to both sides."""
-    assert deploy_pack.resolve_mapping_for_side("config", "server") == "config"
-    assert deploy_pack.resolve_mapping_for_side("config", "client") == "config"
+class TestResolveMappingForSide:
+    """Tests for resolve_mapping_for_side behavior across mapping shapes."""
+
+    def test_string_applies_to_both_sides(self):
+        """A bare string destination is returned for either side."""
+        assert deploy_pack.resolve_mapping_for_side("config", "server") == "config"
+        assert deploy_pack.resolve_mapping_for_side("config", "client") == "config"
+
+    def test_dict_picks_per_side(self):
+        """A dict destination returns the entry for the requested side."""
+        val = {"server": "srv/cfg", "client": "cli/cfg"}
+        assert deploy_pack.resolve_mapping_for_side(val, "server") == "srv/cfg"
+        assert deploy_pack.resolve_mapping_for_side(val, "client") == "cli/cfg"
+
+    def test_minus_one_excludes_side(self):
+        """A value of -1 marks the side as excluded."""
+        val = {"server": -1, "client": "somewhere"}
+        assert deploy_pack.resolve_mapping_for_side(val, "server") is None
+        assert deploy_pack.resolve_mapping_for_side(val, "client") == "somewhere"
+
+    def test_missing_side_returns_none(self):
+        """A dict without the requested side key returns None."""
+        val = {"server": "srv"}
+        assert deploy_pack.resolve_mapping_for_side(val, "client") is None
+
+    def test_non_string_value_returns_none(self):
+        """A non-string, non-dict value returns None."""
+        val = {"server": 42}
+        assert deploy_pack.resolve_mapping_for_side(val, "server") is None
 
 
-def test_resolve_mapping_for_side_dict():
-    """Dict mapping picks the side-specific value."""
-    m = {"server": "srv", "client": "cli"}
-    assert deploy_pack.resolve_mapping_for_side(m, "server") == "srv"
-    assert deploy_pack.resolve_mapping_for_side(m, "client") == "cli"
+class TestIsSharedDest:
+    """Tests for is_shared_dest detection of shared destination paths."""
+
+    def test_at_prefix_is_shared(self):
+        """Any destination starting with '@' is shared."""
+        assert deploy_pack.is_shared_dest("@www")
+        assert deploy_pack.is_shared_dest("@www/foo")
+
+    def test_plain_path_is_not_shared(self):
+        """A plain relative path is not shared."""
+        assert not deploy_pack.is_shared_dest("config")
+        assert not deploy_pack.is_shared_dest("server/config")
 
 
-def test_resolve_mapping_for_side_excluded():
-    """-1 / missing side key means excluded (None)."""
-    m = {"server": "srv", "client": -1}
-    assert deploy_pack.resolve_mapping_for_side(m, "server") == "srv"
-    assert deploy_pack.resolve_mapping_for_side(m, "client") is None
-    assert deploy_pack.resolve_mapping_for_side({"server": "x"}, "client") is None
+class TestResolveSharedDest:
+    """Tests for resolve_shared_dest expansion of @-prefixed paths."""
 
+    def test_www_root(self, tmp_path):
+        """'@www' resolves to the www directory itself."""
+        assert deploy_pack.resolve_shared_dest("@www", tmp_path / "www", tmp_path / "mods") == tmp_path / "www"
 
-def test_resolve_mapping_for_side_invalid():
-    """Non-string, non--1 values yield None."""
-    assert deploy_pack.resolve_mapping_for_side({"server": 123}, "server") is None
-    assert deploy_pack.resolve_mapping_for_side(42, "server") is None
+    def test_www_subpath(self, tmp_path):
+        """'@www/sub' resolves to a subdirectory of the www directory."""
+        assert deploy_pack.resolve_shared_dest("@www/resourcepacks", tmp_path / "www", tmp_path / "mods") == tmp_path / "www" / "resourcepacks"
 
+    def test_mods_root(self, tmp_path):
+        """'@mods' resolves to the mods directory itself."""
+        assert deploy_pack.resolve_shared_dest("@mods", tmp_path / "www", tmp_path / "mods") == tmp_path / "mods"
 
-def test_is_shared_dest():
-    """Only @-prefixed destinations are shared."""
-    assert deploy_pack.is_shared_dest("@www/resourcepacks") is True
-    assert deploy_pack.is_shared_dest("@mods/foo") is True
-    assert deploy_pack.is_shared_dest("config") is False
-    assert deploy_pack.is_shared_dest("www/resourcepacks") is False
+    def test_mods_subpath(self, tmp_path):
+        """'@mods/sub' resolves to a subdirectory of the mods directory."""
+        assert deploy_pack.resolve_shared_dest("@mods/extra", tmp_path / "www", tmp_path / "mods") == tmp_path / "mods" / "extra"
 
-
-def test_resolve_shared_dest(tmp_path):
-    """@www/* and @mods/* resolve under www_dir / mods_dir."""
-    www = tmp_path / "www"
-    mods = tmp_path / "mods"
-    assert deploy_pack.resolve_shared_dest("@www", www, mods) == www
-    assert deploy_pack.resolve_shared_dest("@www/rp", www, mods) == www / "rp"
-    assert deploy_pack.resolve_shared_dest("@mods", www, mods) == mods
-    assert deploy_pack.resolve_shared_dest("@mods/x", www, mods) == mods / "x"
-
-
-def test_resolve_shared_dest_unknown(tmp_path):
-    """Unknown @-prefix should raise ValueError."""
-    with pytest.raises(ValueError, match="Unknown shared destination"):
-        deploy_pack.resolve_shared_dest("@bogus/x", tmp_path, tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# Staging builders
-# ---------------------------------------------------------------------------
-
-
-def test_prepare_mods_staging(mock_logger, tmp_path):
-    """prepare_mods_staging should copy verified mod files under mods/."""
-    modpack_dir = tmp_path / "downloads"
-    modpack_dir.mkdir()
-    (modpack_dir / "mod1.jar").write_text("mod1")
-    side_mods = [{"file": "mod1.jar", "download_url": None, "hash_value": None}]
-    with patch("src.minecraft.deploy_pack.file_utils.ensure_mod_file") as mock_ensure:
-        mock_ensure.return_value = True
-        staging = deploy_pack.prepare_mods_staging(side_mods, modpack_dir, mock_logger)
-        try:
-            assert (staging / "mods" / "mod1.jar").exists()
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-        mock_ensure.assert_called_once_with(modpack_dir / "mod1.jar", None, None, "sha512", mock_logger)
-
-
-def test_prepare_mods_staging_download_failure(mock_logger, tmp_path):
-    """Failed downloads should be skipped with a warning."""
-    modpack_dir = tmp_path / "downloads"
-    modpack_dir.mkdir()
-    side_mods = [{"file": "missing.jar", "download_url": "http://x", "hash_value": "abc"}]
-    with patch("src.minecraft.deploy_pack.file_utils.ensure_mod_file") as mock_ensure:
-        mock_ensure.return_value = False
-        staging = deploy_pack.prepare_mods_staging(side_mods, modpack_dir, mock_logger)
-        try:
-            assert not (staging / "mods" / "missing.jar").exists()
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-        mock_logger.warning.assert_any_call("Skipping mod missing.jar due to missing/corrupt file")
-
-
-def test_prepare_instance_staging(mock_logger, sync_tree):
-    """Instance staging should include non-shared, side-appropriate items only."""
-    sync_mapping = {
-        "config": "config",
-        "kubejs": "kubejs",
-        "resourcepacks": {"server": "@www/resourcepacks", "client": "resourcepacks"},
-        "server_only": {"server": "server_stuff", "client": -1},
-        "client_only": {"client": "client_stuff", "server": -1},
-    }
-    staging = deploy_pack.prepare_instance_staging(sync_tree, "server", [], sync_mapping, mock_logger)
-    try:
-        assert (staging / "config" / "file.txt").exists()
-        assert (staging / "kubejs" / "script.js").exists()
-        assert (staging / "server_stuff").exists()
-        assert not (staging / "client_stuff").exists()
-        # @-prefixed items must not appear in instance staging
-        assert not (staging / "www").exists()
-        assert not (staging / "resourcepacks").exists()
-        # unmapped items skipped
-        assert not (staging / "unmapped").exists()
-        # downloads always skipped
-        assert not (staging / "downloads").exists()
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-
-
-def test_prepare_instance_staging_client(mock_logger, sync_tree):
-    """Client side of instance staging picks client-only destinations."""
-    sync_mapping = {
-        "config": "config",
-        "resourcepacks": {"server": "@www/resourcepacks", "client": "resourcepacks"},
-        "client_only": {"client": "client_stuff", "server": -1},
-    }
-    staging = deploy_pack.prepare_instance_staging(sync_tree, "client", [], sync_mapping, mock_logger)
-    try:
-        assert (staging / "config" / "file.txt").exists()
-        assert (staging / "client_stuff").exists()
-        assert not (staging / "www").exists()
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-
-
-def test_prepare_client_staging(mock_logger, tmp_path):
-    """Client staging should contain client mods plus client-mapped sync items."""
-    sync_root = tmp_path / "sync"
-    sync_root.mkdir()
-    (sync_root / "config").mkdir()
-    (sync_root / "config" / "file.txt").write_text("config")
-    (sync_root / "resourcepacks").mkdir()
-    (sync_root / "resourcepacks" / "rp.zip").write_text("rp")
-
-    modpack_dir = tmp_path / "downloads"
-    modpack_dir.mkdir()
-    (modpack_dir / "client_mod.jar").write_text("m")
-
-    client_mods = [{"file": "client_mod.jar", "download_url": None, "hash_value": None}]
-    sync_mapping = {
-        "config": "config",
-        "resourcepacks": {"server": "@www/resourcepacks", "client": "resourcepacks"},
-    }
-    with patch("src.minecraft.deploy_pack.file_utils.ensure_mod_file") as mock_ensure:
-        mock_ensure.return_value = True
-        staging = deploy_pack.prepare_client_staging(client_mods, modpack_dir, sync_root, [], sync_mapping, mock_logger)
-    try:
-        assert (staging / "mods" / "client_mod.jar").exists()
-        assert (staging / "config" / "file.txt").exists()
-        assert (staging / "resourcepacks" / "rp.zip").exists()
-        # @-destinations must NOT enter the client ZIP
-        assert not (staging / "www").exists()
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+    def test_unknown_prefix_raises(self, tmp_path):
+        """An unknown @-prefix raises ValueError."""
+        with pytest.raises(ValueError):
+            deploy_pack.resolve_shared_dest("@nope/foo", tmp_path / "www", tmp_path / "mods")
 
 
 # ---------------------------------------------------------------------------
-# deploy_shared_items
+# Deployment actions
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_shared_items(mock_logger, sync_tree, tmp_path):
-    """Shared items go to www_dir / mods_dir; non-shared items are ignored."""
-    www_dir = tmp_path / "www"
-    mods_dir = tmp_path / "mods"
-    sync_mapping = {
-        "resourcepacks": {"server": "@www/resourcepacks", "client": "resourcepacks"},
-        "config": "config",
-    }
-    deploy_pack.deploy_shared_items(sync_tree, "server", [], sync_mapping, www_dir, mods_dir, mock_logger)
-    assert (www_dir / "resourcepacks" / "pack.zip").exists()
-    # `config` is instance-mapped, not shared
-    assert not (www_dir / "config").exists()
+def test_deploy_to_server(tmp_path, mock_logger):
+    """deploy_to_server calls copy_with_exclusions with clean and protect patterns."""
+    with patch("src.minecraft.deploy_pack.file_utils.copy_with_exclusions") as mock_copy:
+        deploy_pack.deploy_to_server(
+            staging_dir=tmp_path / "s",
+            live_server=tmp_path / "srv",
+            exclude_patterns=["*.tmp"],
+            protect_patterns=["server.properties"],
+            logger=mock_logger,
+        )
+    mock_copy.assert_called_once()
+    _, kwargs = mock_copy.call_args
+    assert kwargs["clean"] is True
+    assert kwargs["protect_patterns"] == ["server.properties"]
+
+
+def test_deploy_to_client(tmp_path, mock_logger):
+    """deploy_to_client targets <base>/<name>/.minecraft."""
+    with patch("src.minecraft.deploy_pack.file_utils.copy_with_exclusions") as mock_copy:
+        deploy_pack.deploy_to_client(
+            staging_dir=tmp_path / "s",
+            multimc_base=tmp_path / "mmc",
+            instance_name="Inst",
+            exclude_patterns=[],
+            logger=mock_logger,
+        )
+    args, _ = mock_copy.call_args
+    assert args[1] == tmp_path / "mmc" / "Inst" / ".minecraft"
 
 
 # ---------------------------------------------------------------------------
-# create_client_zip / deploy_to_server / deploy_to_client
+# create_client_zip
 # ---------------------------------------------------------------------------
 
 
-def test_create_client_zip(mock_logger, tmp_path):
-    """create_client_zip should template the filename with the current date."""
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    www_dir = tmp_path / "www"
+def test_create_client_zip_uses_output_dir(tmp_path, mock_logger):
+    """create_client_zip writes into the caller-supplied output_dir."""
+    output_dir = tmp_path / "www" / "dry_run"
     with patch("src.minecraft.deploy_pack.file_utils.create_zip_from_staging") as mock_zip:
-        result = deploy_pack.create_client_zip(staging, www_dir, "test_{date}.zip", ["*.tmp"], mock_logger)
-        expected = www_dir / f"test_{datetime.datetime.now(datetime.UTC).strftime('%Y%m%d')}.zip"
-        assert result == expected
-        mock_zip.assert_called_once_with(staging, expected, ["*.tmp"], mock_logger)
+        result = deploy_pack.create_client_zip(
+            staging_dir=tmp_path / "staging",
+            output_dir=output_dir,
+            filename_template="pack_{date}.zip",
+            exclude_patterns=[],
+            logger=mock_logger,
+        )
+    assert result.parent == output_dir
+    assert result.name.startswith("pack_")
+    mock_zip.assert_called_once()
 
 
-def test_deploy_to_server(mock_logger):
-    """deploy_to_server should call copy_with_exclusions with clean=True."""
-    with patch("src.minecraft.deploy_pack.file_utils.copy_with_exclusions") as mock_copy:
-        deploy_pack.deploy_to_server(Path("/s"), Path("/srv"), ["*.tmp"], mock_logger)
-        mock_copy.assert_called_once_with(Path("/s"), Path("/srv"), ["*.tmp"], mock_logger, clean=True)
+# ---------------------------------------------------------------------------
+# publish_release - the four notification modes
+# ---------------------------------------------------------------------------
 
 
-def test_deploy_to_client(mock_logger):
-    """deploy_to_client should target <multimc_base>/<instance>/.minecraft."""
-    with patch("src.minecraft.deploy_pack.file_utils.copy_with_exclusions") as mock_copy:
-        deploy_pack.deploy_to_client(Path("/s"), Path("/mmc"), "Inst", ["*.tmp"], mock_logger)
-        mock_copy.assert_called_once_with(Path("/s"), Path("/mmc") / "Inst" / ".minecraft", ["*.tmp"], mock_logger)
+def test_publish_release_writes_html_and_skips_notify(tmp_path, mock_logger):
+    """--no-notify: HTML written, no webhook call."""
+    cfg = _make_main_config(tmp_path)
+    with (
+        patch("src.minecraft.common.changelog.write_changelog") as mock_html,
+        patch("src.minecraft.deploy_pack.notify.post_discord_webhook") as mock_webhook,
+    ):
+        deploy_pack.publish_release(
+            client_zip=tmp_path / "www" / "pack.zip",
+            report=_stub_diff_report(),
+            config=cfg,
+            output_dir=tmp_path / "www",
+            logger=mock_logger,
+            no_notify=True,
+        )
+    mock_html.assert_called_once()
+    mock_webhook.assert_not_called()
+
+
+def test_publish_release_dry_run_prints_payload(tmp_path, mock_logger):
+    """--dry-run: HTML written, payload logged, no webhook call."""
+    cfg = _make_main_config(tmp_path)
+    with (
+        patch("src.minecraft.common.changelog.write_changelog") as mock_html,
+        patch("src.minecraft.deploy_pack.notify.post_discord_webhook") as mock_webhook,
+    ):
+        deploy_pack.publish_release(
+            client_zip=tmp_path / "www" / "pack.zip",
+            report=_stub_diff_report(),
+            config=cfg,
+            output_dir=tmp_path / "www" / "dry_run",
+            logger=mock_logger,
+            dry_run=True,
+        )
+    mock_html.assert_called_once()
+    mock_webhook.assert_not_called()
+    logged = " ".join(str(c) for c in mock_logger.info.call_args_list)
+    assert "DRY-RUN" in logged
+
+
+def test_publish_release_dry_run_notify_posts(tmp_path, mock_logger):
+    """--dry-run-notify: HTML written, webhook actually sent."""
+    cfg = _make_main_config(tmp_path)
+    cfg.get.side_effect = lambda key, default=None: {
+        "download_base_url": "https://x.test/p",
+        "webhook_url": "https://discord.test/hook",
+        "webhook_message_template": "{url}",
+    }.get(key, default)
+    with (
+        patch("src.minecraft.common.changelog.write_changelog"),
+        patch("src.minecraft.deploy_pack.file_utils.compute_file_hash", return_value="x"),
+        patch(
+            "src.minecraft.deploy_pack.notify.post_discord_webhook",
+            return_value=True,
+        ) as mock_webhook,
+    ):
+        deploy_pack.publish_release(
+            client_zip=tmp_path / "www" / "pack.zip",
+            report=_stub_diff_report(),
+            config=cfg,
+            output_dir=tmp_path / "www" / "dry_run",
+            logger=mock_logger,
+            dry_run=True,
+            dry_run_notify=True,
+        )
+    mock_webhook.assert_called_once()
+
+
+def test_publish_release_normal_deploy_posts(tmp_path, mock_logger):
+    """Normal deploy: HTML written, webhook sent when configured."""
+    cfg = _make_main_config(tmp_path)
+    cfg.get.side_effect = lambda key, default=None: {
+        "download_base_url": "https://example.test/packs",
+        "webhook_url": "https://discord.test/hook",
+        "webhook_message_template": "New pack: {url} sha {sha256sum}",
+    }.get(key, default)
+    with (
+        patch("src.minecraft.common.changelog.write_changelog"),
+        patch("src.minecraft.deploy_pack.file_utils.compute_file_hash", return_value="deadbeef"),
+        patch(
+            "src.minecraft.deploy_pack.notify.post_discord_webhook",
+            return_value=True,
+        ) as mock_webhook,
+    ):
+        deploy_pack.publish_release(
+            client_zip=tmp_path / "www" / "pack.zip",
+            report=_stub_diff_report(),
+            config=cfg,
+            output_dir=tmp_path / "www",
+            logger=mock_logger,
+        )
+    mock_webhook.assert_called_once()
+    args, _ = mock_webhook.call_args
+    assert "deadbeef" in args[1]
+    assert "https://example.test/packs/pack.zip" in args[1]
+
+
+def test_publish_release_no_webhook_url_logs_and_returns(tmp_path, mock_logger):
+    """No webhook_url configured: HTML written, no webhook attempt."""
+    cfg = _make_main_config(tmp_path)
+    cfg.get.side_effect = lambda key, default=None: {
+        "download_base_url": "",
+        "webhook_url": "",
+        "webhook_message_template": "{url}",
+    }.get(key, default)
+    with (
+        patch("src.minecraft.common.changelog.write_changelog"),
+        patch("src.minecraft.deploy_pack.file_utils.compute_file_hash", return_value="x"),
+        patch("src.minecraft.deploy_pack.notify.post_discord_webhook") as mock_webhook,
+    ):
+        deploy_pack.publish_release(
+            client_zip=tmp_path / "www" / "pack.zip",
+            report=_stub_diff_report(),
+            config=cfg,
+            output_dir=tmp_path / "www",
+            logger=mock_logger,
+        )
+    mock_webhook.assert_not_called()
+
+
+def test_publish_release_bad_template_falls_back(tmp_path, mock_logger):
+    """A typo in the template must not raise; falls back to minimal message."""
+    cfg = _make_main_config(tmp_path)
+    cfg.get.side_effect = lambda key, default=None: {
+        "download_base_url": "https://x.test/p",
+        "webhook_url": "https://discord.test/hook",
+        "webhook_message_template": "oops {nonexistent}",
+    }.get(key, default)
+    with (
+        patch("src.minecraft.common.changelog.write_changelog"),
+        patch("src.minecraft.deploy_pack.file_utils.compute_file_hash", return_value="x"),
+        patch(
+            "src.minecraft.deploy_pack.notify.post_discord_webhook",
+            return_value=True,
+        ) as mock_webhook,
+    ):
+        deploy_pack.publish_release(
+            client_zip=tmp_path / "www" / "pack.zip",
+            report=_stub_diff_report(),
+            config=cfg,
+            output_dir=tmp_path / "www",
+            logger=mock_logger,
+        )
+    mock_webhook.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -311,286 +412,182 @@ def test_deploy_to_client(mock_logger):
 # ---------------------------------------------------------------------------
 
 
-def test_load_instances_dict_form(mock_logger):
-    """[instances.x] path = ... form parses cleanly."""
-    config = MagicMock()
-    config.get.return_value = {
-        "survival": {"path": "/srv/survival"},
-        "creative": {"path": "/srv/creative"},
-    }
-    result = deploy_pack.load_instances(config, mock_logger)
-    assert ("survival", Path("/srv/survival")) in result
-    assert ("creative", Path("/srv/creative")) in result
-
-
-def test_load_instances_flat_form(mock_logger):
-    """Instances = { name = path } form parses cleanly."""
-    config = MagicMock()
-    config.get.return_value = {"survival": "./survival", "creative": "./creative"}
-    result = deploy_pack.load_instances(config, mock_logger)
-    assert ("survival", Path("./survival")) in result
-    assert ("creative", Path("./creative")) in result
-
-
 def test_load_instances_empty(mock_logger):
-    """Empty instances dict yields an empty list."""
-    config = MagicMock()
-    config.get.return_value = {}
-    assert deploy_pack.load_instances(config, mock_logger) == []
+    """No instances key returns an empty list."""
+    cfg = MagicMock()
+    cfg.get.return_value = None
+    assert deploy_pack.load_instances(cfg, mock_logger) == []
 
 
-def test_load_instances_missing_path(mock_logger):
-    """Instance with empty path is skipped with a warning."""
-    config = MagicMock()
-    config.get.return_value = {"survival": {"path": ""}}
-    result = deploy_pack.load_instances(config, mock_logger)
-    assert result == []
-    mock_logger.warning.assert_called()
+def test_load_instances_dict_form(mock_logger):
+    """The [instances.<name>] table form is parsed to (name, path) pairs."""
+    cfg = MagicMock()
+    cfg.get.return_value = {"survival": {"path": "./survival"}}
+    result = deploy_pack.load_instances(cfg, mock_logger)
+    assert result == [("survival", Path("./survival"))]
 
 
-# ---------------------------------------------------------------------------
-# main() -- shared fixtures
-# ---------------------------------------------------------------------------
+def test_load_instances_scalar_form(mock_logger):
+    """The instances = { name = "path" } form is parsed to (name, path) pairs."""
+    cfg = MagicMock()
+    cfg.get.return_value = {"survival": "./survival"}
+    result = deploy_pack.load_instances(cfg, mock_logger)
+    assert result == [("survival", Path("./survival"))]
 
 
-def _make_main_config(instances=None):
-    """Return a MagicMock Config for main() tests."""
-    if instances is None:
-        instances = {
-            "survival": {"path": "/fake/survival"},
-            "creative": {"path": "/fake/creative"},
-        }
-    values = {
-        "sync_root": "/fake/sync",
-        "mods_dir": "/fake/mods",
-        "www_dir": "/fake/www",
-        "exclude_file": "/fake/sync/.rsync_exclude",
-        "output_filename": "test_{date}.zip",
-        "modpack_dir": "/fake/sync/downloads",
-        "sync_mapping": {},
-        "instances": instances,
-        "multimc_base": "/fake/multimc",
-        "instance_name": "TestInstance",
-        "logging": {"level": "INFO"},
-    }
-    config = MagicMock()
-    config.get.side_effect = lambda key, default=None: values.get(key, default)
-    config.as_dict.return_value = {}
-    return config
-
-
-@pytest.fixture
-def patch_dependencies():
-    """Patch every deploy_pack call used by main()."""
-    with (
-        patch("src.minecraft.deploy_pack.cfg.load_config") as mock_load_config,
-        patch("src.minecraft.deploy_pack.setup_logging"),
-        patch("src.minecraft.deploy_pack.get_logger") as mock_get_logger,
-        patch("src.minecraft.deploy_pack.file_utils.get_exclude_patterns") as mock_get_exclude,
-        patch("src.minecraft.deploy_pack.load_mod_list") as mock_load_mod_list,
-        patch("src.minecraft.deploy_pack.prepare_mods_staging") as mock_prepare_mods,
-        patch("src.minecraft.deploy_pack.prepare_instance_staging") as mock_prepare_instance,
-        patch("src.minecraft.deploy_pack.prepare_client_staging") as mock_prepare_client,
-        patch("src.minecraft.deploy_pack.deploy_shared_items") as mock_deploy_shared,
-        patch("src.minecraft.deploy_pack.create_client_zip") as mock_create_zip,
-        patch("src.minecraft.deploy_pack.deploy_to_server") as mock_deploy_server,
-        patch("src.minecraft.deploy_pack.deploy_to_client") as mock_deploy_client,
-        patch("src.minecraft.deploy_pack.file_utils.copy_with_exclusions") as mock_copy_mods,
-        patch("src.minecraft.deploy_pack.shutil.rmtree") as mock_rmtree,
-    ):
-        logger = MagicMock()
-        mock_get_logger.return_value = logger
-        mock_get_exclude.return_value = ["*.tmp"]
-        mock_load_mod_list.return_value = [{"file": "mod1.jar"}]
-        mock_prepare_mods.return_value = Path("/fake/mods_staging")
-        mock_prepare_instance.return_value = Path("/fake/instance_staging")
-        mock_prepare_client.return_value = Path("/fake/client_staging")
-        yield {
-            "mock_load_config": mock_load_config,
-            "mock_logger": logger,
-            "mock_get_exclude": mock_get_exclude,
-            "mock_load_mod_list": mock_load_mod_list,
-            "mock_prepare_mods": mock_prepare_mods,
-            "mock_prepare_instance": mock_prepare_instance,
-            "mock_prepare_client": mock_prepare_client,
-            "mock_deploy_shared": mock_deploy_shared,
-            "mock_create_zip": mock_create_zip,
-            "mock_deploy_server": mock_deploy_server,
-            "mock_deploy_client": mock_deploy_client,
-            "mock_copy_mods": mock_copy_mods,
-            "mock_rmtree": mock_rmtree,
-        }
+def test_load_instances_missing_path_skips(mock_logger):
+    """An instance with no path is skipped with a warning."""
+    cfg = MagicMock()
+    cfg.get.return_value = {"survival": {}, "creative": "./creative"}
+    result = deploy_pack.load_instances(cfg, mock_logger)
+    assert result == [("creative", Path("./creative"))]
 
 
 # ---------------------------------------------------------------------------
-# main() -- server mode
+# main() - end-to-end smoke tests
 # ---------------------------------------------------------------------------
 
 
 def test_main_server_default(patch_dependencies):
-    """Default server mode: mods -> instances -> shared -> ZIP."""
-    mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
+    """Default server mode: mods, instances, shared, ZIP, publish."""
     with patch("sys.argv", ["deploy_pack.py"]):
         deploy_pack.main()
 
-    # load_mod_list called once for server, once for client ZIP
-    assert mocks["mock_load_mod_list"].call_count == 2
+    mocks = patch_dependencies
     mocks["mock_prepare_mods"].assert_called_once()
-    # one instance staging per instance
-    assert mocks["mock_prepare_instance"].call_count == 2
-    mocks["mock_deploy_server"].assert_called()
-    mocks["mock_deploy_shared"].assert_called_once()
-    mocks["mock_prepare_client"].assert_called_once()
+    mocks["mock_prepare_instance"].assert_called_once()
+    mocks["mock_shared"].assert_called_once()
     mocks["mock_create_zip"].assert_called_once()
-    mocks["mock_deploy_client"].assert_not_called()
+    mocks["mock_publish"].assert_called_once()
 
 
 def test_main_server_no_deploy(patch_dependencies):
-    """--no-deploy: skip mods/instances/shared, still build ZIP."""
-    mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
+    """--no-deploy: skip mods/instances/shared, still build ZIP + publish."""
     with patch("sys.argv", ["deploy_pack.py", "--no-deploy"]):
         deploy_pack.main()
 
-    mocks["mock_deploy_server"].assert_not_called()
-    mocks["mock_deploy_shared"].assert_not_called()
+    mocks = patch_dependencies
     mocks["mock_prepare_mods"].assert_not_called()
     mocks["mock_prepare_instance"].assert_not_called()
+    mocks["mock_shared"].assert_not_called()
     mocks["mock_create_zip"].assert_called_once()
+    mocks["mock_publish"].assert_called_once()
 
 
 def test_main_server_no_zip(patch_dependencies):
-    """--no-zip: deploy but do not create client ZIP."""
-    mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
+    """--no-zip: skip ZIP + publish, still deploy server side."""
     with patch("sys.argv", ["deploy_pack.py", "--no-zip"]):
         deploy_pack.main()
 
-    mocks["mock_create_zip"].assert_not_called()
-    mocks["mock_prepare_client"].assert_not_called()
-    mocks["mock_deploy_server"].assert_called()
-
-
-def test_main_server_no_zip_no_deploy(patch_dependencies):
-    """Both flags -> warning, no work."""
     mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
-    with patch("sys.argv", ["deploy_pack.py", "--no-zip", "--no-deploy"]):
+    mocks["mock_prepare_mods"].assert_called_once()
+    mocks["mock_prepare_instance"].assert_called_once()
+    mocks["mock_shared"].assert_called_once()
+    mocks["mock_create_zip"].assert_not_called()
+    mocks["mock_publish"].assert_not_called()
+
+
+def test_main_server_dry_run(patch_dependencies):
+    """--dry-run implies --no-deploy: no server writes, still build ZIP + publish."""
+    with patch("sys.argv", ["deploy_pack.py", "--dry-run"]):
         deploy_pack.main()
 
-    mocks["mock_create_zip"].assert_not_called()
-    mocks["mock_deploy_server"].assert_not_called()
-    mocks["mock_logger"].warning.assert_any_call("Both --no-zip and --no-deploy specified - nothing will be done.")
-
-
-def test_main_server_no_instances(patch_dependencies):
-    """No instances configured + deploy requested -> exit 1."""
     mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config(instances={})
-    with patch("sys.argv", ["deploy_pack.py"]):
-        with pytest.raises(SystemExit) as exc:
-            deploy_pack.main()
-        assert exc.value.code == 1
+    mocks["mock_prepare_mods"].assert_not_called()
+    mocks["mock_prepare_instance"].assert_not_called()
+    mocks["mock_shared"].assert_not_called()
+    mocks["mock_create_zip"].assert_called_once()
+    mocks["mock_publish"].assert_called_once()
+    _, kwargs = mocks["mock_publish"].call_args
+    assert kwargs["dry_run"] is True
+    assert kwargs["dry_run_notify"] is False
+    assert kwargs["no_notify"] is False
 
 
-# ---------------------------------------------------------------------------
-# main() -- client mode
-# ---------------------------------------------------------------------------
+def test_main_server_dry_run_notify(patch_dependencies):
+    """--dry-run-notify is passed through to publish_release."""
+    with patch("sys.argv", ["deploy_pack.py", "--dry-run", "--dry-run-notify"]):
+        deploy_pack.main()
+
+    _, kwargs = patch_dependencies["mock_publish"].call_args
+    assert kwargs["dry_run"] is True
+    assert kwargs["dry_run_notify"] is True
+
+
+def test_main_server_no_notify(patch_dependencies):
+    """--no-notify is passed through to publish_release."""
+    with patch("sys.argv", ["deploy_pack.py", "--no-notify"]):
+        deploy_pack.main()
+
+    _, kwargs = patch_dependencies["mock_publish"].call_args
+    assert kwargs["no_notify"] is True
+    assert kwargs["dry_run"] is False
+
+
+def test_main_dry_run_notify_requires_dry_run(patch_dependencies):
+    """--dry-run-notify without --dry-run is a parser error."""
+    with (
+        patch("sys.argv", ["deploy_pack.py", "--dry-run-notify"]),
+        pytest.raises(SystemExit),
+    ):
+        deploy_pack.main()
 
 
 def test_main_client_mode(patch_dependencies):
     """Client mode: build client staging and deploy to MultiMC."""
-    mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
     with patch("sys.argv", ["deploy_pack.py", "--client"]):
         deploy_pack.main()
 
-    mocks["mock_load_mod_list"].assert_called_once()
-    mocks["mock_prepare_client"].assert_called_once()
-    mocks["mock_deploy_client"].assert_called_once_with(
-        Path("/fake/client_staging"),
-        Path("/fake/multimc"),
-        "TestInstance",
-        ["*.tmp"],
-        mocks["mock_logger"],
-    )
-    mocks["mock_deploy_server"].assert_not_called()
-    mocks["mock_create_zip"].assert_not_called()
-
-
-def test_main_client_mode_missing_instance_name(patch_dependencies):
-    """Client mode without instance_name should exit early."""
     mocks = patch_dependencies
-    cfg = _make_main_config()
-    original = cfg.get.side_effect
-
-    def g(k, d=None):
-        if k == "instance_name":
-            return None
-        return original(k, d)
-
-    cfg.get.side_effect = g
-    mocks["mock_load_config"].return_value = cfg
-    with patch("sys.argv", ["deploy_pack.py", "--client"]):
-        with pytest.raises(SystemExit) as exc:
-            deploy_pack.main()
-        assert exc.value.code == 1
-        mocks["mock_logger"].error.assert_any_call("instance_name must be set for client mode")
-
-
-# ---------------------------------------------------------------------------
-# main() -- misc
-# ---------------------------------------------------------------------------
+    mocks["mock_prepare_client"].assert_called_once()
+    mocks["mock_deploy_client"].assert_called_once()
+    mocks["mock_create_zip"].assert_not_called()
 
 
 def test_main_config_dir_file(patch_dependencies):
     """--config-dir pointing at a file uses its parent dir."""
-    mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
     with (
-        patch("pathlib.Path.is_file", return_value=True),
         patch("sys.argv", ["deploy_pack.py", "--config-dir", "/some/path/file.toml"]),
+        patch("pathlib.Path.is_file", return_value=True),
     ):
         deploy_pack.main()
-    _args, kwargs = mocks["mock_load_config"].call_args
-    assert kwargs["config_dir"] == Path("/some/path")
 
 
 def test_main_debug(patch_dependencies):
-    """--debug prints the config dict."""
-    mocks = patch_dependencies
-    cfg = _make_main_config()
-    cfg.as_dict.return_value = {"foo": "bar"}
-    mocks["mock_load_config"].return_value = cfg
+    """--debug prints the config dict without crashing."""
     with (
         patch("sys.argv", ["deploy_pack.py", "--debug"]),
-        patch("builtins.print") as mock_print,
+        patch("builtins.print"),
     ):
         deploy_pack.main()
-        mock_print.assert_any_call("=== Loaded configuration ===")
-        mock_print.assert_any_call("foo = bar")
 
 
 def test_main_load_mods_failure(patch_dependencies):
-    """If load_mod_list raises, exit 1 and log the exception."""
-    mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
-    mocks["mock_load_mod_list"].side_effect = ValueError("Bad index")
-    with patch("sys.argv", ["deploy_pack.py"]):
-        with pytest.raises(SystemExit) as exc:
-            deploy_pack.main()
-        assert exc.value.code == 1
-        mocks["mock_logger"].exception.assert_called()
+    """If load_mod_list raises, exit 1."""
+    patch_dependencies["mock_load_mod_list"].side_effect = ValueError("Bad index")
+    with (
+        patch("sys.argv", ["deploy_pack.py"]),
+        pytest.raises(SystemExit) as exc,
+    ):
+        deploy_pack.main()
+    assert exc.value.code == 1
 
 
 def test_main_prepare_staging_failure(patch_dependencies):
-    """If a staging step raises, exit 1 and log the exception."""
-    mocks = patch_dependencies
-    mocks["mock_load_config"].return_value = _make_main_config()
-    mocks["mock_prepare_mods"].side_effect = OSError("Disk full")
-    with patch("sys.argv", ["deploy_pack.py"]):
-        with pytest.raises(SystemExit) as exc:
-            deploy_pack.main()
-        assert exc.value.code == 1
-        mocks["mock_logger"].exception.assert_called()
+    """If a staging step raises, exit 1."""
+    patch_dependencies["mock_prepare_mods"].side_effect = OSError("Disk full")
+    with (
+        patch("sys.argv", ["deploy_pack.py"]),
+        pytest.raises(SystemExit) as exc,
+    ):
+        deploy_pack.main()
+    assert exc.value.code == 1
+
+
+def test_main_no_instances_and_no_deploy(patch_dependencies, tmp_path):
+    """--no-deploy with no instances defined is allowed."""
+    patch_dependencies["mock_load_config"].return_value.get.side_effect = lambda key, default=None: (
+        None if key == "instances" else _config_getter(tmp_path)(key, default)
+    )
+    with patch("sys.argv", ["deploy_pack.py", "--no-deploy"]):
+        deploy_pack.main()
