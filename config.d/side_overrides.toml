@@ -19,3 +19,7 @@
 
 # ---- Force both (if needed) ----
 # "789012" = "both"
+
+"1000850" = "both"   # KubeJS + CC: Tweaked — required on the client so
+                     # players can prototype CC/KubeJS builds locally before
+                     # pushing to the server. See sync/kubejs/**/*.js.

@@ -16,12 +16,16 @@ def load_config(
     """Load configuration using ConfigCore.
 
     Sources (in order of increasing priority):
-        1. .env file (if provided) - loaded as environment variables
+        1. .env file (if provided) - loaded as a flat file source with
+           literal keys, exactly as written. Keys must match the names the
+           application reads (e.g. ``webhook_url``); no prefix stripping
+           or dot expansion is applied to file sources.
         2. Config file: config_dir / f"{base_name}.toml" (or yaml/yml)
-        3. Environment variables with the given prefix
+        3. Environment variables with the given prefix - stripped, lowercased,
+           and dot-expanded into nested keys (PREFIX_DATABASE_HOST becomes
+           ``database.host``). Not used by keys that also live in the .env
+           file unless you set the real env var.
         4. CLI arguments (--key value or --key=value)
-
-    Returns a Config object (dot-notation access).
     """
     # Build the ConfigManager
     mgr = ConfigManager()

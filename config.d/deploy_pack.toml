@@ -5,11 +5,13 @@
 # All paths can be absolute or relative to the working directory.
 #
 # SECRETS (Discord webhook URL, etc.) do NOT belong in this file.
-# Put them in config.d/.env (gitignored):
+# Put them in config.d/.env (gitignored), using the same flat key names
+# as this file:
 #
-#     DEPLOYPACK_WEBHOOK_URL=https://discord.com/api/webhooks/xxx/yyy
+#     webhook_url=https://discord.com/api/webhooks/xxx/yyy
 #
-# ConfigCore picks that up as the `webhook_url` key automatically.
+# The .env file is loaded with ConfigCore's file loader, so its keys are
+# used literally. No prefix stripping, no dot expansion.
 
 # === Core paths ========================================================
 
