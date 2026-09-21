@@ -12,6 +12,12 @@
 #
 # The .env file is loaded with ConfigCore's file loader, so its keys are
 # used literally. No prefix stripping, no dot expansion.
+#
+# LAYOUT NOTE: top-level keys must all appear BEFORE the first [table]
+# header. In TOML, any key that follows a [section] header belongs to
+# that section, so a flat key placed after [instances.*] silently ends
+# up nested and config.get("key") returns None. This is why the
+# instances tables are at the very bottom of the file.
 
 # === Core paths ========================================================
 
@@ -45,30 +51,13 @@ output_filename = "minecraft_client_{date}.zip"
 # The .index subfolder inside this dir holds the Prism .pw.toml metadata.
 modpack_dir = "./sync/downloads"
 
-# === Server instances ==================================================
-# Each instance receives its own copy of every instance-mapped sync item
-# (config, kubejs, etc.). Mods are shared from `mods_dir` - do NOT put a
-# mods mapping here.
-#
-# Two equivalent forms are supported:
-#
-#   [instances.survival]        instances = {
-#   path = "./survival"             survival = "./survival",
-#                                   creative = "./creative",
-#                               }
-#
-[instances.survival]
-path = "./survival"
-
-[instances.creative]
-path = "./creative"
-
 # === MultiMC client deployment ==========================================
+# Used only in client mode (--client).
 
-# Base path to the MultiMC instances folder. Used only in client mode.
+# Base path to the MultiMC instances folder.
 multimc_base = "/home/admiral/.local/share/multimc/instances"
 
-# Name of the MultiMC instance to deploy to (client mode only).
+# Name of the MultiMC instance to deploy to.
 instance_name = "Mike_N_Ike"
 
 # === Client pack notification ==========================================
@@ -150,3 +139,24 @@ handlers = [
     { type = "console", color = true },
     { type = "file", path = "logs/deploy_pack.log", max_bytes = 10485760, backup_count = 5 }
 ]
+
+# === Server instances ==================================================
+# Each instance receives its own copy of every instance-mapped sync item
+# (config, kubejs, etc.). Mods are shared from `mods_dir` - do NOT put a
+# mods mapping here.
+#
+# Two equivalent forms are supported:
+#
+#   [instances.survival]        instances = {
+#   path = "./survival"             survival = "./survival",
+#                                   creative = "./creative",
+#                               }
+#
+# NOTE: these tables are intentionally last. See the layout note at the
+# top of the file.
+
+[instances.survival]
+path = "./survival"
+
+[instances.creative]
+path = "./creative"
