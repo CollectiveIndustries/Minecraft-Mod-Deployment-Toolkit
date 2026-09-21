@@ -1,25 +1,85 @@
 # Side overrides for Prism mods
 # Values: "client", "server", or "both"
-# Override by project-id (stable) – no version numbers needed.
+# Override by project-id (stable) or filename. project-id wins when both
+# match an entry.
 
 [by_id]
 # ---- Client-only mods (do not install on server) ----
-"976858" = "client"   # inventory-tweaks-refoxed
-"986380" = "client"   # lighty
-"1375689" = "client"  # jei-copy-recipe-json
-"634571" = "client"   # just-enough-immersive-multiblocks (JEI Multiblocks)
-"417645" = "client"   # just-enough-professions-jep
-"240630" = "client"   # just-enough-resources-jer
-
-# (Optional) If you find more client-only mods, add them here.
+"976858" = "client"    # inventory-tweaks-refoxed
+"986380" = "client"    # lighty
+"1375689" = "client"   # jei-copy-recipe-json
+"634571" = "client"    # just-enough-immersive-multiblocks (JEI Multiblocks)
+"417645" = "client"    # just-enough-professions-jep
+"240630" = "client"    # just-enough-resources-jer
+"uXXizFIs" = "client"  # FerriteCore — conflicts with Advanced Chimneys on dedicated server
 
 # ---- Server-only mods (do not install on client) ----
 
-"ejJQJnIT" = "server"   # server-side-vein-miner (Server-side Vein Miner & Tunneler)
+"ejJQJnIT" = "server"  # server-side-vein-miner (Server-side Vein Miner & Tunneler)
+                       # Reversed to BOTH once players want it in singleplayer.
 
-# ---- Force both (if needed) ----
-# "789012" = "both"
+# ---- Force both ----
 
-"1000850" = "both"   # KubeJS + CC: Tweaked — required on the client so
-                     # players can prototype CC/KubeJS builds locally before
-                     # pushing to the server. See sync/kubejs/**/*.js.
+"227639"   = "both"    # The Twilight Forest
+"1000850"  = "both"    # KubeJS + CC: Tweaked — required on the client so
+                       # players can prototype CC/KubeJS builds locally before
+                       # pushing to the server. See sync/kubejs/**/*.js.
+
+# ---- Network-compat overrides ----
+# These mods are marked side='server' in the upstream index, but they
+# register network channels that the client must also have in order to
+# complete the Forge handshake. Without them, the client refuses to
+# connect with "mismatched mod list". Include on both sides.
+#
+# Rationale: side='server' is fine for data-only mods (server-side logic,
+# no client-visible content). Mods that add blocks, items, GUIs, or
+# machines AND register a channel must be present on both sides.
+
+"1281336"  = "both"    # Create Hypertube (create_hypertube:connections)
+"1010066"  = "both"    # Create: Structures Arise
+"439890"   = "both"    # Create Crafts & Additions (createaddition)
+"676373"   = "both"    # Intelligence: Quarry
+"1425991"  = "both"    # JEIOres (jei_ores)
+"74924"    = "both"    # Mantle
+"422301"   = "both"    # Sophisticated Backpacks
+"1170464"  = "both"    # reskillable
+"927187"   = "both"    # Create: Sweets & Treats
+"618298"   = "both"    # Sophisticated Core
+"1283531"  = "both"    # Immersive Furniture
+"688768"   = "both"    # Create Enchantment Industry
+"306770"   = "both"    # Patchouli
+"978125"   = "both"    # Create: Ultimate Factory
+"1283481"  = "both"    # Schematic Energistics
+"1091960"  = "both"    # Create: More Features
+"1068172"  = "both"    # Create: Ironworks
+
+# ---- Content / KubeJS overrides (keyed by filename) ----
+# Same rationale as the network-compat block above, but for mods the
+# baseline client carried and the generated ZIP was missing. Some are
+# KubeJS plugins whose APIs the client scripts reference; others add
+# content the client must render. Keyed by filename so the reason is
+# visible next to the jar.
+
+[by_filename]
+
+# -- KubeJS plugins (client scripts reference these APIs) --
+"applied_kjs-1.0.0.jar"                                 = "both"
+"kubejs-immersive-engineering-2001.5.29-build.23.jar"  = "both"
+"tfmgjs-1.20.1-1.3.2.jar"                              = "both"
+
+# -- Content mods (blocks / items / entities the client must render) --
+"ceilingtorch-1.20.1-1.34.jar"                         = "both"
+"create-new-age-1.2.0+forge-mc1.20.1.jar"              = "both"
+"createthreadedtrains-forge-1.20.1-1.0.0.jar"          = "both"
+"dsbg-1.0-1.20.1.jar"                                  = "both"
+"inventoryessentials-forge-1.20.1-8.2.19.jar"          = "both"
+"justenoughbreeding-forge-1.20.1-3.0.1.jar"            = "both"
+"morerelics-1.7.7-1.20.1.jar"                          = "both"
+"relics-1.20.1-0.8.0.13.jar"                           = "both"
+"smallships-forge-1.20.1-2.0.0-b1.4.jar"               = "both"
+"underground_village-1.5.7.jar"                        = "both"
+
+# -- Libraries (consumed by mods above) --
+"OctoLib-FORGE-0.5.0.1+1.20.1.jar"                     = "both"
+"fzzy_config-0.7.7+1.20.1+forge.jar"                   = "both"
+"js.jar"                                               = "both"
