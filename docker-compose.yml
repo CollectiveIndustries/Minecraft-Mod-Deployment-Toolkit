@@ -35,6 +35,7 @@ x-minecraft-healthcheck: &minecraft-healthcheck
 
 x-minecraft-service: &minecraft-service
   image: itzg/minecraft-server:java25
+  init: true
 
   restart: unless-stopped
 
@@ -56,7 +57,7 @@ x-minecraft-service: &minecraft-service
 x-minecraft-mods: &minecraft-mods
   type: bind
   source: ./mods
-  target: /mods
+  target: /data/mods
   read_only: true
   bind:
     create_host_path: false
