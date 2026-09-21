@@ -33,7 +33,7 @@ exclude_file = "./.rsync_exclude"
 # (server-authored files that live only at the target, not in git).
 # Committed to the repo. Same format as the exclude file.
 # A missing file causes the clean phase to abort rather than silently
-# delete everything — see file_utils.get_protect_patterns for details.
+# delete everything - see file_utils.get_protect_patterns for details.
 protect_file = "./.deploy_protect"
 
 # Template for the output ZIP filename. {date} -> YYYYMMDD.
@@ -47,7 +47,7 @@ modpack_dir = "./sync/downloads"
 
 # === Server instances ==================================================
 # Each instance receives its own copy of every instance-mapped sync item
-# (config, kubejs, etc.). Mods are shared from `mods_dir` — do NOT put a
+# (config, kubejs, etc.). Mods are shared from `mods_dir` - do NOT put a
 # mods mapping here.
 #
 # Two equivalent forms are supported:
@@ -75,22 +75,25 @@ instance_name = "Mike_N_Ike"
 # After the client ZIP is written, deploy_pack generates an HTML
 # changelog page in www_dir and posts a short announcement to Discord
 # pointing at that page. The page carries the download link, the
-# SHA-256, and the full source-vs-target diff.
+# SHA-256, and the diff between this client pack and the previous one.
 #
 # The webhook URL itself is a secret and lives in config.d/.env as
-# DEPLOYPACK_WEBHOOK_URL. The keys below are non-secret.
+# `webhook_url`. The keys below are non-secret.
 #
 # A failed notification is logged but never fails the deploy.
 
-download_base_url = "https://mc.example.com/packs"
+# Public base URL for www_dir. The changelog and client ZIP URLs are
+# built as `{download_base_url}/{filename}`. Set this to the URL that
+# actually serves the contents of www_dir.
+download_base_url = "http://minecraft/downloads"
 
 # Placeholders available in the message template:
-#   {artifact}       — client ZIP filename
-#   {url}            — direct download URL (download_base_url + artifact)
-#   {changelog_url}  — URL of the generated changelog HTML page
-#   {sha256sum}      — SHA-256 of the client ZIP
-#   {timestamp}      — build time, UTC
-#   {summary}        — one-line teaser, e.g. "3 mods added · 5 KubeJS
+#   {artifact}       - client ZIP filename
+#   {url}            - direct download URL (download_base_url + artifact)
+#   {changelog_url}  - URL of the generated changelog HTML page
+#   {sha256sum}      - SHA-256 of the client ZIP
+#   {timestamp}      - build time, UTC
+#   {summary}        - one-line teaser, e.g. "3 mods added - 5 KubeJS
 #                      files modified"
 #
 # The message body is trimmed at a blank-line boundary if it exceeds
@@ -125,7 +128,7 @@ Built {timestamp} UTC
 #
 #   "@www/resourcepacks"      -> www_dir/resourcepacks
 #   "@www/foo/bar"            -> www_dir/foo/bar
-#   "@mods/foo"               -> mods_dir/foo   (rarely needed — see note above)
+#   "@mods/foo"               -> mods_dir/foo   (rarely needed - see note above)
 #
 [sync_mapping]
 # These go to every instance (survival AND creative) at the same rel path.
