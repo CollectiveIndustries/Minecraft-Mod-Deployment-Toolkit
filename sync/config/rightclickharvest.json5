@@ -1,0 +1,8 @@
+{
+	"requireHoe": true,
+	"harvestInRadius": true,
+	"hungerLevel": "LOW",
+	"experienceType": "REWARD",
+	"showServerWarning": true,
+	"hasUserBeenWarnedForNotUsingHoe": false
+}

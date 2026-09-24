@@ -1,0 +1,76 @@
+[performance]
+	#Use async tasks for some operations to improve performance. This may cause issues with some mods.
+	useAsync = true
+
+[snowPillerAndReplacer]
+	#Tick interval for snow pillers in ticks. Default is 20 (1 second).
+	#Range: > 1
+	tickSnowPiller = 20
+
+	#Tick interval for snow replacer in ticks. Default is 20 (1 second).
+	#Range: > 1
+	tickSnowReplacer = 100
+
+[snowstorm]
+	#Enable snowstorm mode which increases snow pilling intensity.
+	enabled = false
+
+["Grass and Flower Growth"]
+	#Enable enhanced grass and flower growth during warm seasons.
+	enabled = true
+
+[snow]
+	#Maximum total snow layers allowed per column (8 layers = 1 block). Default 24 = 3 blocks.
+	#Range: 0 ~ 512
+	maxSnowAccumulationLayers = 24
+
+[seasonSync]
+	#Lock seasons to current Canadian calendar months (Eastern time).
+	realTimeCanadianSeasons = false
+
+[seasonalDaylightCycle]
+	#Enable seasonal daylight cycle. This will change the length of day and night based on the current season.
+	#
+	# Disabled intentionally:
+	# Better Days controls the Minecraft day/night duration for this pack.
+	# Day and night remain fixed at the configured Better Days durations instead
+	# of becoming longer or shorter depending on the season.
+	enableSeasonalDaylightCycle = false
+
+	#Enable Better Days time-speed compatibility so Serene Seasons Plus can adjust day and night speeds dynamically.
+	#
+	# Disabled because Better Days is the authoritative source for day/night speed.
+	# We do not want Serene Seasons Plus to dynamically change the 15-minute
+	# day / 15-minute night configuration.
+	enableBetterDaysDynamicTimeCompat = false
+
+	#When Better Days finishes a sleep cycle, set the wake-up time to betterDaysSleepWakeTime.
+	#This does not change Better Days dayStart/nightStart speed boundaries.
+	#
+	# Disabled because the seasonal daylight-cycle compatibility system is disabled.
+	# Better Days handles its own sleep/time behavior.
+	enableBetterDaysSleepWakeTimeFix = false
+
+	#Minecraft time of day to use after a Better Days sleep cycle. 1000 is 7:00 AM.
+	#Range: 0 ~ 23999
+	#
+	# Retained for completeness but unused while enableBetterDaysSleepWakeTimeFix is false.
+	betterDaysSleepWakeTime = 1000
+
+	#If true, the day and night lengths will be determined by the custom values set below. If false, the day and night lengths will be determined by the season.
+	#
+	# Unused because enableSeasonalDaylightCycle is false and Better Days
+	# controls the actual day/night duration.
+	customCycleLength = false
+
+	#Custom day length in ticks. Only used if seasonal daylight cycle is disabled.
+	#Range: 0.05 ~ 100.0
+	#
+	# Not used for this pack. Better Days controls the day length.
+	customDayLength = 1.0
+
+	#Custom night length in ticks. Only used if seasonal daylight cycle is disabled.
+	#Range: 0.05 ~ 100.0
+	#
+	# Not used for this pack. Better Days controls the night length.
+	customNightLength = 1.0
