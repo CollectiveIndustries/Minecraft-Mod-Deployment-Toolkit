@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from minecraft.deploy_pack import scope_server as ss
 from minecraft.deploy_pack.config_model import DeploymentConfig, DiscordConfig, DockerConfig, InstanceConfig
 from minecraft.deploy_pack.files import CopyResult
 from minecraft.deploy_pack.preflight import PreflightPlan, ScopeSet
@@ -340,7 +341,6 @@ def test_halt_on_mods_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     root.mkdir(parents=True)
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": _instance("survival", root)})
     plan = _plan(partition=["survival"], mods_dir=tmp_path / "shared_mods")
-    from minecraft.deploy_pack import scope_server as ss
 
     def boom(*a, **kw):
         raise OSError("simulated mods failure")
@@ -363,8 +363,6 @@ def test_halt_on_member_failure_stops_subsequent_members(tmp_path: Path, monkeyp
     root_b.mkdir(parents=True)
     cfg = _config(tmp_path, partition=["a", "b"], instances={"a": _instance("a", root_a), "b": _instance("b", root_b)})
     plan = _plan(partition=["a", "b"])
-    from minecraft.deploy_pack import scope_server as ss
-
     real_copy_tree = ss.copy_tree
     call_count = {"n": 0}
 

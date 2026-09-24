@@ -61,6 +61,7 @@ from minecraft.deploy_pack.notifications import (
     render_live,
     render_online,
     render_player_tags,
+    render_timestamp_now,
     validate_diagnostic,
     validate_live_and_failure,
     validate_online,
@@ -68,24 +69,24 @@ from minecraft.deploy_pack.notifications import (
 
 
 def _live_ctx(**overrides: Any) -> LiveContext:
-    base = dict(
-        tool_version="2.0.0",
-        timestamp="2026-09-23T12:00:00Z",
-        requested_scopes=["server", "client"],
-        instance_list=["creative", "survival"],
-        dry_run=False,
-        player_roles=["111"],
-        operator_roles=["222"],
-        section_server="### Server\n- Mods deployed: 5",
-        section_client="### Client\n- ZIP: x.zip",
-        section_resource_pack="### Resource Pack\n- Status: NOT CONFIGURED",
-    )
+    base = {
+        "tool_version": "2.0.0",
+        "timestamp": "2026-09-23T12:00:00Z",
+        "requested_scopes": ["server", "client"],
+        "instance_list": ["creative", "survival"],
+        "dry_run": False,
+        "player_roles": ["111"],
+        "operator_roles": ["222"],
+        "section_server": "### Server\n- Mods deployed: 5",
+        "section_client": "### Client\n- ZIP: x.zip",
+        "section_resource_pack": "### Resource Pack\n- Status: NOT CONFIGURED",
+    }
     base.update(overrides)
     return LiveContext(**base)
 
 
 def test_validate_skips_when_not_notify() -> None:
-    """{"def test_validate_skips_when_not_notify()": "Tests that validation returns no messages when notifications are disabled."}"""
+    """Tests that validation returns no messages when notifications are disabled."""
     discord = DiscordConfig(live_template=None)
     assert validate_live_and_failure(discord, notify=False, dry_run=False, has_scope=True) == []
 
@@ -320,6 +321,7 @@ class FakePoster:
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, url: str, content: str, allowed_mentions: dict, timeout: float) -> tuple[bool, str | None]:
+        """Record the call and return the configured (ok, error) result."""
         self.calls.append({"url": url, "content": content, "allowed_mentions": allowed_mentions, "timeout": timeout})
         return (self.ok, self.error)
 
@@ -499,8 +501,6 @@ def test_build_resource_pack_section_configured() -> None:
 
 def test_timestamp_format() -> None:
     """Verifies render_timestamp_now returns an ISO 8601 UTC timestamp."""
-    from minecraft.deploy_pack.notifications import render_timestamp_now
-
     ts = render_timestamp_now()
     assert re.match("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$", ts)
 

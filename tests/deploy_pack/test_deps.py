@@ -279,7 +279,7 @@ def test_filter_invalid_target_side() -> None:
 
 def test_read_jar_manifest_basic(tmp_path: Path) -> None:
     """Tests reading a basic jar manifest, verifying mod IDs and required client and server dependencies."""
-    jar = _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "BOTH"), ("opt", False, "BOTH")])
+    _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "BOTH"), ("opt", False, "BOTH")])
     entries = [{"file": "foo.jar"}]
     manifests = scan_manifests(entries, tmp_path, _LOG)
     m = manifests["foo.jar"]
@@ -295,7 +295,7 @@ def test_read_jar_manifest_side_client_only(tmp_path: Path) -> None:
     only, then verifies the parsed manifest places "lib" in required_client and
     leaves required_server empty.
     """
-    jar = _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "CLIENT")])
+    _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "CLIENT")])
     entries = [{"file": "foo.jar"}]
     manifests = scan_manifests(entries, tmp_path, _LOG)
     m = manifests["foo.jar"]
@@ -305,7 +305,7 @@ def test_read_jar_manifest_side_client_only(tmp_path: Path) -> None:
 
 def test_read_jar_manifest_side_server_only(tmp_path: Path) -> None:
     """Tests that a server-only dependency is correctly recorded in the manifest."""
-    jar = _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "SERVER")])
+    _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "SERVER")])
     entries = [{"file": "foo.jar"}]
     manifests = scan_manifests(entries, tmp_path, _LOG)
     m = manifests["foo.jar"]
@@ -315,7 +315,7 @@ def test_read_jar_manifest_side_server_only(tmp_path: Path) -> None:
 
 def test_read_jar_manifest_neoforge(tmp_path: Path) -> None:
     """Tests that a NeoForge mod jar manifest is successfully read."""
-    jar = _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "BOTH")], neoforge=True)
+    _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("lib", True, "BOTH")], neoforge=True)
     entries = [{"file": "foo.jar"}]
     manifests = scan_manifests(entries, tmp_path, _LOG)
     assert "foo.jar" in manifests
@@ -323,7 +323,7 @@ def test_read_jar_manifest_neoforge(tmp_path: Path) -> None:
 
 def test_read_jar_manifest_optional_ignored(tmp_path: Path) -> None:
     """Tests that an optional dependency is ignored in the manifest."""
-    jar = _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("opt", False, "BOTH")])
+    _jar(tmp_path / "foo.jar", mod_ids=["foo"], deps=[("opt", False, "BOTH")])
     entries = [{"file": "foo.jar"}]
     manifests = scan_manifests(entries, tmp_path, _LOG)
     assert manifests["foo.jar"].required_client == set()
@@ -406,8 +406,10 @@ def test_closure_no_deps(tmp_path: Path) -> None:
 
 
 def test_closure_pulls_in_jar_dep(tmp_path: Path) -> None:
-    """A requires b via mods.toml; b declares side=server, so the client
-    side filter excludes it. The closure pulls b back in.
+    """A requires b via mods.toml.
+
+    b declares side=server, so the client side filter excludes it. The
+    closure pulls b back in.
     """
     _jar(tmp_path / "a.jar", mod_ids=["a"], deps=[("b", True, "BOTH")])
     _jar(tmp_path / "b.jar", mod_ids=["b"])
@@ -420,8 +422,9 @@ def test_closure_pulls_in_jar_dep(tmp_path: Path) -> None:
 
 
 def test_closure_pulls_in_index_dep(tmp_path: Path) -> None:
-    """A requires b via [[x-prismlauncher-dependencies]]; b declares
-    side=server and is force-included on the client.
+    """A requires b via [[x-prismlauncher-dependencies]].
+
+    b declares side=server and is force-included on the client.
     """
     _jar(tmp_path / "a.jar", mod_ids=["a"])
     _jar(tmp_path / "b.jar", mod_ids=["b"])
@@ -573,8 +576,9 @@ def test_find_unmarked_no_duplicates(tmp_path: Path) -> None:
 
 
 def test_find_unmarked_index_only_entry(tmp_path: Path) -> None:
-    """An index entry with an invalid side whose jar is absent is still
-    reported - the entry exists but is unmarked.
+    """An index entry with an invalid side whose jar is absent is still reported.
+
+    The entry exists but is unmarked.
     """
     e = _entry("ghost.jar", "ghost")
     e["side_raw"] = "skipped"

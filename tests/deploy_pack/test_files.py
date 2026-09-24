@@ -27,7 +27,9 @@ Additional coverage for §4.10, §4.11, §7.1, §7.5:
 
 from __future__ import annotations
 
+import logging
 import os
+import shutil as shutil_mod
 import zipfile
 from pathlib import Path
 
@@ -102,29 +104,27 @@ def test_atomic_write_preserves_destination_mode(tmp_path: Path) -> None:
         pytest.skip("POSIX modes are not meaningful on Windows")
     p = tmp_path / "out.bin"
     p.write_bytes(b"old")
-    os.chmod(p, 416)
+    os.chmod(p, 0o640)
     atomic_write(p, b"new")
-    assert p.stat().st_mode & 511 == 416
+    assert p.stat().st_mode & 0o777 == 0o640
 
 
 def test_atomic_write_fresh_destination_uses_default_mode(tmp_path: Path) -> None:
     """Tests that atomic_write applies the default file mode when creating a fresh destination under a known umask."""
     if os.name == "nt":
         pytest.skip("POSIX modes are not meaningful on Windows")
-    old_umask = os.umask(18)
+    old_umask = os.umask(0o022)
     try:
         p = tmp_path / "fresh.bin"
         atomic_write(p, b"x")
-        mode = p.stat().st_mode & 511
-        assert mode == 420
+        mode = p.stat().st_mode & 0o777
+        assert mode == 0o644
     finally:
         os.umask(old_umask)
 
 
 def test_atomic_write_chown_failure_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests that atomic_write emits a warning when chown fails but still writes the data."""
-    import logging
-
     records: list[str] = []
 
     class Recorder(logging.Logger):
@@ -147,8 +147,6 @@ def test_atomic_write_chown_failure_warns(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_atomic_write_chmod_failure_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies that atomic_write still writes and warns when chmod fails."""
-    import logging
-
     records: list[str] = []
 
     class Recorder(logging.Logger):
@@ -211,9 +209,9 @@ def test_atomic_copy_preserves_dest_mode(tmp_path: Path) -> None:
     src.write_bytes(b"x")
     dest = tmp_path / "out.bin"
     dest.write_bytes(b"old")
-    os.chmod(dest, 416)
+    os.chmod(dest, 0o640)
     atomic_copy(src, dest)
-    assert dest.stat().st_mode & 511 == 416
+    assert dest.stat().st_mode & 0o777 == 0o640
 
 
 def test_atomic_copy_missing_source(tmp_path: Path) -> None:
@@ -395,8 +393,6 @@ def test_protect_trailing_slash_normalized(tmp_path: Path) -> None:
 
 def test_protect_empty_file_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Tests that loading a protect patterns file containing only comments logs a warning and returns an empty list."""
-    import logging
-
     p = tmp_path / ".deploy_protect"
     p.write_text("# only comments\n", encoding="utf-8")
     with caplog.at_level(logging.WARNING):
@@ -534,7 +530,7 @@ def test_protect_directory_component(tmp_path: Path) -> None:
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1"})
     _tree(dst, {"a.txt": "1", "world/level.dat": "x"})
-    result = copy_tree(src, dst, mode="delete", protect_patterns=["world"])
+    copy_tree(src, dst, mode="delete", protect_patterns=["world"])
     assert (dst / "world" / "level.dat").is_file()
     assert (dst / "world").is_dir()
 
@@ -581,9 +577,6 @@ def test_copy_tree_creates_dst(tmp_path: Path) -> None:
 
 def test_copy_tree_copy_failure_logged_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     """Tests that a copy failure is logged as a warning and the tree copy continues."""
-    import logging
-    import shutil as shutil_mod
-
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1", "b.txt": "2"})

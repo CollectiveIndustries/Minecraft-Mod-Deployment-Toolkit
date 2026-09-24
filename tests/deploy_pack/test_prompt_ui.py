@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from minecraft.deploy_pack import prompt_ui
 from minecraft.deploy_pack.config_model import DeploymentConfig, DiscordConfig, DockerConfig
 from minecraft.deploy_pack.overrides import SideOverrides
 from minecraft.deploy_pack.prompt_ui import HAS_TEXTUAL, AuditRow, build_audit_rows, compute_review_entries
@@ -341,16 +342,12 @@ def test_has_textual_is_bool() -> None:
 @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual is not installed")
 def test_audit_app_class_exists() -> None:
     """Verify that AuditApp is defined in prompt_ui."""
-    from minecraft.deploy_pack import prompt_ui
-
     assert prompt_ui.AuditApp is not None
 
 
 @pytest.mark.skipif(not HAS_TEXTUAL, reason="textual is not installed")
 def test_audit_app_constructs(tmp_path: Path) -> None:
     """Tests that the audit app constructs correctly."""
-    from minecraft.deploy_pack import prompt_ui
-
     rows = [_row()]
     app = prompt_ui.AuditApp(rows)
     assert app.rows == rows

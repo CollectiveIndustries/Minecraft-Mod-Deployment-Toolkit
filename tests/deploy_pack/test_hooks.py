@@ -159,7 +159,7 @@ def test_warned_and_running_all_running() -> None:
 
 
 def test_warned_and_running_not_running_at_preflight() -> None:
-    """{"def test_warned_and_running_not_running_at_preflight()": "Tests that compute_warned_and_running returns only warned and running items when a warned item is not running at preflight."}"""
+    """Tests that a warned member not running at preflight is excluded."""
     runtime = FakeRuntime()
     preflight = {"a": _state("a"), "b": _state("b", running=False)}
     result = compute_warned_and_running(runtime, ["a", "b"], preflight)
@@ -167,7 +167,7 @@ def test_warned_and_running_not_running_at_preflight() -> None:
 
 
 def test_warned_and_running_not_running_at_reinspection() -> None:
-    """{"def test_warned_and_running_not_running_at_reinspection()": "Tests that a warned, previously running resource is excluded when it is no longer running at reinspection."}"""
+    """Tests that a warned member no longer running at reinspection is excluded."""
     runtime = FakeRuntime(inspect_states={"a": [_state("a", running=False)]})
     preflight = {"a": _state("a"), "b": _state("b")}
     result = compute_warned_and_running(runtime, ["a", "b"], preflight)
@@ -175,7 +175,7 @@ def test_warned_and_running_not_running_at_reinspection() -> None:
 
 
 def test_warned_and_running_missing_preflight_state() -> None:
-    """{"def test_warned_and_running_missing_preflight_state()": "Tests that compute_warned_and_running returns an empty list when the preflight state is missing."}"""
+    """Tests that a missing preflight state yields no warned members."""
     runtime = FakeRuntime()
     preflight: dict[str, ContainerState] = {}
     result = compute_warned_and_running(runtime, ["a"], preflight)
@@ -183,7 +183,7 @@ def test_warned_and_running_missing_preflight_state() -> None:
 
 
 def test_warned_and_running_preserves_order() -> None:
-    """{"def test_warned_and_running_preserves_order()": "Tests that compute_warned_and_running preserves the order of input keys."}"""
+    """Tests that compute_warned_and_running preserves the order of input keys."""
     runtime = FakeRuntime()
     preflight = {"c": _state("c"), "a": _state("a"), "b": _state("b")}
     result = compute_warned_and_running(runtime, ["c", "a", "b"], preflight)
@@ -229,8 +229,9 @@ def test_pre_hook_exited_before_stop() -> None:
 
 
 def test_pre_hook_not_running_at_reinspection_skipped() -> None:
-    """A warned member that has exited before the pre-stop re-inspection
-    is not in to_stop, and does not appear in any result list.
+    """A warned member that has exited before the pre-stop re-inspection.
+
+    It is not in to_stop, and does not appear in any result list.
     """
     runtime = FakeRuntime(inspect_states={"a": [_state("a", running=False)]})
     ctx, _, _ = _ctx()
@@ -359,7 +360,7 @@ def test_post_hook_daemon_loss_is_runtime_error() -> None:
 def test_recover_all_reachable() -> None:
     """Tests that all stopped containers are recovered when every container is reachable."""
     runtime = FakeRuntime()
-    ctx, probe_calls, notices = _ctx()
+    ctx, _probe_calls, notices = _ctx()
     result = recover_stopped_containers(runtime, stopped_by_deployment=["a", "b"], warned_and_running=["a", "b"], ctx=ctx)
     assert result.started == ["a", "b"]
     assert result.reachable == ["a", "b"]

@@ -25,6 +25,7 @@ Additional coverage:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -313,10 +314,9 @@ def test_duplicate_keys_last_replaced_earlier_untouched(tmp_path: Path, caplog: 
     """Tests that for duplicate keys, only the last occurrence is replaced while earlier ones remain untouched."""
     p = tmp_path / "server.properties"
     _write(p, b"require-resource-pack=false\n# in between\nrequire-resource-pack=false\n")
-    import logging as _logging
 
-    with caplog.at_level(_logging.WARNING):
-        diff = apply_edits(p, [PropertyEdit("require-resource-pack", "true")], logger=_logging.getLogger("test"))
+    with caplog.at_level(logging.WARNING):
+        diff = apply_edits(p, [PropertyEdit("require-resource-pack", "true")], logger=logging.getLogger("test"))
     assert diff.any
     assert _read(p) == b"require-resource-pack=false\n# in between\nrequire-resource-pack=true\n"
 

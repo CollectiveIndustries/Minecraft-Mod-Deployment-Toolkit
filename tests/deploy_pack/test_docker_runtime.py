@@ -308,10 +308,10 @@ def test_restarting_wait_parallel_across_containers() -> None:
     for c in (a, b):
         count = [0]
 
-        def make_cb(_c: FakeContainer):
-            """Creates a callback function that tracks invocation count and updates container state."""
+        def make_cb(_c: FakeContainer, count: list[int] = count):
+            """Create a callback that advances the count and flips the container to running."""
 
-            def cb(_c2: FakeContainer) -> None:
+            def cb(_c2: FakeContainer, count: list[int] = count) -> None:
                 count[0] += 1
                 if count[0] >= 2:
                     _c2._attrs["State"]["Status"] = "running"
@@ -580,7 +580,7 @@ def test_drift_ok(tmp_path: Path) -> None:
 
 
 def test_drift_missing_mount() -> None:
-    """{"def test_drift_missing_mount()": "Tests that check_mount_drift raises ConfigError when a container has no bind mount.\\n\\nRaises:\\n    ConfigError: If the container is missing the expected bind mount.\\n\\nAsserts:\\n    The error message contains 'no bind mount'."}"""
+    """Tests that check_mount_drift raises ConfigError when a container has no bind mount."""
     c = FakeContainer("mc", mounts=[])
     runtime, _ = _runtime({"mc": c})
     with pytest.raises(ConfigError) as ei:
@@ -589,7 +589,7 @@ def test_drift_missing_mount() -> None:
 
 
 def test_drift_mismatch(tmp_path: Path) -> None:
-    """{"def test_drift_mismatch():": "Tests that a ConfigError is raised when a container's mount source does not match the expected source."}"""
+    """Tests that a ConfigError is raised when a container's mount source does not match the expected source."""
     a = tmp_path / "a"
     a.mkdir()
     b = tmp_path / "b"

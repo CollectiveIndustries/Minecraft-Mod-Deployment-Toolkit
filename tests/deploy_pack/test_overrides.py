@@ -25,6 +25,7 @@ Note: the four ``atomic_write`` tests that previously lived here moved to
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -295,9 +296,8 @@ def test_save_default_timestamp_is_utc_now(tmp_path: Path) -> None:
     p = tmp_path / "side_overrides.toml"
     save_side_overrides(p, {"a.jar": "client"})
     content = p.read_text(encoding="utf-8")
-    import re as _re
 
-    m = _re.search("# Last generated: (\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)", content)
+    m = re.search("# Last generated: (\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)", content)
     assert m is not None
 
 

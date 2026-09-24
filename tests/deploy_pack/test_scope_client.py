@@ -137,7 +137,7 @@ def test_baseline_no_date_token_absent(tmp_path: Path) -> None:
 
 
 def test_baseline_same_date_wins(tmp_path: Path) -> None:
-    """{"def test_baseline_same_date_wins(tmp_path: Path) -> None:": "Tests that a baseline matching the target date is selected when multiple dates exist."}"""
+    """Tests that a baseline matching the target date is selected when multiple dates exist."""
     www = tmp_path / "www"
     www.mkdir()
     (www / "minecraft_client_20260921.zip").write_bytes(b"old")
@@ -147,7 +147,7 @@ def test_baseline_same_date_wins(tmp_path: Path) -> None:
 
 
 def test_baseline_most_recent_different_date(tmp_path: Path) -> None:
-    """{"def test_baseline_most_recent_different_date(tmp_path: Path) -> None:": "Tests that the baseline selects the most recent archive with a date different from the target date."}"""
+    """Tests that the baseline selects the most recent archive with a date different from the target date."""
     www = tmp_path / "www"
     www.mkdir()
     (www / "minecraft_client_20260919.zip").write_bytes(b"x")
@@ -158,7 +158,7 @@ def test_baseline_most_recent_different_date(tmp_path: Path) -> None:
 
 
 def test_baseline_initial_build(tmp_path: Path) -> None:
-    """{"def test_baseline_initial_build():\\ndef test_baseline_initial_build(tmp_path: Path) -> None:\\n    www = tmp_path / \\"www\\"\\n    www.mkdir()\\n    assert _find_baseline(www, \\"minecraft_client_{date}.zip\\", \\"20260922\\") is None": "Tests that finding a baseline returns None when the initial build directory contains no matching archives."}"""
+    """Tests that finding a baseline returns None when the directory contains no matching archives."""
     www = tmp_path / "www"
     www.mkdir()
     assert _find_baseline(www, "minecraft_client_{date}.zip", "20260922") is None
@@ -251,11 +251,10 @@ def test_deploy_client_scope_closure(tmp_path: Path) -> None:
     downloads = tmp_path / "sync" / "downloads"
     index = downloads / ".index"
     index.mkdir(parents=True)
-    import zipfile as zf_mod
 
-    with zf_mod.ZipFile(downloads / "a.jar", "w") as zf:
+    with zipfile.ZipFile(downloads / "a.jar", "w") as zf:
         zf.writestr("META-INF/mods.toml", '[[mods]]\nmodId = "a"\n[[dependencies.a]]\nmodId = "lib"\nmandatory = true\nside = "BOTH"\n')
-    with zf_mod.ZipFile(downloads / "lib.jar", "w") as zf:
+    with zipfile.ZipFile(downloads / "lib.jar", "w") as zf:
         zf.writestr("META-INF/mods.toml", '[[mods]]\nmodId = "lib"\n')
     (index / "a.pw.toml").write_text('filename = "a.jar"\nside = "client"\n', encoding="utf-8")
     (index / "lib.pw.toml").write_text('filename = "lib.jar"\nside = "server"\n', encoding="utf-8")
@@ -354,7 +353,7 @@ def test_resourcepacks_dict_not_published_by_client(tmp_path: Path) -> None:
     cfg = _config(
         tmp_path, sync_mapping={"config": "config", "kubejs": "kubejs", "resourcepacks": {"resource_pack": "@www/resourcepacks", "client": "resourcepacks"}}
     )
-    result = deploy_client_scope(cfg, False, [], None)
+    deploy_client_scope(cfg, False, [], None)
     assert (tmp_path / "www" / "resourcepacks").exists() is False
 
 

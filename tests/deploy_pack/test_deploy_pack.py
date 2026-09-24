@@ -16,11 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from minecraft.deploy_pack import deploy_pack
+
 
 def test_cli_calls_main_and_exits(monkeypatch: pytest.MonkeyPatch) -> None:
     """cli() must call main.main() and sys.exit with its return value."""
-    from minecraft.deploy_pack import deploy_pack
-
     calls: list[list[str] | None] = []
 
     def fake_main(argv: list[str] | None = None) -> int:
@@ -36,8 +36,6 @@ def test_cli_calls_main_and_exits(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_cli_exit_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests that the CLI exits with code 0."""
-    from minecraft.deploy_pack import deploy_pack
-
     monkeypatch.setattr(deploy_pack, "_main", lambda argv=None: 0)
     with pytest.raises(SystemExit) as ei:
         deploy_pack.cli()

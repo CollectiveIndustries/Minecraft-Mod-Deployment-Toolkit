@@ -11,6 +11,7 @@ dependencies = [
     "nbtlib>=2.0.4",
     "pillow>=12.3.0",
     "textual>=8.2.8",
+    "docker>=7.2.0",
     ]
 
 

@@ -47,7 +47,15 @@ from minecraft.deploy_pack.preflight import PreflightError, ScopeSet, _resolve_a
 
 @dataclass
 class FakeRuntime:
-    """{"class FakeRuntime:": "A fake runtime for testing container orchestration.\\n\\nAttributes:\\n    states (dict[str, ContainerState]): Mapping of container names to their states.\\n    inspected (list[str]): Names of containers that have been inspected.\\n    restarting_settled (dict[str, ContainerState]): Predefined settled states for restarting containers.\\n    ping_calls (int): Number of times ping has been called.\\n    published (dict[str, dict]): Mapping of container names to their published ports.", "def ping(self) -> None:": "Pings the service.", "def inspect(self, name: str) -> ContainerState:": "Inspects the target.", "def wait_for_restarting_settle(self, names, total_timeout, poll_interval):": "Waits for restarting containers to settle.", "def list_mounts(self, name):": "Lists the mounts.", "def published_ports(self, name: str) -> dict:": "Returns the published ports."}"""
+    """A fake runtime for testing container orchestration.
+
+    Attributes:
+        states: Mapping of container names to their states.
+        inspected: Names of containers that have been inspected.
+        restarting_settled: Predefined settled states for restarting containers.
+        ping_calls: Number of times ping has been called.
+        published: Mapping of container names to their published ports.
+    """
 
     states: dict[str, ContainerState] = field(default_factory=dict)
     inspected: list[str] = field(default_factory=list)
@@ -149,7 +157,7 @@ def _config(
         config_dir=tmp_path / "config.d",
         sync_root=tmp_path / "sync",
         modpack_dir=tmp_path / "sync" / "downloads",
-        www_dir=www if compose_ok or True else None,
+        www_dir=www,
         www_dir_error=None,
         www_dir_candidates=[],
         output_filename="minecraft_client_{date}.zip",
@@ -180,7 +188,7 @@ def _config(
 
 
 def test_resolve_action_longest_literal_prefix() -> None:
-    """{"def test_resolve_action_longest_literal_prefix():": "Tests that the longest literal prefix match is used when resolving an action."}"""
+    """Tests that the longest literal prefix match is used when resolving an action."""
     policy = {"config/*": "restart", "config/special/*": "none"}
     assert _resolve_action("config/foo.toml", policy) == ("restart", "config/*")
     assert _resolve_action("config/special/a", policy) == ("none", "config/special/*")
@@ -200,13 +208,16 @@ def test_resolve_action_tie_break_by_length() -> None:
 
 def test_resolve_action_tie_break_alphabetical() -> None:
     """Same literal prefix and same length: lexicographically smaller wins."""
-    policy = {"kubejs/data/*": "reload", "kubejs/data/*": "reload"}
     policy = {"aa/*": "reload", "ab/*": "none"}
     assert _resolve_action("aa/x", policy) == ("reload", "aa/*")
 
 
 def test_sticky_max() -> None:
-    """{"def test_sticky_max()": "Tests _sticky_max returns the strongest sticky option, combining flags when needed.\\n\\nVerifies that the maximum sticky value is selected from the input list, preserving\\nany \\"+pack\\" modifier. An empty list returns \\"none\\"."}"""
+    """Tests _sticky_max returns the strongest sticky option, combining flags when needed.
+
+    Verifies that the maximum sticky value is selected from the input list,
+    preserving any "+pack" modifier. An empty list returns "none".
+    """
     assert _sticky_max(["none", "reload"]) == "reload"
     assert _sticky_max(["reload+pack", "restart"]) == "restart+pack"
     assert _sticky_max(["none+pack", "reload"]) == "reload+pack"
@@ -214,7 +225,7 @@ def test_sticky_max() -> None:
 
 
 def test_resolve_paths_action_returns_reasons() -> None:
-    """{"def test_resolve_paths_action_returns_reasons():": "Tests that resolving path actions returns the effective action and reasons for matching paths."}"""
+    """Tests that resolving path actions returns the effective action and reasons for matching paths."""
     policy = {"mods/*": "restart", "kubejs/server_scripts/*": "reload"}
     paths = ["mods/a.jar", "mods/b.jar", "kubejs/server_scripts/craft.js"]
     effective, reasons = _resolve_paths_action(paths, policy)
@@ -226,7 +237,7 @@ def test_resolve_paths_action_returns_reasons() -> None:
 
 
 def test_resolve_paths_action_empty() -> None:
-    """{"def test_resolve_paths_action_empty():": "Test that an empty path list resolves to the 'none' action with no matched paths."}"""
+    """Test that an empty path list resolves to the 'none' action with no matched paths."""
     assert _resolve_paths_action([], {"a/*": "restart"}) == ("none", [])
 
 
@@ -243,7 +254,10 @@ def _instance(name: str, container: str, root: Path) -> InstanceConfig:
 
 
 def test_preflight_raises_on_partition_unknown(tmp_path: Path) -> None:
-    """{"def test_preflight_raises_on_partition_unknown()": "Tests that preflight raises a PreflightError when an unknown partition is configured.\\n\\nVerifies that the resulting failure includes a diagnostic sourced from §2.5."}"""
+    """Tests that preflight raises a PreflightError when an unknown partition is configured.
+
+    Verifies that the resulting failure includes a diagnostic sourced from §2.5.
+    """
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, partition_unknown=["nope"])
     runtime = FakeRuntime()

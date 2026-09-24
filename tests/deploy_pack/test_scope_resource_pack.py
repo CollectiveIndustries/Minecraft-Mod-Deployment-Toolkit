@@ -22,7 +22,9 @@ from pathlib import Path
 
 import pytest
 
+from minecraft.deploy_pack import scope_resource_pack as rps
 from minecraft.deploy_pack.config_model import DeploymentConfig, DiscordConfig, DockerConfig, InstanceConfig, ResourcePackConfig
+from minecraft.deploy_pack.errors import ConfigError
 from minecraft.deploy_pack.files import compute_sha1
 from minecraft.deploy_pack.preflight import PreflightPlan, ScopeSet
 from minecraft.deploy_pack.scope_resource_pack import _client_source_dir, _needs_publish, _resource_pack_mapping, deploy_resource_pack_scope
@@ -255,7 +257,7 @@ def test_publishes_missing_destination(tmp_path: Path) -> None:
 
 def test_skips_publication_when_destination_matches(tmp_path: Path) -> None:
     """Tests that publication is skipped when the destination file already matches."""
-    src = _source_rp(tmp_path, "pack.zip", b"CONTENT")
+    _source_rp(tmp_path, "pack.zip", b"CONTENT")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
     (dest_dir / "pack.zip").write_bytes(b"CONTENT")
@@ -379,7 +381,6 @@ def test_publish_failure_stops_properties_write(tmp_path: Path, monkeypatch: pyt
     inst = _instance("survival", tmp_path / "survival")
     original = "motd=hi\n"
     inst.server_properties_path.write_text(original, encoding="utf-8")
-    from minecraft.deploy_pack import scope_resource_pack as rps
 
     def boom(*a, **kw):
         raise OSError("simulated publish failure")
@@ -403,12 +404,9 @@ def test_properties_failure_after_publish(tmp_path: Path, monkeypatch: pytest.Mo
     _source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
     inst.server_properties_path.write_text("motd=hi\n", encoding="utf-8")
-    from minecraft.deploy_pack import scope_resource_pack as rps
 
     def boom(*a, **kw):
         raise ConfigError("simulated properties failure")
-
-    from minecraft.deploy_pack.errors import ConfigError
 
     monkeypatch.setattr(rps, "apply_edits", boom)
     cfg = _config(

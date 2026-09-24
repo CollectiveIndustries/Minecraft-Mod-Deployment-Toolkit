@@ -412,8 +412,10 @@ def test_load_deployment_config_partition_with_unknown(tmp_path: Path) -> None:
 
 
 def test_load_deployment_config_instance_match_error_recorded(tmp_path: Path) -> None:
-    """§3.6: no match is a partition-scoped failure. Config load records
-    it on the InstanceConfig; preflight decides.
+    """Tests that config load records an instance match error on the InstanceConfig.
+
+    §3.6: no match is a partition-scoped failure. Config load records it on
+    the InstanceConfig; preflight decides.
     """
     config_dir = _write_full_repo(tmp_path)
     toml = config_dir / "deploy_pack.toml"
@@ -426,8 +428,10 @@ def test_load_deployment_config_instance_match_error_recorded(tmp_path: Path) ->
 
 
 def test_load_deployment_config_stop_grace_error_recorded(tmp_path: Path) -> None:
-    """§3.2: unparseable stop_grace_period is a partition-scoped failure.
-    Config load records it; preflight decides.
+    """Tests that config load records an unparseable stop_grace_period.
+
+    §3.2: unparseable stop_grace_period is a partition-scoped failure. Config
+    load records it; preflight decides.
     """
     config_dir = _write_full_repo(tmp_path)
     compose = tmp_path / "docker-compose.yml"

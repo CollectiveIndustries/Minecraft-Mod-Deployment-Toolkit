@@ -1,4 +1,4 @@
-# tests/deploy_pack/deply_pack.py
+# src/minecraft/deploy_pack/deploy_pack.py
 
 """Command-line entrypoint shim (Project_Specs.md §9.2).
 

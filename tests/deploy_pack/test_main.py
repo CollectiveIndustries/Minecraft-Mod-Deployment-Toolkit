@@ -9,6 +9,9 @@ exercised through the scope/hook tests; here we cover the outer shell.
 
 from __future__ import annotations
 
+import contextlib
+import io
+
 import pytest
 
 from minecraft.deploy_pack.errors import UsageError
@@ -77,9 +80,6 @@ def test_scopes_with_resources_client() -> None:
 
 def _check(argv: list[str]) -> tuple[int | None, str | None]:
     """Run main() and return (exit_code, error_message)."""
-    import contextlib
-    import io
-
     stderr = io.StringIO()
     with contextlib.redirect_stderr(stderr):
         code = main(argv)
@@ -166,7 +166,7 @@ def test_full_with_resources_redundant_but_valid() -> None:
 
 def test_full_with_server_redundant_but_valid() -> None:
     """Tests that combining --full with --server is redundant but does not cause a usage error."""
-    code, err = _check(["--full", "--server"])
+    code, _err = _check(["--full", "--server"])
     assert code != 2
 
 
@@ -271,8 +271,6 @@ def test_debug_deps_without_scope_exit_0(tmp_path) -> None:
         encoding="utf-8",
     )
     (tmp_path / "sync" / "downloads" / ".index").mkdir(parents=True)
-    import contextlib
-    import io
 
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout):
