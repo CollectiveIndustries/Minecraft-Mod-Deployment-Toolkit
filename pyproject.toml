@@ -10,6 +10,7 @@ dependencies = [
     "collective-cores",
     "nbtlib>=2.0.4",
     "pillow>=12.3.0",
+    "textual>=8.2.8",
     ]
 
 
@@ -18,7 +19,7 @@ readme = "README.md"
 license = {text = "MIT"}
 
 [project.scripts]
-deploy-pack = "minecraft.deploy_pack:main"
+deploy-pack = "minecraft.deploy_pack.deploy_pack:cli"
 lookup-assets = "minecraft.lookup:main"
 
 [project.optional-dependencies]
