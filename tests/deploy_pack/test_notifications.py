@@ -208,8 +208,9 @@ def test_render_container_status_failure_excludes_internal() -> None:
     assert "a: stopped by deployment" in out
     assert "b: recovery start failed" in out
     assert "c: health timeout" in out
-    assert "d" not in out
-    assert "e" not in out
+    lines = out.splitlines()
+    assert not any(line.startswith("- d:") for line in lines)
+    assert not any(line.startswith("- e:") for line in lines)
 
 
 def test_render_container_status_empty_placeholder() -> None:
