@@ -47,7 +47,7 @@
 	ignorePersistentLeaves = true
 	#Maximum distance from log blocks to destroy leaves blocks when felling
 	#Range: 0 ~ 16
-	maxBreakLeavesDistance = 16
+	maxBreakLeavesDistance = 32
 
 	[treeDetection.logs]
 		#Blocks that should be considered choppable
