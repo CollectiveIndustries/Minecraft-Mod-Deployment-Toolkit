@@ -290,15 +290,24 @@ def _resolve_action(path: str, policy: dict[str, str]) -> tuple[str, str]:
     return (policy[best_pattern], best_pattern)
 
 
-def _sticky_max(actions: list[str]) -> str:
-    """Return the §4.6.2 sticky-max over ``actions``."""
-    if not actions:
-        return "none"
-    return max(actions, key=lambda a: _ACTION_ORDER.get(a, -1))
-
-
 def _is_pack_action(action: str) -> bool:
     return action.endswith("+pack")
+
+
+def _sticky_max(actions: list[str]) -> str:
+    """Return the §4.6.2 sticky-max over ``actions``.
+
+    The maximum-ranked action wins. The ``+pack`` modifier is a property
+    of the batch, not of any single path (§4.6.2): if **any** input
+    carries ``+pack``, the result carries it too, even when the
+    maximum-ranked input did not.
+    """
+    if not actions:
+        return "none"
+    base = max(actions, key=lambda a: _ACTION_ORDER.get(a, -1))
+    if any(_is_pack_action(a) for a in actions) and not _is_pack_action(base):
+        return base + "+pack"
+    return base
 
 
 def _resolve_paths_action(changed_paths: list[str], policy: dict[str, str]) -> tuple[str, list[ReasonEntry]]:
@@ -314,7 +323,7 @@ def _resolve_paths_action(changed_paths: list[str], policy: dict[str, str]) -> t
     effective = _sticky_max(list(pattern_action.values()))
     reasons: list[ReasonEntry] = []
     for pattern in sorted(by_pattern):
-        if pattern_action[pattern] == effective:
+        if pattern_action[pattern] == effective or (pattern_action[pattern] + "+pack" == effective):
             reasons.append(ReasonEntry(path_prefix=pattern, action=pattern_action[pattern], changed_paths=sorted(by_pattern[pattern])))
     return (effective, reasons)
 
