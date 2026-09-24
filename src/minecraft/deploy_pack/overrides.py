@@ -222,6 +222,21 @@ def _find_section_range(text: str, section_name: str) -> tuple[int, int] | None:
     return (start, end)
 
 
+def _read_text_preserving_eol(path: Path) -> str:
+    r"""Read ``path`` as UTF-8 without universal-newline translation.
+
+    ``Path.read_text`` collapses ``\r\n`` to ``\n``, which would make
+    every CRLF file look like LF to :func:`_detect_eol` and defeat the
+    line-ending preservation guarantee. Reading with ``newline=""``
+    keeps the original bytes intact.
+    """
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            return f.read()
+    except OSError as exc:
+        raise ConfigError(f"Could not read {path}: {exc}") from exc
+
+
 def save_side_overrides(path: Path, review_entries: Mapping[str, str], timestamp: str | None = None, logger: Any = None) -> None:
     """Write ``[deployment_tool_review]`` to ``path``, preserving everything else (§6.1).
 
@@ -245,10 +260,7 @@ def save_side_overrides(path: Path, review_entries: Mapping[str, str], timestamp
     if not path.exists():
         content = _render_review_section(review_entries, ts, "\n")
     else:
-        try:
-            original = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ConfigError(f"Could not read {path}: {exc}") from exc
+        original = _read_text_preserving_eol(path)
         eol = _detect_eol(original)
         generated = _render_review_section(review_entries, ts, eol)
         range_ = _find_section_range(original, _REVIEW_SECTION)
