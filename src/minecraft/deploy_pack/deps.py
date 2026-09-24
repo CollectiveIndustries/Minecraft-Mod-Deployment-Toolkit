@@ -251,13 +251,15 @@ def _read_jar_manifest(jar_path: Path, logger) -> JarManifest | None:
                 try:
                     data = tomllib.loads(raw.decode("utf-8"))
                 except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
-                    logger.warning(f"Could not parse {candidate} in {jar_path.name}: {exc}")
+                    if logger is not None:
+                        logger.warning(f"Could not parse {candidate} in {jar_path.name}: {exc}")
                     return None
                 break
             if data is None:
                 return None
     except (zipfile.BadZipFile, OSError) as exc:
-        logger.warning(f"Could not read jar {jar_path.name}: {exc}")
+        if logger is not None:
+            logger.warning(f"Could not read jar {jar_path.name}: {exc}")
         return None
 
     manifest = JarManifest(filename=jar_path.name)
@@ -368,7 +370,8 @@ def _build_lookup(
         for mid in manifest.mod_ids:
             existing = entry_by_modid.get(mid)
             if existing is not None and existing is not entry:
-                logger.debug(f"modId {mid!r} provided by both {existing.get('file')!r} and {filename!r}; using the first")
+                if logger is not None:
+                    logger.debug(f"modId {mid!r} provided by both {existing.get('file')!r} and {filename!r}; using the first")
                 continue
             entry_by_modid[mid] = entry
     return entry_by_id, entry_by_project, entry_by_modid
