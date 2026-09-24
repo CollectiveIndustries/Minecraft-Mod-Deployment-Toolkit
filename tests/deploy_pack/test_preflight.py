@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -40,8 +41,11 @@ from minecraft.deploy_pack.config_model import (
     DockerConfig,
     InstanceConfig,
     ResourcePackConfig,
+    ServiceMatchError,
+    match_service_by_container,
+    parse_go_duration,
 )
-from minecraft.deploy_pack.docker_runtime import ContainerState
+from minecraft.deploy_pack.docker_runtime import ContainerState, Mount
 from minecraft.deploy_pack.preflight import PreflightError, ScopeSet, _resolve_action, _resolve_paths_action, _sticky_max
 
 
@@ -55,6 +59,9 @@ class FakeRuntime:
         restarting_settled: Predefined settled states for restarting containers.
         ping_calls: Number of times ping has been called.
         published: Mapping of container names to their published ports.
+        compose: The ComposeFile whose service binds are surfaced via
+            :meth:`list_mounts`, so the preflight drift check (§3.17)
+            sees a mount set matching the instance-root derivations.
     """
 
     states: dict[str, ContainerState] = field(default_factory=dict)
@@ -62,6 +69,7 @@ class FakeRuntime:
     restarting_settled: dict[str, ContainerState] = field(default_factory=dict)
     ping_calls: int = 0
     published: dict[str, dict] = field(default_factory=dict)
+    compose: ComposeFile | None = None
 
     def ping(self) -> None:
         """Pings the service."""
@@ -76,13 +84,36 @@ class FakeRuntime:
         """Waits for restarting containers to settle."""
         return self.restarting_settled or {n: self.inspect(n) for n in names}
 
-    def list_mounts(self, name):
-        """Lists the mounts."""
+    def list_mounts(self, name: str) -> list[Mount]:
+        """Return the compose service's binds for ``name``, if any.
+
+        The preflight drift check (§3.17) compares the runtime's mount
+        list against the instance-root derivation from compose. Wiring
+        the same compose file here means a well-formed fixture sees a
+        matching set without each test having to stub the mounts.
+        """
+        if self.compose is None:
+            return []
+        for svc in self.compose.services.values():
+            if svc.container_name == name:
+                return [Mount(source=str(b.host_source), destination=b.container_target) for b in svc.binds]
         return []
 
     def published_ports(self, name: str) -> dict:
         """Returns the published ports."""
         return self.published.get(name, {})
+
+
+def _runtime(cfg: DeploymentConfig, **kwargs: Any) -> FakeRuntime:
+    """Return a :class:`FakeRuntime` wired to ``cfg``'s compose file.
+
+    The runtime surfaces the compose service binds via ``list_mounts``,
+    so the preflight drift check (§3.17) sees a mount set that matches
+    the instance-root derivations. Without this the check fails on every
+    server-scope test because a bare ``FakeRuntime`` reports no mounts.
+    """
+    compose = cfg.compose.file if cfg.compose.ok else None
+    return FakeRuntime(compose=compose, **kwargs)
 
 
 def _compose_file(tmp_path: Path, members: dict[str, str] | None = None, *, secret_present: bool = True) -> ComposeFile:
@@ -148,6 +179,24 @@ def _config(
     if compose_ok:
         cf = _compose_file(tmp_path, {k: v.container for k, v in instances.items()}, secret_present=secret_present)
         compose = ComposeLoadResult(file=cf, error=None)
+        # Mirror config_model._build_deployment_config: wire each instance
+        # to its compose service and derive the timing fields. Without
+        # this step, preflight correctly reports "no /data bind found"
+        # and the test never reaches what it is actually asserting.
+        for inst in instances.values():
+            try:
+                svc = match_service_by_container(cf, inst.container)
+            except ServiceMatchError as exc:
+                inst.service_match_error = str(exc)
+                continue
+            inst.service = svc
+            if svc.stop_grace_period:
+                inst.stop_grace_period_raw = svc.stop_grace_period
+                try:
+                    inst.stop_grace_seconds = parse_go_duration(svc.stop_grace_period)
+                except ValueError as exc:
+                    inst.stop_grace_parse_error = str(exc)
+            inst.stop_signal = svc.stop_signal
     else:
         compose = ComposeLoadResult(file=None, error="compose broken")
     www = tmp_path / "www"
@@ -260,7 +309,7 @@ def test_preflight_raises_on_partition_unknown(tmp_path: Path) -> None:
     """
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, partition_unknown=["nope"])
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert any(f.source == "§2.5" for f in ei.value.failures)
@@ -271,7 +320,7 @@ def test_preflight_aggregates_multiple_failures(tmp_path: Path) -> None:
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, partition_unknown=["nope"])
     cfg = DeploymentConfig(**{**cfg.__dict__, "compose": ComposeLoadResult(None, "broken")})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     sources = {f.source for f in ei.value.failures}
@@ -283,7 +332,7 @@ def test_preflight_broken_compose_ok_for_client_scope(tmp_path: Path) -> None:
     """§3.5: --client alone tolerates a broken compose if www_dir is set."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, compose_ok=False)
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(client=True), False, False, False, runtime, None)
     assert plan.partition == ["survival"]
 
@@ -292,7 +341,7 @@ def test_preflight_missing_container_is_error(tmp_path: Path) -> None:
     """Tests that preflight raises PreflightError when the container is missing."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
-    runtime = FakeRuntime(states={"mc-survival": ContainerState(name="mc-survival", exists=False, status="missing", running=False, health=None, raw=None)})
+    runtime = _runtime(cfg, states={"mc-survival": ContainerState(name="mc-survival", exists=False, status="missing", running=False, health=None, raw=None)})
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert any("missing" in f.message for f in ei.value.failures)
@@ -303,7 +352,7 @@ def test_preflight_restarting_after_wait_is_error(tmp_path: Path) -> None:
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
     stuck = ContainerState(name="mc-survival", exists=True, status="restarting", running=False, health=None, raw={"Mounts": []})
-    runtime = FakeRuntime(states={"mc-survival": stuck}, restarting_settled={"mc-survival": stuck})
+    runtime = _runtime(cfg, states={"mc-survival": stuck}, restarting_settled={"mc-survival": stuck})
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert any("restarting" in f.message for f in ei.value.failures)
@@ -312,7 +361,7 @@ def test_preflight_restarting_after_wait_is_error(tmp_path: Path) -> None:
 def test_preflight_no_instances_configured(tmp_path: Path) -> None:
     """Tests that preflight fails when no instances are configured."""
     cfg = _config(tmp_path, partition=[], instances={})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert any("no instances" in f.message for f in ei.value.failures)
@@ -321,7 +370,7 @@ def test_preflight_no_instances_configured(tmp_path: Path) -> None:
 def test_preflight_client_only_does_not_require_instances(tmp_path: Path) -> None:
     """--client never touches instances; empty config is fine."""
     cfg = _config(tmp_path, partition=[], instances={})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(client=True), False, False, False, runtime, None)
     assert plan.partition == []
 
@@ -330,7 +379,7 @@ def test_discord_live_template_missing_is_warning(tmp_path: Path) -> None:
     """Missing template → warn, not exit 3."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, discord=DiscordConfig(live_template=None))
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(client=True), False, True, False, runtime, None)
     assert plan.partition == ["survival"]
 
@@ -339,7 +388,7 @@ def test_discord_live_template_empty_is_error(tmp_path: Path) -> None:
     """Tests that preflight fails when the Discord live template is empty."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, discord=DiscordConfig(live_template=""))
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(client=True), False, True, False, runtime, None)
     assert any("live" in f.source for f in ei.value.failures)
@@ -349,7 +398,7 @@ def test_discord_live_template_unknown_placeholder(tmp_path: Path) -> None:
     """Tests that preflight fails when the Discord live template contains an unknown placeholder."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, discord=DiscordConfig(live_template="hello {nonexistent}"))
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(client=True), False, True, False, runtime, None)
     assert any("nonexistent" in f.message for f in ei.value.failures)
@@ -359,7 +408,7 @@ def test_discord_live_template_invalid_everywhere(tmp_path: Path) -> None:
     """Tests that preflight fails when the Discord live template is invalid in all contexts."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, discord=DiscordConfig(live_template="hello {sha256sum}"))
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(client=True), False, True, False, runtime, None)
     assert any("invalid everywhere" in f.message for f in ei.value.failures)
@@ -369,7 +418,7 @@ def test_discord_live_template_cross_template(tmp_path: Path) -> None:
     """A failure-template placeholder used in live → error."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, discord=DiscordConfig(live_template="hello {failure_stage}"))
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(client=True), False, True, False, runtime, None)
     assert any("cross-template" in f.message or "not valid" in f.message for f in ei.value.failures)
@@ -384,7 +433,7 @@ def test_discord_live_template_dry_run_validates_only_live(tmp_path: Path) -> No
         instances={"survival": inst},
         discord=DiscordConfig(live_template="ok {tool_version}", failure_template="{not_a_placeholder}"),
     )
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(client=True), False, True, True, runtime, None)
     assert plan.partition == ["survival"]
 
@@ -396,7 +445,7 @@ def test_preflight_none_set_when_no_changes(tmp_path: Path) -> None:
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert plan.none_set == ["survival"]
     assert plan.reload_set == []
@@ -418,7 +467,7 @@ def test_preflight_restart_set_on_mods_change(tmp_path: Path) -> None:
     (index / "a.pw.toml").write_text('filename = "a.jar"\nside = "server"\n', encoding="utf-8")
     (tmp_path / "sync" / "downloads" / "a.jar").write_bytes(b"new content")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert "survival" in plan.restart_set
     assert plan.mods_change is not None
@@ -435,7 +484,7 @@ def test_preflight_targeted_server_skips_mods(tmp_path: Path) -> None:
     mods_dir.mkdir(exist_ok=True)
     (mods_dir / "orphan.jar").write_bytes(b"x")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, requested_instances={"survival"})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert plan.targeted is True
     assert plan.mods_drift or plan.warnings
@@ -449,7 +498,7 @@ def test_preflight_reload_set_on_kubejs_server_scripts(tmp_path: Path) -> None:
     (tmp_path / "sync" / "kubejs" / "server_scripts").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs" / "server_scripts" / "craft.js").write_text("// new", encoding="utf-8")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert "survival" in plan.reload_set
     assert plan.pack_required is False
@@ -463,7 +512,7 @@ def test_preflight_pack_required_on_startup_scripts(tmp_path: Path) -> None:
     (tmp_path / "sync" / "kubejs" / "startup_scripts").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs" / "startup_scripts" / "new_block.js").write_text("// new", encoding="utf-8")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert "survival" in plan.restart_set
     assert plan.pack_required is True
@@ -483,7 +532,7 @@ def test_preflight_rcon_missing_secret_when_port_published(tmp_path: Path) -> No
     (tmp_path / "sync" / "kubejs" / "startup_scripts").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs" / "startup_scripts" / "x.js").write_text("// new", encoding="utf-8")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, secret_present=False)
-    runtime = FakeRuntime(published={"mc-survival": {"25575/tcp": [("0.0.0.0", 25575)]}})
+    runtime = _runtime(cfg, published={"mc-survival": {"25575/tcp": [("0.0.0.0", 25575)]}})
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert any("§8.4" in f.source for f in ei.value.failures)
@@ -498,7 +547,7 @@ def test_preflight_rcon_remote_host_without_published_port(tmp_path: Path) -> No
     (tmp_path / "sync" / "kubejs" / "startup_scripts").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs" / "startup_scripts" / "x.js").write_text("// new", encoding="utf-8")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, rcon_host="10.0.0.5")
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert any("§8.4" in f.source for f in ei.value.failures)
@@ -515,7 +564,7 @@ def test_preflight_rcon_skipped_when_no_restart_set(tmp_path: Path) -> None:
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, secret_present=False, rcon_host="10.0.0.5")
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime, None)
     assert plan.restart_set == []
 
@@ -528,6 +577,6 @@ def test_preflight_rcon_skipped_in_dry_run(tmp_path: Path) -> None:
     (tmp_path / "sync" / "kubejs" / "startup_scripts").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs" / "startup_scripts" / "x.js").write_text("// new", encoding="utf-8")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, secret_present=False, rcon_host="10.0.0.5")
-    runtime = FakeRuntime()
+    runtime = _runtime(cfg)
     plan = preflight.run_preflight(cfg, ScopeSet(server=True), False, False, True, runtime, None)
     assert "survival" in plan.restart_set
