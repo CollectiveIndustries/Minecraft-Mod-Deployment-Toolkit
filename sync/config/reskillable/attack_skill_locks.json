@@ -1,6 +1,42 @@
 {
   "attackSkillLocks": {
-    "minecraft:zombie": ["attack:2"],
-    "minecraft:skeleton": ["attack:2"]
+    "minecraft:zombie": ["attack:1"],
+    "minecraft:spider": ["attack:1"],
+    "minecraft:cave_spider": ["attack:2"],
+    "minecraft:skeleton": ["attack:2"],
+    "minecraft:husk": ["attack:2"],
+    "minecraft:stray": ["attack:2"],
+    "minecraft:drowned": ["attack:2"],
+    "minecraft:slime": ["attack:2"],
+    "minecraft:phantom": ["attack:3"],
+    "minecraft:endermite": ["attack:3"],
+    "minecraft:silverfish": ["attack:3"],
+    "minecraft:witch": ["attack:3"],
+    "minecraft:creeper": ["attack:3"],
+    "minecraft:guardian": ["attack:4"],
+    "minecraft:elder_guardian": ["attack:5"],
+
+    "minecraft:piglin": ["attack:3"],
+    "minecraft:piglin_brute": ["attack:5"],
+    "minecraft:hoglin": ["attack:3"],
+    "minecraft:zoglin": ["attack:4"],
+    "minecraft:blaze": ["attack:4"],
+    "minecraft:magma_cube": ["attack:4"],
+    "minecraft:wither_skeleton": ["attack:4"],
+    "minecraft:ghast": ["attack:4"],
+
+    "minecraft:enderman": ["attack:4"],
+    "minecraft:shulker": ["attack:5"],
+
+    "minecraft:ravager": ["attack:5"],
+    "minecraft:vindicator": ["attack:4"],
+    "minecraft:evoker": ["attack:5"],
+    "minecraft:pillager": ["attack:3"],
+    "minecraft:illusioner": ["attack:5"],
+    "minecraft:vex": ["attack:5"],
+
+    "minecraft:warden": ["attack:6"],
+    "minecraft:wither": ["attack:7"],
+    "minecraft:ender_dragon": ["attack:7"]
   }
 }
