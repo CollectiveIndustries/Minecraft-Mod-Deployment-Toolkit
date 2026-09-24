@@ -55,6 +55,7 @@ Public API
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -119,8 +120,8 @@ def _key_regex(key: str) -> re.Pattern[bytes]:
 def _split_lines(data: bytes) -> list[tuple[bytes, bytes]]:
     r"""Split ``data`` into (content, terminator) pairs.
 
-    Terminators are ``b"\\r\\n"``, ``b"\\n"``, or ``b""`` for the final
-    line if the file does not end with a newline. A lone ``\\r`` is not
+    Terminators are ``b"\r\n"``, ``b"\n"``, or ``b""`` for the final
+    line if the file does not end with a newline. A lone ``\r`` is not
     a line boundary (§7.4).
     """
     result: list[tuple[bytes, bytes]] = []
@@ -146,9 +147,9 @@ def _split_lines(data: bytes) -> list[tuple[bytes, bytes]]:
 def _detect_eol(data: bytes) -> bytes:
     r"""Return the file's line-ending style for appends (§7.4).
 
-    Uses the last ``\\n`` in the file: if preceded by ``\\r``, the style
+    Uses the last ``\n`` in the file: if preceded by ``\r``, the style
     is CRLF; otherwise LF. An empty file (or one with no newlines) uses
-    LF, per the spec's "for an empty file, use ``\\n``".
+    LF, per the spec's "for an empty file, use ``\n``".
     """
     idx = data.rfind(b"\n")
     if idx > 0 and data[idx - 1 : idx] == b"\r":
@@ -165,17 +166,17 @@ def _read_or_error(path: Path) -> bytes:
         raise ConfigError(f"Could not read {path}: {exc}") from exc
 
 
-def _parse_existing(data: bytes, path: Path, logger: Any) -> dict[str, tuple[int, bytes]]:
+def _parse_existing(data: bytes, path: Path, logger: Any, keys: Collection[str]) -> dict[str, tuple[int, bytes]]:
     """Return {key: (line_index_of_last_occurrence, stripped_value_bytes)}.
 
-    Only the four managed keys are considered. A warning is emitted once
+    Only the given ``keys`` are considered. A warning is emitted once
     per key when the file contains multiple occurrences.
     """
     lines = _split_lines(data)
     result: dict[str, tuple[int, bytes]] = {}
     seen_count: dict[str, int] = {}
     for idx, (content, _term) in enumerate(lines):
-        for key in MANAGED_KEYS:
+        for key in keys:
             m = _key_regex(key).match(content)
             if m is None:
                 continue
@@ -201,9 +202,10 @@ def _dedupe_last_wins(edits: list[PropertyEdit]) -> list[PropertyEdit]:
 
 
 def _compute_diff(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any) -> PropertiesDiff:
-    existing = _parse_existing(data, path, logger)
+    deduped = _dedupe_last_wins(edits)
+    existing = _parse_existing(data, path, logger, {e.key for e in deduped})
     changes: list[PropertyChange] = []
-    for edit in _dedupe_last_wins(edits):
+    for edit in deduped:
         target = edit.value.encode("utf-8")
         entry = existing.get(edit.key)
         if entry is not None:
@@ -217,12 +219,13 @@ def _compute_diff(data: bytes, edits: list[PropertyEdit], path: Path, logger: An
 
 
 def _apply(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any) -> bytes:
+    deduped = _dedupe_last_wins(edits)
     lines = _split_lines(data)
-    existing = _parse_existing(data, path, logger)
+    existing = _parse_existing(data, path, logger, {e.key for e in deduped})
     default_eol = _detect_eol(data)
     updates: dict[int, bytes] = {}
     appends: list[bytes] = []
-    for edit in _dedupe_last_wins(edits):
+    for edit in deduped:
         target = edit.value.encode("utf-8")
         entry = existing.get(edit.key)
         if entry is not None:
