@@ -351,9 +351,10 @@ def test_protect_glob_spans_slash() -> None:
 
 
 def test_protect_multilevel_glob() -> None:
-    """Tests that is_protected_path supports single-level glob patterns matching intermediate path components."""
+    """Tests that is_protected_path uses fnmatch semantics where * spans /."""
     assert is_protected_path("config/sub/tokens.json", ["config/*/tokens.json"])
-    assert not is_protected_path("config/a/b/tokens.json", ["config/*/tokens.json"])
+    assert is_protected_path("config/a/b/tokens.json", ["config/*/tokens.json"])
+    assert not is_protected_path("other/tokens.json", ["config/*/tokens.json"])
 
 
 def test_protect_no_match() -> None:
