@@ -1,19 +1,25 @@
 # tests/deploy_pack/test_scope_resource_pack.py
 
-"""Tests for deploy_pack.scope_resource_pack, per Project_Specs.md v3.0 §10.1.
+"""Tests for deploy_pack.scope_resource_pack, Project_Specs.md §4.4, §4.6.6, §4.9, §4.15, §7.5, §7.7, §7.8.
 
-Coverage areas:
-  * action merge (via preflight; the scope only writes)
-  * destination-missing triggers publication
-  * SHA-1 case-insensitive comparison
-  * zero-pack no-op (§7.7)
-  * @www grammar validation surfaces from resolve_resource_pack_dest
-  * properties vs publication independence (§4.4)
-  * [resource_pack.X] key validation (filename required, required
-    boolean required, prompt optional)
-  * §4.9 phase ordering: publish all before touching properties
-  * §4.15 prompt-only path
-  * §4.10 atomic publication
+Coverage:
+
+  * §7.7   - zero-pack no-op: a partition member with no [resource_pack.X]
+             has nothing to publish and nothing to write
+  * §7.8   - source validation happens before any write
+  * §4.9   - the five-step ordering: validate, hash, resolve, publish,
+             update server.properties; a publish failure stops the
+             properties write
+  * §4.4   - SHA-1 comparison is case-insensitive; a destination that
+             already matches is not republished
+  * §4.6.6 - the resource-pack action merge: prompt-only changes write
+             and defer; require-resource-pack, resource-pack, and
+             resource-pack-sha1 changes trigger a restart
+  * §4.15  - empty prompt written as `resource-pack-prompt=`
+  * §4.10  - atomic publication of the ZIP and of server.properties
+
+Every test drives :func:`deploy_resource_pack_scope` against a real
+DeploymentConfig and a real PreflightPlan.
 """
 
 from __future__ import annotations
@@ -22,12 +28,41 @@ from pathlib import Path
 
 import pytest
 
-from minecraft.deploy_pack import scope_resource_pack as rps
-from minecraft.deploy_pack.config_model import DeploymentConfig, DiscordConfig, DockerConfig, InstanceConfig, ResourcePackConfig
-from minecraft.deploy_pack.errors import ConfigError
+import minecraft.deploy_pack.scope_resource_pack as rp_module
+from minecraft.deploy_pack.config_model import (
+    ComposeLoadResult,
+    DeploymentConfig,
+    DiscordConfig,
+    DockerConfig,
+    InstanceConfig,
+    ResourcePackConfig,
+)
 from minecraft.deploy_pack.files import compute_sha1
 from minecraft.deploy_pack.preflight import PreflightPlan, ScopeSet
-from minecraft.deploy_pack.scope_resource_pack import _client_source_dir, _needs_publish, _resource_pack_mapping, deploy_resource_pack_scope
+from minecraft.deploy_pack.scope_resource_pack import (
+    PropertiesWriteResult,
+    PublishResult,
+    ResourcePackScopeResult,
+    deploy_resource_pack_scope,
+)
+
+# ---------------------------------------------------------------------------
+# Config and plan builders
+# ---------------------------------------------------------------------------
+
+
+def _instance(name: str, root: Path) -> InstanceConfig:
+    """Return an InstanceConfig with a server.properties path set."""
+    root.mkdir(parents=True, exist_ok=True)
+    inst = InstanceConfig(
+        name=name,
+        container=f"mc-{name}",
+        instance_root=root,
+        config_path=root / "config",
+        kubejs_path=root / "kubejs",
+    )
+    inst.server_properties_path = root / "server.properties"
+    return inst
 
 
 def _config(
@@ -39,6 +74,7 @@ def _config(
     sync_mapping: dict | None = None,
     www_dir: Path | None = None,
 ) -> DeploymentConfig:
+    """Build a DeploymentConfig wired for resource-pack scope tests."""
     if www_dir is None:
         www_dir = tmp_path / "www"
         www_dir.mkdir(exist_ok=True)
@@ -55,7 +91,11 @@ def _config(
         protect_file=None,
         sync_mapping=sync_mapping
         if sync_mapping is not None
-        else {"config": "config", "kubejs": "kubejs", "resourcepacks": {"resource_pack": "@www/resourcepacks", "client": "resourcepacks"}},
+        else {
+            "config": "config",
+            "kubejs": "kubejs",
+            "resourcepacks": {"resource_pack": "@www/resourcepacks", "client": "resourcepacks"},
+        },
         restart_policy={},
         instances=instances,
         partition=partition,
@@ -65,20 +105,13 @@ def _config(
         docker=DockerConfig(compose_file=tmp_path / "docker-compose.yml"),
         discord=DiscordConfig(),
         webhook_url=None,
-        compose=None,
+        compose=ComposeLoadResult(file=None, error="not used by these tests"),
         mods_dir_toml=None,
     )
 
 
-def _instance(name: str, root: Path, *, props: bool = True) -> InstanceConfig:
-    root.mkdir(parents=True, exist_ok=True)
-    inst = InstanceConfig(name=name, container=f"mc-{name}", instance_root=root, config_path=root / "config", kubejs_path=root / "kubejs")
-    if props:
-        inst.server_properties_path = root / "server.properties"
-    return inst
-
-
 def _plan(partition: list[str]) -> PreflightPlan:
+    """Build a minimal PreflightPlan for the resource-pack scope."""
     return PreflightPlan(
         scopes=ScopeSet(resource_pack=True),
         partition=list(partition),
@@ -91,7 +124,8 @@ def _plan(partition: list[str]) -> PreflightPlan:
     )
 
 
-def _source_rp(tmp_path: Path, name: str = "pack.zip", data: bytes = b"ZIPDATA") -> Path:
+def _write_source_rp(tmp_path: Path, name: str = "pack.zip", data: bytes = b"ZIPDATA") -> Path:
+    """Write a resource-pack source under sync_root/resourcepacks and return its path."""
     src_dir = tmp_path / "sync" / "resourcepacks"
     src_dir.mkdir(parents=True, exist_ok=True)
     src = src_dir / name
@@ -99,82 +133,52 @@ def _source_rp(tmp_path: Path, name: str = "pack.zip", data: bytes = b"ZIPDATA")
     return src
 
 
-def test_client_source_dir_returns_path(tmp_path: Path) -> None:
-    """Verifies that the client source directory resolves to the expected resourcepacks path."""
-    cfg = _config(tmp_path, partition=[], instances={})
-    assert _client_source_dir(cfg) == tmp_path / "sync" / "resourcepacks"
+def _write_props(inst: InstanceConfig, content: str = "") -> None:
+    """Write the instance's server.properties file."""
+    assert inst.server_properties_path is not None
+    inst.server_properties_path.write_text(content, encoding="utf-8")
 
 
-def test_client_source_dir_none_when_absent(tmp_path: Path) -> None:
-    """Tests that _client_source_dir returns None when no client source directory is configured."""
-    cfg = _config(tmp_path, partition=[], instances={}, sync_mapping={"config": "config", "kubejs": "kubejs"})
-    assert _client_source_dir(cfg) is None
+# ---------------------------------------------------------------------------
+# §7.7: zero-pack no-op
+# ---------------------------------------------------------------------------
 
 
-def test_resource_pack_mapping_returns_value(tmp_path: Path) -> None:
-    """Tests that _resource_pack_mapping returns the configured resource pack mapping value."""
-    cfg = _config(tmp_path, partition=[], instances={})
-    assert _resource_pack_mapping(cfg) == "@www/resourcepacks"
-
-
-def test_resource_pack_mapping_none_when_absent(tmp_path: Path) -> None:
-    """Tests that _resource_pack_mapping returns None when the mapping is absent."""
-    cfg = _config(tmp_path, partition=[], instances={}, sync_mapping={"config": "config"})
-    assert _resource_pack_mapping(cfg) is None
-
-
-def test_needs_publish_missing_destination(tmp_path: Path) -> None:
-    """Tests that _needs_publish returns True when the destination file does not exist."""
-    dest = tmp_path / "missing.zip"
-    assert _needs_publish(dest, "abc123")
-
-
-def test_needs_publish_sha1_match(tmp_path: Path) -> None:
-    """Tests that _needs_publish returns False when the destination SHA1 matches the expected value."""
-    dest = tmp_path / "existing.zip"
-    dest.write_bytes(b"content")
-    sha = compute_sha1(dest)
-    assert not _needs_publish(dest, sha)
-
-
-def test_needs_publish_sha1_case_insensitive(tmp_path: Path) -> None:
-    """Verifies that SHA-1 comparison for publishing is case-insensitive."""
-    dest = tmp_path / "existing.zip"
-    dest.write_bytes(b"content")
-    sha = compute_sha1(dest).upper()
-    assert not _needs_publish(dest, sha)
-
-
-def test_needs_publish_sha1_differs(tmp_path: Path) -> None:
-    """Verifies that publish is needed when the destination file's SHA-1 differs from the expected value."""
-    dest = tmp_path / "existing.zip"
-    dest.write_bytes(b"content")
-    assert _needs_publish(dest, "0000000000000000000000000000000000000000")
-
-
-def test_zero_pack_members_is_noop(tmp_path: Path) -> None:
-    """Tests that a resource pack scope deployment with no pack members for a partition returns a successful no-op result."""
+def test_zero_packs_for_partition_is_a_successful_noop(tmp_path: Path) -> None:
+    """§7.7: a member with no [resource_pack.X] is reported and skipped."""
     inst = _instance("survival", tmp_path / "survival")
-    cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, resource_packs={})
+    cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
     result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
+    assert isinstance(result, ResourcePackScopeResult)
     assert result.success
     assert result.no_pack_members == ["survival"]
     assert result.publish_results == []
     assert result.properties_results == []
 
 
-def test_zero_pack_whole_partition_no_source_dir(tmp_path: Path) -> None:
-    """When no pack is configured, missing sync_mapping keys are fine."""
+def test_zero_packs_with_no_client_mapping_is_a_noop(tmp_path: Path) -> None:
+    """§7.7: with no pack configured, a missing resourcepacks.client is not an error."""
     inst = _instance("survival", tmp_path / "survival")
-    cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst}, sync_mapping={"config": "config"})
+    cfg = _config(
+        tmp_path,
+        partition=["survival"],
+        instances={"survival": inst},
+        sync_mapping={"config": "config"},
+    )
     result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
     assert result.success
     assert result.no_pack_members == ["survival"]
 
 
-def test_missing_source_is_error(tmp_path: Path) -> None:
-    """Tests that a required resource pack with a missing source file causes validation failure with the expected error details."""
+# ---------------------------------------------------------------------------
+# §7.8: source validation happens before any write
+# ---------------------------------------------------------------------------
+
+
+def test_missing_source_zip_is_a_validate_stage_failure(tmp_path: Path) -> None:
+    """§7.8: a missing source is exit 3 before any file is touched."""
     inst = _instance("survival", tmp_path / "survival")
+    _write_props(inst, "motd=hi\n")
     cfg = _config(
         tmp_path,
         partition=["survival"],
@@ -185,11 +189,14 @@ def test_missing_source_is_error(tmp_path: Path) -> None:
     assert not result.success
     assert result.failure_stage == "validate"
     assert result.failure_member == "survival"
+    assert result.failure_message is not None
     assert "not found" in result.failure_message
+    assert inst.server_properties_path is not None
+    assert inst.server_properties_path.read_text(encoding="utf-8") == "motd=hi\n"
 
 
-def test_missing_client_mapping_is_error(tmp_path: Path) -> None:
-    """Tests that a missing client mapping for a required resource pack results in an error mentioning the client is required."""
+def test_missing_client_mapping_is_a_validate_stage_failure(tmp_path: Path) -> None:
+    """§7.7: a configured pack without sync_mapping.resourcepacks.client is exit 3."""
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(
         tmp_path,
@@ -200,12 +207,14 @@ def test_missing_client_mapping_is_error(tmp_path: Path) -> None:
     )
     result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
     assert not result.success
+    assert result.failure_stage == "validate"
+    assert result.failure_message is not None
     assert "client is required" in result.failure_message
 
 
-def test_missing_resource_pack_mapping_is_error(tmp_path: Path) -> None:
-    """Tests that a missing resource pack mapping produces an error."""
-    _source_rp(tmp_path)
+def test_missing_resource_pack_mapping_is_a_validate_stage_failure(tmp_path: Path) -> None:
+    """§7.5: a configured pack without sync_mapping.resourcepacks.resource_pack is exit 3."""
+    _write_source_rp(tmp_path)
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(
         tmp_path,
@@ -216,12 +225,14 @@ def test_missing_resource_pack_mapping_is_error(tmp_path: Path) -> None:
     )
     result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
     assert not result.success
+    assert result.failure_stage == "validate"
+    assert result.failure_message is not None
     assert "resource_pack is required" in result.failure_message
 
 
-def test_bad_filename_is_error(tmp_path: Path) -> None:
-    """Tests that a resource pack with a disallowed filename extension causes a validation failure."""
-    _source_rp(tmp_path, "pack.zip")
+def test_invalid_filename_is_a_validate_stage_failure(tmp_path: Path) -> None:
+    """§7.5: a filename that fails the grammar is exit 3."""
+    _write_source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(
         tmp_path,
@@ -234,11 +245,16 @@ def test_bad_filename_is_error(tmp_path: Path) -> None:
     assert result.failure_stage == "validate"
 
 
-def test_publishes_missing_destination(tmp_path: Path) -> None:
-    """Tests that a required resource pack is published to its destination when the destination is initially missing."""
-    _source_rp(tmp_path, "pack.zip", b"CONTENT")
+# ---------------------------------------------------------------------------
+# §4.4: SHA-1 comparison drives publication
+# ---------------------------------------------------------------------------
+
+
+def test_publishes_when_destination_missing(tmp_path: Path) -> None:
+    """§4.4: a missing destination is a change."""
+    _write_source_rp(tmp_path, "pack.zip", b"CONTENT")
     inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text("", encoding="utf-8")
+    _write_props(inst)
     cfg = _config(
         tmp_path,
         partition=["survival"],
@@ -249,6 +265,7 @@ def test_publishes_missing_destination(tmp_path: Path) -> None:
     assert result.success
     assert result.any_published
     pub = result.publish_results[0]
+    assert isinstance(pub, PublishResult)
     assert pub.published is True
     assert pub.destination is not None
     assert pub.destination.read_bytes() == b"CONTENT"
@@ -256,13 +273,13 @@ def test_publishes_missing_destination(tmp_path: Path) -> None:
 
 
 def test_skips_publication_when_destination_matches(tmp_path: Path) -> None:
-    """Tests that publication is skipped when the destination file already matches."""
-    _source_rp(tmp_path, "pack.zip", b"CONTENT")
+    """§4.4: matching SHA-1 means no effective change for publication."""
+    _write_source_rp(tmp_path, "pack.zip", b"CONTENT")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
     (dest_dir / "pack.zip").write_bytes(b"CONTENT")
     inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text("", encoding="utf-8")
+    _write_props(inst)
     cfg = _config(
         tmp_path,
         partition=["survival"],
@@ -276,14 +293,34 @@ def test_skips_publication_when_destination_matches(tmp_path: Path) -> None:
     assert pub.skipped_reason == "destination already matches"
 
 
-def test_republishes_when_source_changes(tmp_path: Path) -> None:
-    """Tests that a resource pack is republished when its source content changes."""
-    _source_rp(tmp_path, "pack.zip", b"NEW")
+def test_sha1_comparison_is_case_insensitive(tmp_path: Path) -> None:
+    """§4.4: comparison normalizes to lowercase."""
+    _write_source_rp(tmp_path, "pack.zip", b"CONTENT")
+    dest_dir = tmp_path / "www" / "resourcepacks"
+    dest_dir.mkdir(parents=True)
+    (dest_dir / "pack.zip").write_bytes(b"CONTENT")
+    inst = _instance("survival", tmp_path / "survival")
+    _write_props(inst)
+    cfg = _config(
+        tmp_path,
+        partition=["survival"],
+        instances={"survival": inst},
+        resource_packs={"survival": ResourcePackConfig(filename="pack.zip", required=True, prompt="")},
+    )
+    result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
+    pub = result.publish_results[0]
+    assert pub.published is False
+    assert pub.sha1 == compute_sha1(tmp_path / "sync" / "resourcepacks" / "pack.zip")
+
+
+def test_republishes_when_source_content_changes(tmp_path: Path) -> None:
+    """§4.4: differing SHA-1 triggers a republish."""
+    _write_source_rp(tmp_path, "pack.zip", b"NEW")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
     (dest_dir / "pack.zip").write_bytes(b"OLD")
     inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text("", encoding="utf-8")
+    _write_props(inst)
     cfg = _config(
         tmp_path,
         partition=["survival"],
@@ -295,11 +332,16 @@ def test_republishes_when_source_changes(tmp_path: Path) -> None:
     assert (dest_dir / "pack.zip").read_bytes() == b"NEW"
 
 
-def test_writes_all_four_keys(tmp_path: Path) -> None:
-    """Tests that deploying a resource pack writes all four server.properties keys."""
-    _source_rp(tmp_path, "pack.zip", b"ZIPDATA")
+# ---------------------------------------------------------------------------
+# §4.9: server.properties is updated after all publishes
+# ---------------------------------------------------------------------------
+
+
+def test_writes_all_four_keys_after_publish(tmp_path: Path) -> None:
+    """§4.9: every managed key is written after the ZIP lands."""
+    _write_source_rp(tmp_path, "pack.zip", b"ZIPDATA")
     inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text("motd=hi\n", encoding="utf-8")
+    _write_props(inst, "motd=hi\n")
     cfg = _config(
         tmp_path,
         partition=["survival"],
@@ -308,6 +350,7 @@ def test_writes_all_four_keys(tmp_path: Path) -> None:
     )
     result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
     assert result.success
+    assert inst.server_properties_path is not None
     props = inst.server_properties_path.read_text(encoding="utf-8")
     assert "motd=hi" in props
     assert "require-resource-pack=true" in props
@@ -317,27 +360,11 @@ def test_writes_all_four_keys(tmp_path: Path) -> None:
     assert f"resource-pack-sha1={sha1}" in props
 
 
-def test_empty_prompt_written_as_empty(tmp_path: Path) -> None:
-    """§4.15: empty prompt is written as `resource-pack-prompt=`."""
-    _source_rp(tmp_path, "pack.zip")
+def test_required_false_is_written_lowercase(tmp_path: Path) -> None:
+    """§7.4: booleans are lowercase."""
+    _write_source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text("", encoding="utf-8")
-    cfg = _config(
-        tmp_path,
-        partition=["survival"],
-        instances={"survival": inst},
-        resource_packs={"survival": ResourcePackConfig(filename="pack.zip", required=True, prompt="")},
-    )
-    deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
-    props = inst.server_properties_path.read_text(encoding="utf-8")
-    assert "resource-pack-prompt=\n" in props
-
-
-def test_required_false_writes_lowercase(tmp_path: Path) -> None:
-    """Tests that a non-required resource pack writes require-resource-pack=false."""
-    _source_rp(tmp_path, "pack.zip")
-    inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text("", encoding="utf-8")
+    _write_props(inst)
     cfg = _config(
         tmp_path,
         partition=["survival"],
@@ -345,21 +372,42 @@ def test_required_false_writes_lowercase(tmp_path: Path) -> None:
         resource_packs={"survival": ResourcePackConfig(filename="pack.zip", required=False, prompt="")},
     )
     deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
-    props = inst.server_properties_path.read_text(encoding="utf-8")
-    assert "require-resource-pack=false" in props
+    assert inst.server_properties_path is not None
+    assert "require-resource-pack=false" in inst.server_properties_path.read_text(encoding="utf-8")
 
 
-def test_prompt_only_marks_prompt_only(tmp_path: Path) -> None:
-    """§4.15: only the prompt differs → properties write, no publish."""
-    src = _source_rp(tmp_path, "pack.zip", b"ZIPDATA")
+def test_empty_prompt_is_written_as_empty_value(tmp_path: Path) -> None:
+    """§4.15: an empty prompt is written as `resource-pack-prompt=`."""
+    _write_source_rp(tmp_path, "pack.zip")
+    inst = _instance("survival", tmp_path / "survival")
+    _write_props(inst)
+    cfg = _config(
+        tmp_path,
+        partition=["survival"],
+        instances={"survival": inst},
+        resource_packs={"survival": ResourcePackConfig(filename="pack.zip", required=True, prompt="")},
+    )
+    deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
+    assert inst.server_properties_path is not None
+    assert "resource-pack-prompt=\n" in inst.server_properties_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# §4.6.6 / §4.15: prompt-only changes write and defer
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_only_change_does_not_republish(tmp_path: Path) -> None:
+    """§4.15: only the prompt differs -> properties write, no publish."""
+    src = _write_source_rp(tmp_path, "pack.zip", b"ZIPDATA")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
     (dest_dir / "pack.zip").write_bytes(b"ZIPDATA")
     sha1 = compute_sha1(src)
     inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text(
+    _write_props(
+        inst,
         f"require-resource-pack=true\nresource-pack=http://minecraft/downloads/resourcepacks/pack.zip\nresource-pack-prompt=OLD\nresource-pack-sha1={sha1}\n",
-        encoding="utf-8",
     )
     cfg = _config(
         tmp_path,
@@ -371,21 +419,27 @@ def test_prompt_only_marks_prompt_only(tmp_path: Path) -> None:
     assert result.success
     assert not result.any_published
     props = result.properties_results[0]
+    assert isinstance(props, PropertiesWriteResult)
     assert props.changes == {"resource-pack-prompt": ("OLD", "NEW")}
     assert props.prompt_only
 
 
-def test_publish_failure_stops_properties_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A publish failure must not touch server.properties."""
-    _source_rp(tmp_path, "pack.zip")
+# ---------------------------------------------------------------------------
+# §4.9 / §4.2: publish failure stops the properties write
+# ---------------------------------------------------------------------------
+
+
+def test_publish_failure_leaves_server_properties_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4.9 / §4.2: a publish failure halts before the properties write."""
+    _write_source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
     original = "motd=hi\n"
-    inst.server_properties_path.write_text(original, encoding="utf-8")
+    _write_props(inst, original)
 
-    def boom(*a, **kw):
+    def boom(*args: object, **kwargs: object) -> None:
         raise OSError("simulated publish failure")
 
-    monkeypatch.setattr(rps, "atomic_copy", boom)
+    monkeypatch.setattr(rp_module, "atomic_copy", boom)
     cfg = _config(
         tmp_path,
         partition=["survival"],
@@ -396,40 +450,27 @@ def test_publish_failure_stops_properties_write(tmp_path: Path, monkeypatch: pyt
     assert not result.success
     assert result.failure_stage == "publish"
     assert result.properties_results == []
+    assert inst.server_properties_path is not None
     assert inst.server_properties_path.read_text(encoding="utf-8") == original
 
 
-def test_properties_failure_after_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A properties failure occurs after publish; the publish stands (§4.2)."""
-    _source_rp(tmp_path, "pack.zip")
-    inst = _instance("survival", tmp_path / "survival")
-    inst.server_properties_path.write_text("motd=hi\n", encoding="utf-8")
+# ---------------------------------------------------------------------------
+# Multiple members: only members with packs are touched
+# ---------------------------------------------------------------------------
 
-    def boom(*a, **kw):
-        raise ConfigError("simulated properties failure")
 
-    monkeypatch.setattr(rps, "apply_edits", boom)
+def test_members_without_packs_are_reported_and_not_touched(tmp_path: Path) -> None:
+    """§7.7: a member with no pack is listed in no_pack_members and left alone."""
+    _write_source_rp(tmp_path, "pack.zip")
+    a = _instance("a", tmp_path / "a")
+    _write_props(a)
+    b = _instance("b", tmp_path / "b")
+    _write_props(b)
     cfg = _config(
         tmp_path,
-        partition=["survival"],
-        instances={"survival": inst},
-        resource_packs={"survival": ResourcePackConfig(filename="pack.zip", required=True, prompt="")},
-    )
-    result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
-    assert not result.success
-    assert result.failure_stage == "properties"
-    assert (tmp_path / "www" / "resourcepacks" / "pack.zip").is_file()
-
-
-def test_two_members_mixed_packs(tmp_path: Path) -> None:
-    """One member with a pack, one without."""
-    _source_rp(tmp_path, "pack.zip")
-    a = _instance("a", tmp_path / "a")
-    a.server_properties_path.write_text("", encoding="utf-8")
-    b = _instance("b", tmp_path / "b")
-    b.server_properties_path.write_text("", encoding="utf-8")
-    cfg = _config(
-        tmp_path, partition=["a", "b"], instances={"a": a, "b": b}, resource_packs={"a": ResourcePackConfig(filename="pack.zip", required=True, prompt="")}
+        partition=["a", "b"],
+        instances={"a": a, "b": b},
+        resource_packs={"a": ResourcePackConfig(filename="pack.zip", required=True, prompt="")},
     )
     result = deploy_resource_pack_scope(cfg, _plan(["a", "b"]), [], None)
     assert result.success

@@ -1,24 +1,26 @@
 # tests/deploy_pack/test_notifications.py
 
-"""Tests for deploy_pack.notifications, per Project_Specs.md v3.0 §10.1.
+"""Tests for deploy_pack.notifications, Project_Specs.md §5.4-§5.16.
 
-Coverage areas (§10.1 required):
-  * bitmask per scope combo (delegated to preflight; rendered sections here)
-  * empty template rejection
-  * missing template skip
-  * malformed placeholder (unknown, invalid-everywhere, cross-template) → exit 3
-  * 2000-char guard
-  * allowed_mentions
-  * container_status scope
-  * failure notification on start failure (smoke; main wires this)
-  * failure_stage selection (post_hook vs health_timeout) - smoke
-  * recovery-path stage preservation - smoke
-  * conditional on --notify
-  * {dry_run_marker} content
-  * {timestamp} format
-  * {requested_scopes} format
-  * internal states (cancelled, exited before stop) not rendered in
-    Discord messages
+Coverage, in spec-section order:
+
+  * §5.4  - Live placeholders
+  * §5.5  - Online placeholders
+  * §5.6  - Failure placeholders
+  * §5.7  - Diagnostic placeholders
+  * §5.8  - the container_status vocabulary and its rendering scope
+  * §5.11 - template validation timing and the four failure modes
+  * §5.12 - notification is best-effort, never authoritative
+  * §5.13 - the 2000-character content guard
+  * §5.14 - allowed_mentions payload
+  * §5.16 - role-mention rendering
+  * §4.6.10 - server section adapter reasons
+  * §4.6.9  - pack_required informational note
+  * §7.7   - the resource-pack section's NOT CONFIGURED form
+
+Rendering and validation are pure; notification dispatch is tested
+against a fake poster that stands in for the requests HTTP call at
+the boundary.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from minecraft.deploy_pack.notifications import (
     STATE_EXITED_BEFORE_STOP,
     STATE_HEALTH_TIMEOUT,
     STATE_ONLINE_HEALTHY,
+    STATE_ONLINE_STARTING,
     STATE_ONLINE_UNHEALTHY,
     STATE_RECOVERY_START_FAILED,
     STATE_RECOVERY_START_SUCCEEDED,
@@ -69,7 +72,8 @@ from minecraft.deploy_pack.notifications import (
 
 
 def _live_ctx(**overrides: Any) -> LiveContext:
-    base = {
+    """Build a LiveContext with sensible defaults for rendering tests."""
+    base: dict[str, Any] = {
         "tool_version": "2.0.0",
         "timestamp": "2026-09-23T12:00:00Z",
         "requested_scopes": ["server", "client"],
@@ -85,109 +89,30 @@ def _live_ctx(**overrides: Any) -> LiveContext:
     return LiveContext(**base)
 
 
-def test_validate_skips_when_not_notify() -> None:
-    """Tests that validation returns no messages when notifications are disabled."""
-    discord = DiscordConfig(live_template=None)
-    assert validate_live_and_failure(discord, notify=False, dry_run=False, has_scope=True) == []
+# ---------------------------------------------------------------------------
+# §5.8: the container-status vocabulary
+# ---------------------------------------------------------------------------
 
 
-def test_validate_live_missing_is_warning_not_failure() -> None:
-    """Missing template → warn, not exit 3 (§5.11)."""
-    discord = DiscordConfig(live_template=None)
-    failures = validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=True)
-    assert failures == []
+def test_state_constants_match_the_spec_strings() -> None:
+    """§5.8: each state constant is the literal string the spec defines."""
+    assert STATE_ONLINE_HEALTHY == "online, healthy"
+    assert STATE_ONLINE_STARTING == "online, starting"
+    assert STATE_ONLINE_UNHEALTHY == "online, unhealthy"
+    assert STATE_STOPPED == "stopped"
+    assert STATE_STOPPED_BY_DEPLOYMENT == "stopped by deployment"
+    assert STATE_RECOVERY_START_FAILED == "recovery start failed"
+    assert STATE_RECOVERY_START_SUCCEEDED == "recovery start succeeded"
+    assert STATE_RELOADED == "reloaded"
+    assert STATE_RELOAD_FAILED == "reload failed"
+    assert STATE_START_FAILED == "start failed"
+    assert STATE_HEALTH_TIMEOUT == "health timeout"
+    assert STATE_CANCELLED == "cancelled"
+    assert STATE_EXITED_BEFORE_STOP == "exited before stop"
 
 
-def test_validate_live_empty_is_failure() -> None:
-    """Tests that an empty live template produces a validation failure mentioning "non-empty"."""
-    discord = DiscordConfig(live_template="")
-    failures = validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=True)
-    assert len(failures) == 1
-    assert "non-empty" in failures[0][1]
-
-
-def test_validate_live_unknown_placeholder() -> None:
-    """Tests that an unknown placeholder in the live template yields a failure referencing the placeholder name."""
-    discord = DiscordConfig(live_template="hello {nonexistent}")
-    failures = validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=True)
-    assert any(("nonexistent" in m for _s, m in failures))
-
-
-def test_validate_live_invalid_everywhere() -> None:
-    """Tests that a placeholder invalid in all contexts produces a failure mentioning "invalid everywhere"."""
-    discord = DiscordConfig(live_template="hello {sha256sum}")
-    failures = validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=True)
-    assert any(("invalid everywhere" in m for _s, m in failures))
-
-
-def test_validate_live_cross_template() -> None:
-    """Tests that cross-template validation failure is reported when live template references a failure-only placeholder with scope."""
-    discord = DiscordConfig(live_template="hello {failure_stage}")
-    failures = validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=True)
-    assert any(("cross-template" in m for _s, m in failures))
-
-
-def test_validate_dry_run_validates_only_live() -> None:
-    """Under --dry-run, only live is validated (§5.11)."""
-    discord = DiscordConfig(live_template="ok {tool_version}", failure_template="{bad}")
-    failures = validate_live_and_failure(discord, notify=True, dry_run=True, has_scope=True)
-    assert failures == []
-
-
-def test_validate_no_scope_uses_diagnostic() -> None:
-    """Tests that live/failure validation succeeds without a scope when only diagnostic templates are used."""
-    discord = DiscordConfig(diagnostic_template="ok {tool_version}", live_template="{bad}")
-    failures = validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=False)
-    assert failures == []
-
-
-def test_validate_no_scope_diagnostic_missing_is_skip() -> None:
-    """Tests that missing diagnostic templates cause live/failure validation to be skipped when no scope is present."""
-    discord = DiscordConfig(diagnostic_template=None)
-    failures = validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=False)
-    assert failures == []
-
-
-def test_validate_online_missing_is_skip() -> None:
-    """Tests that a missing online template is skipped and returns no validation failures."""
-    assert validate_online(DiscordConfig(online_template=None)) == []
-
-
-def test_validate_online_valid() -> None:
-    """Tests that a valid online template with allowed placeholders passes validation."""
-    discord = DiscordConfig(online_template="{tool_version} {timestamp} {container_status}")
-    assert validate_online(discord) == []
-
-
-def test_validate_online_cross_template() -> None:
-    """Tests that using a placeholder from another template reports a cross-template failure."""
-    discord = DiscordConfig(online_template="{failure_stage}")
-    failures = validate_online(discord)
-    assert any(("cross-template" in m for _s, m in failures))
-
-
-def test_validate_online_empty_is_error() -> None:
-    """Tests that an empty online template reports a non-empty requirement failure."""
-    discord = DiscordConfig(online_template="")
-    failures = validate_online(discord)
-    assert any(("non-empty" in m for _s, m in failures))
-
-
-def test_validate_diagnostic_ok() -> None:
-    """Tests that a valid diagnostic template with allowed placeholders passes validation."""
-    discord = DiscordConfig(diagnostic_template="test {tool_version} {timestamp}")
-    assert validate_diagnostic(discord) == []
-
-
-def test_render_player_tags() -> None:
-    """Tests rendering of player tags with empty, single, and multiple role IDs."""
-    assert render_player_tags([]) == ""
-    assert render_player_tags(["1"]) == "<@&1>"
-    assert render_player_tags(["1", "2"]) == "<@&1> <@&2>"
-
-
-def test_render_container_status_online_keeps_healthy_only() -> None:
-    """Tests that rendering container status for online state includes only healthy containers."""
+def test_render_container_status_online_keeps_only_healthy() -> None:
+    """§5.8: the online scope renders only online, healthy entries."""
     statuses = {"a": STATE_ONLINE_HEALTHY, "b": STATE_ONLINE_UNHEALTHY, "c": STATE_CANCELLED}
     out = render_container_status(statuses, "online")
     assert "a: online, healthy" in out
@@ -195,8 +120,8 @@ def test_render_container_status_online_keeps_healthy_only() -> None:
     assert "c" not in out
 
 
-def test_render_container_status_failure_excludes_internal() -> None:
-    """Tests that failure scope rendering includes expected statuses and excludes internal ones."""
+def test_render_container_status_failure_excludes_internal_states() -> None:
+    """§5.8: cancelled and exited-before-stop are CLI-only."""
     statuses = {
         "a": STATE_STOPPED_BY_DEPLOYMENT,
         "b": STATE_RECOVERY_START_FAILED,
@@ -208,25 +133,24 @@ def test_render_container_status_failure_excludes_internal() -> None:
     assert "a: stopped by deployment" in out
     assert "b: recovery start failed" in out
     assert "c: health timeout" in out
-    lines = out.splitlines()
-    assert not any(line.startswith("- d:") for line in lines)
-    assert not any(line.startswith("- e:") for line in lines)
+    assert not any(line.startswith("- d:") for line in out.splitlines())
+    assert not any(line.startswith("- e:") for line in out.splitlines())
 
 
-def test_render_container_status_empty_placeholder() -> None:
-    """Tests that rendering an empty status mapping returns the none placeholder."""
+def test_render_container_status_empty_renders_none_placeholder() -> None:
+    """§5.8: an empty status renders '- (none)' so the header is not left dangling."""
     assert render_container_status({}, "online") == "- (none)"
     assert render_container_status({}, "failure") == "- (none)"
 
 
-def test_render_container_status_bad_scope() -> None:
-    """Tests that an invalid scope raises a ValueError."""
+def test_render_container_status_rejects_unknown_scope() -> None:
+    """§5.8: scope is 'online' or 'failure'."""
     with pytest.raises(ValueError):
         render_container_status({}, "invalid")
 
 
-def test_render_container_status_all_failure_states() -> None:
-    """Tests that render_container_status includes all containers with failure states."""
+def test_render_container_status_failure_covers_every_state() -> None:
+    """§5.8: the failure scope includes every non-internal state."""
     statuses = {
         "a": STATE_STOPPED,
         "b": STATE_STOPPED_BY_DEPLOYMENT,
@@ -235,15 +159,131 @@ def test_render_container_status_all_failure_states() -> None:
         "e": STATE_RELOAD_FAILED,
         "f": STATE_START_FAILED,
         "g": STATE_HEALTH_TIMEOUT,
+        "h": STATE_ONLINE_HEALTHY,
     }
     out = render_container_status(statuses, "failure")
-    for name in ("a", "b", "c", "d", "e", "f", "g"):
+    for name in ("a", "b", "c", "d", "e", "f", "g", "h"):
         assert name in out
 
 
-def test_render_live_basic() -> None:
-    """Tests basic render_live output with live context values."""
-    template = "{player_tags} **Minecraft Deployment**\n\n{section_server}\n{section_client}\n{section_resource_pack}\n\n{dry_run_marker}\nCompleted {timestamp}\n\nBuilt by deploy_pack {tool_version}"
+# ---------------------------------------------------------------------------
+# §5.16: role-mention rendering
+# ---------------------------------------------------------------------------
+
+
+def test_render_player_tags_empty() -> None:
+    """§5.16: no roles renders an empty string."""
+    assert render_player_tags([]) == ""
+
+
+def test_render_player_tags_single() -> None:
+    """§5.16: one role renders as a Discord role mention."""
+    assert render_player_tags(["1"]) == "<@&1>"
+
+
+def test_render_player_tags_multiple_space_separated() -> None:
+    """§5.16: multiple roles are space-separated."""
+    assert render_player_tags(["1", "2"]) == "<@&1> <@&2>"
+
+
+# ---------------------------------------------------------------------------
+# §5.11: template validation
+# ---------------------------------------------------------------------------
+
+
+def test_validate_returns_nothing_when_notify_disabled() -> None:
+    """§5.11: validation runs only when --notify is active."""
+    discord = DiscordConfig(live_template=None)
+    assert validate_live_and_failure(discord, notify=False, dry_run=False, has_scope=True) == []
+
+
+def test_validate_missing_live_template_is_a_warning_not_a_failure() -> None:
+    """§5.11: a missing template warns and skips; it does not exit 3."""
+    assert validate_live_and_failure(DiscordConfig(live_template=None), notify=True, dry_run=False, has_scope=True) == []
+
+
+def test_validate_empty_live_template_is_a_failure() -> None:
+    """§5.11: an empty template is exit 3."""
+    failures = validate_live_and_failure(DiscordConfig(live_template=""), notify=True, dry_run=False, has_scope=True)
+    assert len(failures) == 1
+    assert "non-empty" in failures[0][1]
+
+
+def test_validate_unknown_placeholder_is_a_failure() -> None:
+    """§5.11: a placeholder in no template's set is malformed."""
+    failures = validate_live_and_failure(DiscordConfig(live_template="hello {nonexistent}"), notify=True, dry_run=False, has_scope=True)
+    assert any("nonexistent" in m for _s, m in failures)
+
+
+def test_validate_invalid_everywhere_placeholder_is_a_failure() -> None:
+    """§5.11: a placeholder from the §11.3 'invalid everywhere' set is exit 3."""
+    failures = validate_live_and_failure(DiscordConfig(live_template="hello {sha256sum}"), notify=True, dry_run=False, has_scope=True)
+    assert any("invalid everywhere" in m for _s, m in failures)
+
+
+def test_validate_cross_template_placeholder_is_a_failure() -> None:
+    """§5.11: a placeholder valid in another template but not this one is exit 3."""
+    failures = validate_live_and_failure(DiscordConfig(live_template="hello {failure_stage}"), notify=True, dry_run=False, has_scope=True)
+    assert any("cross-template" in m for _s, m in failures)
+
+
+def test_validate_dry_run_validates_only_live() -> None:
+    """§5.11: under --dry-run, only the live template is reachable."""
+    discord = DiscordConfig(live_template="ok {tool_version}", failure_template="{not_a_placeholder}")
+    assert validate_live_and_failure(discord, notify=True, dry_run=True, has_scope=True) == []
+
+
+def test_validate_no_scope_validates_diagnostic() -> None:
+    """§5.11: with no scope, the diagnostic template is validated and live/failure are not."""
+    discord = DiscordConfig(diagnostic_template="ok {tool_version}", live_template="{bad}")
+    assert validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=False) == []
+
+
+def test_validate_no_scope_missing_diagnostic_is_skip() -> None:
+    """§5.11: a missing diagnostic template warns and skips."""
+    assert validate_live_and_failure(DiscordConfig(diagnostic_template=None), notify=True, dry_run=False, has_scope=False) == []
+
+
+def test_validate_online_missing_is_skip() -> None:
+    """§5.11: a missing online template warns and skips."""
+    assert validate_online(DiscordConfig(online_template=None)) == []
+
+
+def test_validate_online_valid() -> None:
+    """§5.11: the online placeholder set is accepted."""
+    assert validate_online(DiscordConfig(online_template="{tool_version} {timestamp} {container_status}")) == []
+
+
+def test_validate_online_cross_template() -> None:
+    """§5.11: a failure-only placeholder in the online template is exit 3."""
+    failures = validate_online(DiscordConfig(online_template="{failure_stage}"))
+    assert any("cross-template" in m for _s, m in failures)
+
+
+def test_validate_online_empty_is_error() -> None:
+    """§5.11: an empty online template is exit 3."""
+    failures = validate_online(DiscordConfig(online_template=""))
+    assert any("non-empty" in m for _s, m in failures)
+
+
+def test_validate_diagnostic_accepts_only_its_own_placeholders() -> None:
+    """§5.7: only {tool_version} and {timestamp} are valid in the diagnostic template."""
+    assert validate_diagnostic(DiscordConfig(diagnostic_template="test {tool_version} {timestamp}")) == []
+
+
+# ---------------------------------------------------------------------------
+# §5.4: render_live
+# ---------------------------------------------------------------------------
+
+
+def test_render_live_substitutes_every_placeholder() -> None:
+    """§5.4: every live placeholder is substituted."""
+    template = (
+        "{player_tags} **Minecraft Deployment**\n\n"
+        "{section_server}\n{section_client}\n{section_resource_pack}\n\n"
+        "{dry_run_marker}\nCompleted {timestamp}\n\n"
+        "Built by deploy_pack {tool_version}"
+    )
     out = render_live(template, _live_ctx())
     assert "<@&111>" in out
     assert "### Server" in out
@@ -253,43 +293,52 @@ def test_render_live_basic() -> None:
     assert "2026-09-23T12:00:00Z" in out
 
 
-def test_render_live_dry_run_marker() -> None:
-    """Tests the dry-run marker rendering for enabled and disabled dry-run modes."""
-    template = "[{dry_run_marker}]"
-    assert render_live(template, _live_ctx(dry_run=True)) == "[DRY RUN - no changes applied]"
-    assert render_live(template, _live_ctx(dry_run=False)) == "[]"
+def test_render_live_dry_run_marker_is_the_spec_string_when_true() -> None:
+    """§5.4: the dry-run marker is 'DRY RUN - no changes applied' under --dry-run."""
+    assert render_live("[{dry_run_marker}]", _live_ctx(dry_run=True)) == "[DRY RUN - no changes applied]"
 
 
-def test_render_live_instance_list_and_count() -> None:
-    """Tests that render_live renders instance count and instance list correctly."""
-    template = "{instance_count}: {instance_list}"
-    out = render_live(template, _live_ctx())
-    assert out == "2: creative, survival"
+def test_render_live_dry_run_marker_is_empty_when_false() -> None:
+    """§5.4: the dry-run marker is empty under a normal deploy."""
+    assert render_live("[{dry_run_marker}]", _live_ctx(dry_run=False)) == "[]"
 
 
-def test_render_live_requested_scopes() -> None:
-    """Tests that render_live renders requested scopes with default and custom values."""
-    template = "{requested_scopes}"
-    assert render_live(template, _live_ctx()) == "server, client"
-    assert render_live(template, _live_ctx(requested_scopes=["server", "client", "resource-pack"])) == "server, client, resource-pack"
+def test_render_live_instance_count_and_list() -> None:
+    """§5.4: instance_count is the integer count; instance_list is comma-and-space separated."""
+    assert render_live("{instance_count}: {instance_list}", _live_ctx()) == "2: creative, survival"
 
 
-def test_render_live_operator_tags() -> None:
-    """Tests that render_live renders operator role mentions from operator_roles."""
-    template = "{operator_tags}"
-    assert render_live(template, _live_ctx(operator_roles=["9", "8"])) == "<@&9> <@&8>"
+def test_render_live_requested_scopes_is_comma_and_space_separated() -> None:
+    """§5.4: requested_scopes follows the fixed order server, client, resource-pack."""
+    assert render_live("{requested_scopes}", _live_ctx()) == "server, client"
+    assert render_live("{requested_scopes}", _live_ctx(requested_scopes=["server", "client", "resource-pack"])) == "server, client, resource-pack"
 
 
-def test_render_online() -> None:
-    """Tests that render_online formats player tags, container status, and tool version correctly."""
-    ctx = OnlineContext(tool_version="2.0.0", timestamp="2026-09-23T12:00:00Z", player_roles=["1"], container_status={"a": STATE_ONLINE_HEALTHY})
+def test_render_live_operator_tags_uses_operator_roles() -> None:
+    """§5.16: operator_tags is the operator role mention list."""
+    assert render_live("{operator_tags}", _live_ctx(operator_roles=["9", "8"])) == "<@&9> <@&8>"
+
+
+# ---------------------------------------------------------------------------
+# §5.5 / §5.6 / §5.7: render_online / render_failure / render_diagnostic
+# ---------------------------------------------------------------------------
+
+
+def test_render_online_substitutes_its_placeholders() -> None:
+    """§5.5: online renders player_tags, container_status, tool_version, timestamp."""
+    ctx = OnlineContext(
+        tool_version="2.0.0",
+        timestamp="2026-09-23T12:00:00Z",
+        player_roles=["1"],
+        container_status={"a": STATE_ONLINE_HEALTHY},
+    )
     out = render_online("{player_tags}\n{container_status}\n{tool_version}", ctx)
     assert "<@&1>" in out
     assert "a: online, healthy" in out
 
 
-def test_render_failure() -> None:
-    """Tests that render_failure formats failure stage, error, and container status correctly."""
+def test_render_failure_substitutes_its_placeholders() -> None:
+    """§5.6: failure renders failure_stage, error, container_status, operator_tags."""
     ctx = FailureContext(
         tool_version="2.0.0",
         timestamp="2026-09-23T12:00:00Z",
@@ -305,130 +354,31 @@ def test_render_failure() -> None:
     assert "b: cancelled" not in out
 
 
-def test_render_diagnostic() -> None:
-    """Tests that render_diagnostic substitutes context values in a template."""
+def test_render_diagnostic_substitutes_its_placeholders() -> None:
+    """§5.7: diagnostic renders tool_version and timestamp."""
     ctx = DiagnosticContext(tool_version="2.0.0", timestamp="2026-09-23T12:00:00Z")
     out = render_diagnostic("test {tool_version} {timestamp}", ctx)
     assert "2.0.0" in out
     assert "2026-09-23T12:00:00Z" in out
 
 
-class FakePoster:
-    """A callable fake poster that records calls and returns a configurable result."""
-
-    def __init__(self, ok: bool = True, error: str | None = None) -> None:
-        self.ok = ok
-        self.error = error
-        self.calls: list[dict[str, Any]] = []
-
-    def __call__(self, url: str, content: str, allowed_mentions: dict, timeout: float) -> tuple[bool, str | None]:
-        """Record the call and return the configured (ok, error) result."""
-        self.calls.append({"url": url, "content": content, "allowed_mentions": allowed_mentions, "timeout": timeout})
-        return (self.ok, self.error)
+# ---------------------------------------------------------------------------
+# §5.4 / §5.13: timestamp format
+# ---------------------------------------------------------------------------
 
 
-def test_notify_live_posts_payload() -> None:
-    """Tests that notify_live posts the rendered payload to the webhook."""
-    poster = FakePoster()
-    ctx = _live_ctx()
-    template = "{tool_version}"
-    result = notify_live(template, ctx, webhook_url="https://discord.example/webhook", all_role_ids=["111", "222"], poster=poster)
-    assert result.success
-    assert len(poster.calls) == 1
-    call = poster.calls[0]
-    assert call["url"] == "https://discord.example/webhook"
-    assert "2.0.0" in call["content"]
+def test_render_timestamp_now_uses_iso_z_format() -> None:
+    """§5.4: the timestamp is RFC 3339 with a Z suffix: %Y-%m-%dT%H:%M:%SZ."""
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", render_timestamp_now())
 
 
-def test_notify_live_allowed_mentions() -> None:
-    """Tests that notify_live constructs allowed_mentions with the given role IDs."""
-    poster = FakePoster()
-    notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=["a", "b"], poster=poster)
-    am = poster.calls[0]["allowed_mentions"]
-    assert am["parse"] == []
-    assert am["roles"] == ["a", "b"]
-    assert am["users"] == []
+# ---------------------------------------------------------------------------
+# §4.6.10: build_server_section
+# ---------------------------------------------------------------------------
 
 
-def test_notify_live_missing_template_skips() -> None:
-    """Tests that notify_live skips when the template is missing."""
-    poster = FakePoster()
-    result = notify_live(None, _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=poster)
-    assert result.skipped
-    assert not result.success
-    assert poster.calls == []
-
-
-def test_notify_live_no_webhook_skips() -> None:
-    """Tests that notify_live skips when no webhook URL is provided."""
-    poster = FakePoster()
-    result = notify_live("x", _live_ctx(), webhook_url=None, all_role_ids=[], poster=poster)
-    assert result.skipped
-    assert not result.success
-
-
-def test_notify_live_2000_char_guard() -> None:
-    """Tests that content exceeding the Discord limit fails without posting."""
-    poster = FakePoster()
-    template = "{tool_version}"
-    ctx = _live_ctx(tool_version="X" * (DISCORD_CONTENT_LIMIT + 1))
-    result = notify_live(template, ctx, webhook_url="https://x", all_role_ids=[], poster=poster)
-    assert not result.success
-    assert "2000" in (result.error or "")
-    assert poster.calls == []
-
-
-def test_notify_live_at_limit_ok() -> None:
-    """Tests that content exactly at the Discord limit succeeds and posts once."""
-    poster = FakePoster()
-    template = "{tool_version}"
-    ctx = _live_ctx(tool_version="X" * DISCORD_CONTENT_LIMIT)
-    result = notify_live(template, ctx, webhook_url="https://x", all_role_ids=[], poster=poster)
-    assert result.success
-    assert len(poster.calls) == 1
-
-
-def test_notify_live_poster_failure_returns_failure() -> None:
-    """Tests that a failed live notification poster returns a failure result containing the error."""
-    poster = FakePoster(ok=False, error="HTTP 500")
-    result = notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=poster)
-    assert not result.success
-    assert "500" in (result.error or "")
-
-
-def test_notify_live_poster_raises_is_caught() -> None:
-    """Tests that an exception raised by the poster during notify_live is caught and returned as a failed result containing the error message."""
-
-    def boom(*a, **kw):
-        raise RuntimeError("boom")
-
-    result = notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=boom)
-    assert not result.success
-    assert "boom" in (result.error or "")
-
-
-def test_notify_online_and_failure_and_diagnostic() -> None:
-    """Tests that notify_online, notify_failure, and notify_diagnostic each post successfully with their respective contexts."""
-    poster = FakePoster()
-    online_ctx = OnlineContext(tool_version="2.0.0", timestamp="2026-09-23T12:00:00Z", container_status={"a": STATE_ONLINE_HEALTHY})
-    r1 = notify_online("up {container_status}", online_ctx, "https://x", [], poster=poster)
-    assert r1.success
-    failure_ctx = FailureContext(
-        tool_version="2.0.0",
-        timestamp="2026-09-23T12:00:00Z",
-        failure_stage="mid_scope_write",
-        error="disk full",
-        container_status={"a": STATE_STOPPED_BY_DEPLOYMENT},
-    )
-    r2 = notify_failure("boom {error} {failure_stage}", failure_ctx, "https://x", [], poster=poster)
-    assert r2.success
-    diag_ctx = DiagnosticContext(tool_version="2.0.0", timestamp="2026-09-23T12:00:00Z")
-    r3 = notify_diagnostic("diag {tool_version}", diag_ctx, "https://x", [], poster=poster)
-    assert r3.success
-
-
-def test_build_server_section_standard() -> None:
-    """Tests that build_server_section renders standard deployment details including mods, Config/KubeJS members, restart action, pack requirement, and change reasons."""
+def test_build_server_section_standard_form() -> None:
+    """§4.6.10: the standard form lists mods, config/kubejs members, action, pack, and reasons."""
     out = build_server_section(
         targeted=False,
         targeted_members=None,
@@ -449,8 +399,8 @@ def test_build_server_section_standard() -> None:
     assert "`mods/*` changed (3 path(s))" in out
 
 
-def test_build_server_section_targeted() -> None:
-    """Tests that build_server_section renders targeted deployment details, skipped mods, changed Config/KubeJS files, and no-restart notice."""
+def test_build_server_section_targeted_form() -> None:
+    """§4.6.10: the targeted form lists the target, notes mods are untouched, and counts config files."""
     out = build_server_section(
         targeted=True,
         targeted_members=["mc-creative"],
@@ -470,44 +420,221 @@ def test_build_server_section_targeted() -> None:
     assert "- No container restart performed" in out
 
 
-def test_build_client_section() -> None:
-    """Tests that build_client_section includes the client heading, zip filename, and SHA-256 hash in its output."""
+def test_build_server_section_pack_required_warning_renders_as_note() -> None:
+    """§4.6.9: the pack_required_warning renders as a '- Note:' line after '- Pack required:'."""
+    out = build_server_section(
+        targeted=False,
+        targeted_members=None,
+        mods_deployed=1,
+        mods_skipped=False,
+        mods_drift=False,
+        config_kubejs_members=[],
+        config_kubejs_changed=0,
+        effective_action="restart+pack",
+        pack_required=True,
+        reasons=[],
+        pack_required_warning="client pack content changed; the current ZIP is stale.",
+    )
+    assert "- Pack required: yes" in out
+    assert "- Note: client pack content changed; the current ZIP is stale." in out
+
+
+def test_build_server_section_pack_required_warning_is_suppressed_by_default() -> None:
+    """§4.6.9: pack_required_warning=None suppresses the '- Note:' line."""
+    out = build_server_section(
+        targeted=False,
+        targeted_members=None,
+        mods_deployed=1,
+        mods_skipped=False,
+        mods_drift=False,
+        config_kubejs_members=[],
+        config_kubejs_changed=0,
+        effective_action="restart+pack",
+        pack_required=True,
+        reasons=[],
+    )
+    assert "- Note:" not in out
+
+
+# ---------------------------------------------------------------------------
+# §5.4: build_client_section
+# ---------------------------------------------------------------------------
+
+
+def test_build_client_section_renders_zip_sha_and_changelog() -> None:
+    """§5.4: the client section carries the ZIP filename, hash, and changelog URL."""
     out = build_client_section(
-        zip_filename="minecraft_client_20260923.zip", sha256="abc123", changelog_url="http://minecraft/downloads/changelog.html", dry_run=False
+        zip_filename="minecraft_client_20260923.zip",
+        sha256="abc123",
+        changelog_url="http://minecraft/downloads/changelog.html",
+        dry_run=False,
     )
     assert "### Client" in out
     assert "minecraft_client_20260923.zip" in out
     assert "abc123" in out
 
 
-def test_build_client_section_dry_run() -> None:
-    """Tests that the client section indicates dry-run mode when requested."""
+def test_build_client_section_dry_run_marks_status() -> None:
+    """§5.4 / §4.17: a dry-run client section indicates no ZIP was written."""
     out = build_client_section(zip_filename=None, sha256=None, changelog_url=None, dry_run=True)
     assert "dry-run" in out
 
 
+# ---------------------------------------------------------------------------
+# §7.7: build_resource_pack_section
+# ---------------------------------------------------------------------------
+
+
 def test_build_resource_pack_section_not_configured() -> None:
-    """Tests the resource pack section output when no pack is configured."""
+    """§7.7: the zero-pack form renders '- Status: NOT CONFIGURED'."""
     out = build_resource_pack_section(configured=False, published_filename=None, members=[], effective_action=None)
     assert "NOT CONFIGURED" in out
 
 
 def test_build_resource_pack_section_configured() -> None:
-    """Tests the resource pack section output when a pack is configured."""
+    """§7.7: the configured form carries the filename, members, and effective action."""
     out = build_resource_pack_section(configured=True, published_filename="pack.zip", members=["survival"], effective_action="restart")
     assert "Published: pack.zip" in out
     assert "Instances: survival" in out
     assert "Restart action: restart" in out
 
 
-def test_timestamp_format() -> None:
-    """Verifies render_timestamp_now returns an ISO 8601 UTC timestamp."""
-    ts = render_timestamp_now()
-    assert re.match("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$", ts)
+# ---------------------------------------------------------------------------
+# §5.12 / §5.13 / §5.14: notification dispatch
+# ---------------------------------------------------------------------------
 
 
-def test_notify_kind_constants() -> None:
-    """Checks that NotifyKind constants have their expected string values."""
+class _FakePoster:
+    """A callable stand-in for the requests.post call at the HTTP boundary."""
+
+    def __init__(self, ok: bool = True, error: str | None = None) -> None:
+        self.ok = ok
+        self.error = error
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, url: str, content: str, allowed_mentions: dict, timeout: float) -> tuple[bool, str | None]:
+        """Record the call and return the configured (ok, error) result."""
+        self.calls.append({"url": url, "content": content, "allowed_mentions": allowed_mentions, "timeout": timeout})
+        return (self.ok, self.error)
+
+
+def test_notify_live_posts_the_rendered_content() -> None:
+    """§5.4 + §5.12: notify_live posts the rendered content to the webhook."""
+    poster = _FakePoster()
+    result = notify_live("{tool_version}", _live_ctx(), webhook_url="https://discord.example/webhook", all_role_ids=["111", "222"], poster=poster)
+    assert result.success
+    assert len(poster.calls) == 1
+    assert poster.calls[0]["url"] == "https://discord.example/webhook"
+    assert "2.0.0" in poster.calls[0]["content"]
+
+
+def test_notify_live_allowed_mentions_shape() -> None:
+    """§5.14: allowed_mentions is {'parse': [], 'roles': [...], 'users': []}."""
+    poster = _FakePoster()
+    notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=["a", "b"], poster=poster)
+    am = poster.calls[0]["allowed_mentions"]
+    assert am["parse"] == []
+    assert am["roles"] == ["a", "b"]
+    assert am["users"] == []
+
+
+def test_notify_live_missing_template_skips() -> None:
+    """§5.11: a missing template skips the notification without posting."""
+    poster = _FakePoster()
+    result = notify_live(None, _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=poster)
+    assert result.skipped
+    assert not result.success
+    assert poster.calls == []
+
+
+def test_notify_live_no_webhook_skips() -> None:
+    """§3.12: a missing webhook URL skips the notification without posting."""
+    poster = _FakePoster()
+    result = notify_live("x", _live_ctx(), webhook_url=None, all_role_ids=[], poster=poster)
+    assert result.skipped
+    assert not result.success
+
+
+def test_notify_live_over_2000_chars_fails_without_posting() -> None:
+    """§5.13: content longer than 2000 characters is not posted."""
+    poster = _FakePoster()
+    ctx = _live_ctx(tool_version="X" * (DISCORD_CONTENT_LIMIT + 1))
+    result = notify_live("{tool_version}", ctx, webhook_url="https://x", all_role_ids=[], poster=poster)
+    assert not result.success
+    assert "2000" in (result.error or "")
+    assert poster.calls == []
+
+
+def test_notify_live_at_exactly_2000_chars_is_posted() -> None:
+    """§5.13: content of exactly 2000 characters is within the limit."""
+    poster = _FakePoster()
+    ctx = _live_ctx(tool_version="X" * DISCORD_CONTENT_LIMIT)
+    result = notify_live("{tool_version}", ctx, webhook_url="https://x", all_role_ids=[], poster=poster)
+    assert result.success
+    assert len(poster.calls) == 1
+
+
+def test_notify_live_poster_failure_is_reported() -> None:
+    """§5.12: a poster failure returns a NotifyResult with the error, not a raise."""
+    poster = _FakePoster(ok=False, error="HTTP 500")
+    result = notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=poster)
+    assert not result.success
+    assert "500" in (result.error or "")
+
+
+def test_notify_live_poster_raising_is_caught() -> None:
+    """§5.12: a raising poster is caught and returned as a failed result."""
+
+    def boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("boom")
+
+    result = notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=boom)
+    assert not result.success
+    assert "boom" in (result.error or "")
+
+
+def test_notify_online_failure_and_diagnostic_round_trip() -> None:
+    """§5.5-§5.7: each notify_* composes its context and dispatches through the poster."""
+    poster = _FakePoster()
+    online = notify_online(
+        "up {container_status}",
+        OnlineContext(tool_version="2.0.0", timestamp="ts", container_status={"a": STATE_ONLINE_HEALTHY}),
+        "https://x",
+        [],
+        poster=poster,
+    )
+    assert online.success
+    failure = notify_failure(
+        "boom {error} {failure_stage}",
+        FailureContext(
+            tool_version="2.0.0",
+            timestamp="ts",
+            failure_stage="mid_scope_write",
+            error="disk full",
+            container_status={"a": STATE_STOPPED_BY_DEPLOYMENT},
+        ),
+        "https://x",
+        [],
+        poster=poster,
+    )
+    assert failure.success
+    diagnostic = notify_diagnostic(
+        "diag {tool_version}",
+        DiagnosticContext(tool_version="2.0.0", timestamp="ts"),
+        "https://x",
+        [],
+        poster=poster,
+    )
+    assert diagnostic.success
+
+
+# ---------------------------------------------------------------------------
+# NotifyKind constants
+# ---------------------------------------------------------------------------
+
+
+def test_notify_kind_constants_match_their_strings() -> None:
+    """The four NotifyKind constants are the spec's kind names."""
     assert NotifyKind.LIVE == "live"
     assert NotifyKind.ONLINE == "online"
     assert NotifyKind.FAILURE == "failure"

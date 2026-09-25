@@ -1,26 +1,21 @@
 # tests/deploy_pack/test_properties.py
 
-"""Tests for deploy_pack.properties, per Project_Specs.md v3.0 §10.1.
+r"""Tests for deploy_pack.properties, Project_Specs.md §7.4.
 
-Required coverage:
-  * existing key replaced
-  * missing key appended (with and without trailing newline, LF and CRLF)
-  * empty file append uses LF
-  * comments preserved
-  * duplicate key handling
-  * value containing '='
-  * non-ASCII bytes
-  * leading whitespace tolerated
-  * empty value written correctly
+Every test in this file traces to a specific clause in §7.4:
 
-Additional coverage:
-  * compute_diff does not write
-  * idempotency (second apply is a no-op)
-  * mixed LF / CRLF preserved line-by-line
-  * multiple edits in one call
-  * '#' in the middle of a value is not a comment
-  * last line without terminator stays without terminator when modified
-  * value comparison is by stripped effective value
+  * binary read/write with per-line EOL preservation
+  * match regex: ^\s*<key>\s*=, replace from the first = to EOL
+  * preserve comments, blank lines, key ordering, unrelated keys
+  * append missing keys with the file's last-line EOL style
+  * empty file appends with \n
+  * duplicate keys: last occurrence authoritative, warn once per key
+  * no-op when the effective value equals the target (§4.4)
+  * missing file -> ConfigError (exit 3)
+
+The four managed keys (§7.4) are
+require-resource-pack, resource-pack, resource-pack-prompt,
+resource-pack-sha1.
 """
 
 from __future__ import annotations
@@ -31,308 +26,91 @@ from pathlib import Path
 import pytest
 
 from minecraft.deploy_pack.errors import ConfigError
-from minecraft.deploy_pack.properties import MANAGED_KEYS, PropertiesDiff, PropertyEdit, apply_edits, compute_diff
+from minecraft.deploy_pack.properties import (
+    MANAGED_KEYS,
+    PropertiesDiff,
+    PropertyChange,
+    PropertyEdit,
+    apply_edits,
+    compute_diff,
+)
+
+# ---------------------------------------------------------------------------
+# §7.4: the four managed keys
+# ---------------------------------------------------------------------------
 
 
-def _write(path: Path, data: bytes) -> None:
-    path.write_bytes(data)
+def test_managed_keys_are_exactly_the_four_from_the_spec() -> None:
+    """§7.4 names four managed keys and no others."""
+    assert (
+        frozenset(
+            {
+                "require-resource-pack",
+                "resource-pack",
+                "resource-pack-prompt",
+                "resource-pack-sha1",
+            }
+        )
+        == MANAGED_KEYS
+    )
 
 
-def _read(path: Path) -> bytes:
-    return path.read_bytes()
+# ---------------------------------------------------------------------------
+# §7.4: missing file -> ConfigError (exit 3)
+# ---------------------------------------------------------------------------
 
 
-def test_compute_diff_missing_file_is_error(tmp_path: Path) -> None:
-    """Tests that compute_diff raises ConfigError when the target file is missing."""
+def test_compute_diff_missing_file_raises_config_error(tmp_path: Path) -> None:
+    """§7.4: a missing server.properties is a preflight error, exit 3."""
     with pytest.raises(ConfigError):
         compute_diff(tmp_path / "nope.properties", [])
 
 
-def test_compute_diff_unchanged_file_empty_diff(tmp_path: Path) -> None:
-    """Tests that compute_diff returns an empty diff when no changes are needed."""
+def test_apply_edits_missing_file_raises_config_error(tmp_path: Path) -> None:
+    """§7.4: apply_edits on a missing file raises ConfigError before any write."""
+    with pytest.raises(ConfigError):
+        apply_edits(tmp_path / "nope.properties", [PropertyEdit("k", "v")])
+
+
+# ---------------------------------------------------------------------------
+# §4.4: "changed" means target value != effective value
+# ---------------------------------------------------------------------------
+
+
+def test_compute_diff_unchanged_file_returns_empty_diff(tmp_path: Path) -> None:
+    """§4.4: a property already matching the target is not a change."""
     p = tmp_path / "server.properties"
-    _write(p, b"require-resource-pack=true\n")
+    p.write_bytes(b"require-resource-pack=true\n")
     diff = compute_diff(p, [PropertyEdit("require-resource-pack", "true")])
     assert isinstance(diff, PropertiesDiff)
     assert not diff.any
     assert diff.changed_keys == []
 
 
-def test_compute_diff_does_not_write(tmp_path: Path) -> None:
-    """Tests that compute_diff does not modify the file on disk."""
+def test_compute_diff_is_read_only(tmp_path: Path) -> None:
+    """compute_diff never writes; mtime is unchanged."""
     p = tmp_path / "server.properties"
-    _write(p, b"require-resource-pack=false\n")
+    p.write_bytes(b"require-resource-pack=false\n")
     before = p.stat().st_mtime_ns
     compute_diff(p, [PropertyEdit("require-resource-pack", "true")])
     assert p.stat().st_mtime_ns == before
-    assert _read(p) == b"require-resource-pack=false\n"
+    assert p.read_bytes() == b"require-resource-pack=false\n"
 
 
-def test_compute_diff_changed_value(tmp_path: Path) -> None:
-    """Tests that compute_diff reports a changed property value.
-
-    Verifies that the returned PropertiesDiff includes the changed key, marks it as present,
-    and records the correct before and after values.
-    """
+def test_apply_edits_no_effective_change_is_a_noop(tmp_path: Path) -> None:
+    """§4.4: no effective change -> the file is not rewritten."""
     p = tmp_path / "server.properties"
-    _write(p, b"require-resource-pack=false\n")
-    diff = compute_diff(p, [PropertyEdit("require-resource-pack", "true")])
-    assert diff.changed_keys == ["require-resource-pack"]
-    assert diff.has("require-resource-pack")
-    c = diff.changes[0]
-    assert c.before == "false"
-    assert c.after == "true"
-
-
-def test_compute_diff_missing_key_before_is_none(tmp_path: Path) -> None:
-    """Tests that computing a diff for a missing key reports the key as changed with a None before value."""
-    p = tmp_path / "server.properties"
-    _write(p, b"some-other-key=x\n")
-    diff = compute_diff(p, [PropertyEdit("resource-pack", "http://example/p.zip")])
-    assert diff.changed_keys == ["resource-pack"]
-    assert diff.changes[0].before is None
-
-
-def test_compute_diff_value_matches_after_strip(tmp_path: Path) -> None:
-    """Effective value is the stripped bytes after '='."""
-    p = tmp_path / "server.properties"
-    _write(p, b"require-resource-pack=   true   \n")
-    diff = compute_diff(p, [PropertyEdit("require-resource-pack", "true")])
+    p.write_bytes(b"a=1\n")
+    before = p.stat().st_mtime_ns
+    diff = apply_edits(p, [PropertyEdit("a", "1")])
     assert not diff.any
+    assert p.stat().st_mtime_ns == before
 
 
-def test_replace_existing_key_simple(tmp_path: Path) -> None:
-    """Tests that an existing key is replaced and a non-empty diff is returned."""
+def test_apply_edits_is_idempotent(tmp_path: Path) -> None:
+    """§4.4: a second apply of the same edits is a no-op."""
     p = tmp_path / "server.properties"
-    _write(p, b"require-resource-pack=false\n")
-    diff = apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
-    assert diff.any
-    assert _read(p) == b"require-resource-pack=true\n"
-
-
-def test_replace_existing_key_preserves_equals_position(tmp_path: Path) -> None:
-    """Whitespace before '=' is preserved; everything after '=' is replaced."""
-    p = tmp_path / "server.properties"
-    _write(p, b"key  =  old\n")
-    apply_edits(p, [PropertyEdit("key", "new")])
-    assert _read(p) == b"key  =new\n"
-
-
-def test_replace_existing_key_leading_whitespace_tolerated(tmp_path: Path) -> None:
-    """Tests that an existing key with leading whitespace is replaced while preserving the whitespace."""
-    p = tmp_path / "server.properties"
-    _write(p, b"   require-resource-pack=true\n")
-    apply_edits(p, [PropertyEdit("require-resource-pack", "false")])
-    assert _read(p) == b"   require-resource-pack=false\n"
-
-
-def test_append_missing_key_with_trailing_newline_lf(tmp_path: Path) -> None:
-    """Tests that a missing key is appended without adding an extra newline when the file ends with an LF."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\n")
-    apply_edits(p, [PropertyEdit("b", "2")])
-    assert _read(p) == b"a=1\nb=2\n"
-
-
-def test_append_missing_key_without_trailing_newline(tmp_path: Path) -> None:
-    """Tests that a missing key is appended with a newline when the file lacks a trailing newline."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1")
-    apply_edits(p, [PropertyEdit("b", "2")])
-    assert _read(p) == b"a=1\nb=2\n"
-
-
-def test_append_missing_key_with_crlf_file(tmp_path: Path) -> None:
-    """Tests that applying an edit appends a missing key using CRLF line endings."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\r\n")
-    apply_edits(p, [PropertyEdit("b", "2")])
-    assert _read(p) == b"a=1\r\nb=2\r\n"
-
-
-def test_append_missing_key_without_trailing_newline_crlf_file(tmp_path: Path) -> None:
-    """Tests appending a missing key to a CRLF file without a trailing newline."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\r\nb=2")
-    apply_edits(p, [PropertyEdit("c", "3")])
-    assert _read(p) == b"a=1\r\nb=2\r\nc=3\r\n"
-
-
-def test_append_empty_file_uses_lf(tmp_path: Path) -> None:
-    """Tests that appending to an empty file uses LF line endings."""
-    p = tmp_path / "server.properties"
-    _write(p, b"")
-    apply_edits(p, [PropertyEdit("a", "1")])
-    assert _read(p) == b"a=1\n"
-
-
-def test_append_to_file_that_is_only_a_newline(tmp_path: Path) -> None:
-    """Tests appending a new property to a file containing only a newline."""
-    p = tmp_path / "server.properties"
-    _write(p, b"\n")
-    apply_edits(p, [PropertyEdit("a", "1")])
-    assert _read(p) == b"\na=1\n"
-
-
-def test_preserves_comments_and_blank_lines(tmp_path: Path) -> None:
-    """Tests that editing a property preserves comments and blank lines in the file."""
-    original = b"# leading comment\n\na=1\n# a comment between keys\nrequire-resource-pack=false\n\nb=2\n"
-    p = tmp_path / "server.properties"
-    _write(p, original)
-    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
-    assert _read(p) == b"# leading comment\n\na=1\n# a comment between keys\nrequire-resource-pack=true\n\nb=2\n"
-
-
-def test_comment_line_containing_managed_key_is_untouched(tmp_path: Path) -> None:
-    """A comment line '# require-resource-pack=true' is not the key."""
-    p = tmp_path / "server.properties"
-    _write(p, b"# require-resource-pack=true\nrequire-resource-pack=false\n")
-    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
-    assert _read(p) == b"# require-resource-pack=true\nrequire-resource-pack=true\n"
-
-
-def test_key_ordering_preserved(tmp_path: Path) -> None:
-    """Tests that editing a property preserves the original ordering of keys."""
-    p = tmp_path / "server.properties"
-    _write(p, b"c=3\na=1\nb=2\n")
-    apply_edits(p, [PropertyEdit("b", "20")])
-    assert _read(p) == b"c=3\na=1\nb=20\n"
-
-
-def test_hash_inside_value_is_not_a_comment(tmp_path: Path) -> None:
-    """Tests that a hash character inside a property value is not treated as a comment.
-
-    Verifies that a value containing '#frag' is parsed as part of the value,
-    so an identical desired value results in no diff.
-    """
-    p = tmp_path / "server.properties"
-    _write(p, b"resource-pack=http://x/p.zip#frag\n")
-    diff = compute_diff(p, [PropertyEdit("resource-pack", "http://x/p.zip#frag")])
-    assert not diff.any
-
-
-def test_value_containing_equals(tmp_path: Path) -> None:
-    """Tests that a property value containing an equals sign produces no diff.
-
-    Verifies that when the current and desired values are identical and contain an
-    equals sign, compute_diff reports no changes.
-    """
-    p = tmp_path / "server.properties"
-    _write(p, b"k=a=b\n")
-    diff = compute_diff(p, [PropertyEdit("k", "a=b")])
-    assert not diff.any
-
-
-def test_value_containing_equals_replaced(tmp_path: Path) -> None:
-    """Tests that a property value containing an equals sign is correctly replaced.
-
-    Verifies that applying a PropertyEdit whose new value contains an equals sign
-    updates the file content as expected, without misinterpreting the value.
-    """
-    p = tmp_path / "server.properties"
-    _write(p, b"k=a=b\n")
-    apply_edits(p, [PropertyEdit("k", "x=y")])
-    assert _read(p) == b"k=x=y\n"
-
-
-def test_empty_value_written_correctly(tmp_path: Path) -> None:
-    """Tests that an empty value is written correctly for an existing property."""
-    p = tmp_path / "server.properties"
-    _write(p, b"resource-pack-prompt=old\n")
-    apply_edits(p, [PropertyEdit("resource-pack-prompt", "")])
-    assert _read(p) == b"resource-pack-prompt=\n"
-
-
-def test_empty_value_from_absent(tmp_path: Path) -> None:
-    """Tests that an empty value is added as a new property when the key is absent."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\n")
-    apply_edits(p, [PropertyEdit("resource-pack-prompt", "")])
-    assert _read(p) == b"a=1\nresource-pack-prompt=\n"
-
-
-def test_empty_value_unchanged_is_noop(tmp_path: Path) -> None:
-    """Tests that applying an edit that sets an empty value to empty is a no-op."""
-    p = tmp_path / "server.properties"
-    _write(p, b"resource-pack-prompt=\n")
-    diff = apply_edits(p, [PropertyEdit("resource-pack-prompt", "")])
-    assert not diff.any
-    assert _read(p) == b"resource-pack-prompt=\n"
-
-
-def test_non_ascii_bytes_in_unrelated_line_preserved(tmp_path: Path) -> None:
-    """Tests that non-ASCII bytes in an unrelated line are preserved when editing another property."""
-    original = "# café\nrequire-resource-pack=false\n".encode()
-    p = tmp_path / "server.properties"
-    _write(p, original)
-    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
-    assert _read(p) == "# café\nrequire-resource-pack=true\n".encode()
-
-
-def test_non_ascii_bytes_in_arbitrary_positions_preserved(tmp_path: Path) -> None:
-    """Tests that non-ASCII bytes in arbitrary positions outside the edited property line are preserved."""
-    original = b"# \xa7 \xe9\nrequire-resource-pack=false\n# \xff\n"
-    p = tmp_path / "server.properties"
-    _write(p, original)
-    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
-    assert _read(p) == b"# \xa7 \xe9\nrequire-resource-pack=true\n# \xff\n"
-
-
-def test_non_ascii_in_managed_value_utf8(tmp_path: Path) -> None:
-    """Tests that a managed property value containing non-ASCII UTF-8 characters produces no diff when unchanged."""
-    p = tmp_path / "server.properties"
-    _write(p, "resource-pack-prompt=café\n".encode())
-    diff = compute_diff(p, [PropertyEdit("resource-pack-prompt", "café")])
-    assert not diff.any
-
-
-def test_per_line_line_endings_preserved(tmp_path: Path) -> None:
-    """CRLF on one line, LF on another: each is preserved as-is."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\r\nb=2\nc=3\r\n")
-    apply_edits(p, [PropertyEdit("b", "20")])
-    assert _read(p) == b"a=1\r\nb=20\nc=3\r\n"
-
-
-def test_modified_last_line_without_terminator(tmp_path: Path) -> None:
-    """Modifying the last line must not invent a trailing newline."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\nb=2")
-    apply_edits(p, [PropertyEdit("b", "20")])
-    assert _read(p) == b"a=1\nb=20"
-
-
-def test_modified_last_line_no_terminator_with_append(tmp_path: Path) -> None:
-    """Modify the last line AND append: append adds the newline."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\nb=2")
-    apply_edits(p, [PropertyEdit("b", "20"), PropertyEdit("c", "3")])
-    assert _read(p) == b"a=1\nb=20\nc=3\n"
-
-
-def test_duplicate_keys_last_replaced_earlier_untouched(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """Tests that for duplicate keys, only the last occurrence is replaced while earlier ones remain untouched."""
-    p = tmp_path / "server.properties"
-    _write(p, b"require-resource-pack=false\n# in between\nrequire-resource-pack=false\n")
-
-    with caplog.at_level(logging.WARNING):
-        diff = apply_edits(p, [PropertyEdit("require-resource-pack", "true")], logger=logging.getLogger("test"))
-    assert diff.any
-    assert _read(p) == b"require-resource-pack=false\n# in between\nrequire-resource-pack=true\n"
-
-
-def test_duplicate_keys_effective_value_is_last(tmp_path: Path) -> None:
-    """If the last occurrence already matches, no change is needed."""
-    p = tmp_path / "server.properties"
-    _write(p, b"k=false\nk=true\n")
-    diff = compute_diff(p, [PropertyEdit("k", "true")])
-    assert not diff.any
-
-
-def test_apply_is_idempotent(tmp_path: Path) -> None:
-    """Tests that applying the same edits twice is idempotent."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\n")
+    p.write_bytes(b"a=1\n")
     first = apply_edits(p, [PropertyEdit("b", "2")])
     assert first.any
     before = p.stat().st_mtime_ns
@@ -341,22 +119,289 @@ def test_apply_is_idempotent(tmp_path: Path) -> None:
     assert p.stat().st_mtime_ns == before
 
 
-def test_multiple_edits_in_one_call(tmp_path: Path) -> None:
-    """Tests that multiple property edits are applied correctly in a single call, updating existing keys, adding new ones, and reporting changed keys in the diff."""
+def test_compute_diff_uses_stripped_effective_value(tmp_path: Path) -> None:
+    """§7.4: effective value is the bytes after the first =, whitespace-stripped."""
     p = tmp_path / "server.properties"
-    _write(p, b"a=1\nresource-pack=old\n")
+    p.write_bytes(b"require-resource-pack=   true   \n")
+    assert not compute_diff(p, [PropertyEdit("require-resource-pack", "true")]).any
+
+
+def test_compute_diff_reports_before_and_after(tmp_path: Path) -> None:
+    """§7.4: a change records (key, before, after)."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"require-resource-pack=false\n")
+    (change,) = compute_diff(p, [PropertyEdit("require-resource-pack", "true")]).changes
+    assert change == PropertyChange(key="require-resource-pack", before="false", after="true")
+
+
+def test_compute_diff_missing_key_reports_before_as_none(tmp_path: Path) -> None:
+    """§7.4: an absent key has before=None; it is a change."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"some-other-key=x\n")
+    (change,) = compute_diff(p, [PropertyEdit("resource-pack", "http://example/p.zip")]).changes
+    assert change.before is None
+
+
+# ---------------------------------------------------------------------------
+# §7.4: replacing an existing key
+# ---------------------------------------------------------------------------
+
+
+def test_replace_existing_key_simple(tmp_path: Path) -> None:
+    """§7.4: replace writes the new value; the rest of the line is preserved."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"require-resource-pack=false\n")
+    assert apply_edits(p, [PropertyEdit("require-resource-pack", "true")]).any
+    assert p.read_bytes() == b"require-resource-pack=true\n"
+
+
+def test_replace_preserves_whitespace_before_equals(tmp_path: Path) -> None:
+    """§7.4: only the value portion is replaced; the = position is preserved."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"key  =  old\n")
+    apply_edits(p, [PropertyEdit("key", "new")])
+    assert p.read_bytes() == b"key  =new\n"
+
+
+def test_replace_preserves_leading_whitespace_before_key(tmp_path: Path) -> None:
+    r"""§7.4: ^\s*<key>\s*= matches; leading whitespace survives the edit."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"   require-resource-pack=true\n")
+    apply_edits(p, [PropertyEdit("require-resource-pack", "false")])
+    assert p.read_bytes() == b"   require-resource-pack=false\n"
+
+
+def test_replace_value_containing_equals(tmp_path: Path) -> None:
+    """§7.4: everything after the first = is the value; embedded = is part of it."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"k=a=b\n")
+    apply_edits(p, [PropertyEdit("k", "x=y")])
+    assert p.read_bytes() == b"k=x=y\n"
+
+
+def test_replace_value_containing_hash_is_not_a_comment(tmp_path: Path) -> None:
+    """§7.4: # inside a value is not a comment."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"resource-pack=http://x/p.zip#frag\n")
+    assert not compute_diff(p, [PropertyEdit("resource-pack", "http://x/p.zip#frag")]).any
+
+
+def test_replace_empty_value(tmp_path: Path) -> None:
+    """§4.15: the empty prompt is written as `key=` with no value."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"resource-pack-prompt=old\n")
+    apply_edits(p, [PropertyEdit("resource-pack-prompt", "")])
+    assert p.read_bytes() == b"resource-pack-prompt=\n"
+
+
+# ---------------------------------------------------------------------------
+# §7.4: appending a missing key
+# ---------------------------------------------------------------------------
+
+
+def test_append_missing_key_file_ends_with_lf(tmp_path: Path) -> None:
+    r"""§7.4: file already ends in \n -> the appended line follows immediately."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\n")
+    apply_edits(p, [PropertyEdit("b", "2")])
+    assert p.read_bytes() == b"a=1\nb=2\n"
+
+
+def test_append_missing_key_file_no_trailing_newline(tmp_path: Path) -> None:
+    """§7.4: file lacks a trailing newline -> one is added before the appended key."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1")
+    apply_edits(p, [PropertyEdit("b", "2")])
+    assert p.read_bytes() == b"a=1\nb=2\n"
+
+
+def test_append_to_empty_file_uses_lf(tmp_path: Path) -> None:
+    r"""§7.4: for an empty file, use \n."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"")
+    apply_edits(p, [PropertyEdit("a", "1")])
+    assert p.read_bytes() == b"a=1\n"
+
+
+def test_append_uses_last_line_eol_crlf(tmp_path: Path) -> None:
+    """§7.4: appended line uses the EOL of the file's last existing line."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\r\n")
+    apply_edits(p, [PropertyEdit("b", "2")])
+    assert p.read_bytes() == b"a=1\r\nb=2\r\n"
+
+
+def test_append_crlf_file_no_trailing_newline(tmp_path: Path) -> None:
+    """§7.4: CRLF file without a final newline gets CRLF before the appended key."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\r\nb=2")
+    apply_edits(p, [PropertyEdit("c", "3")])
+    assert p.read_bytes() == b"a=1\r\nb=2\r\nc=3\r\n"
+
+
+def test_append_empty_value(tmp_path: Path) -> None:
+    """§4.15: an empty prompt value is appended correctly."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\n")
+    apply_edits(p, [PropertyEdit("resource-pack-prompt", "")])
+    assert p.read_bytes() == b"a=1\nresource-pack-prompt=\n"
+
+
+# ---------------------------------------------------------------------------
+# §7.4: preserved content
+# ---------------------------------------------------------------------------
+
+
+def test_preserves_comments_and_blank_lines(tmp_path: Path) -> None:
+    """§7.4: comments and blank lines are preserved verbatim."""
+    original = b"# leading comment\n\na=1\n# between\nrequire-resource-pack=false\n\nb=2\n"
+    p = tmp_path / "server.properties"
+    p.write_bytes(original)
+    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
+    assert p.read_bytes() == b"# leading comment\n\na=1\n# between\nrequire-resource-pack=true\n\nb=2\n"
+
+
+def test_comment_line_containing_key_is_not_the_key(tmp_path: Path) -> None:
+    r"""§7.4: ^\s*<key>\s*= does not match a comment line."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"# require-resource-pack=true\nrequire-resource-pack=false\n")
+    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
+    assert p.read_bytes() == b"# require-resource-pack=true\nrequire-resource-pack=true\n"
+
+
+def test_key_ordering_is_preserved(tmp_path: Path) -> None:
+    """§7.4: an in-place edit does not reorder keys."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"c=3\na=1\nb=2\n")
+    apply_edits(p, [PropertyEdit("b", "20")])
+    assert p.read_bytes() == b"c=3\na=1\nb=20\n"
+
+
+def test_per_line_eol_preserved(tmp_path: Path) -> None:
+    """§7.4: each line's EOL is preserved as-is; mixed LF/CRLF is supported."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\r\nb=2\nc=3\r\n")
+    apply_edits(p, [PropertyEdit("b", "20")])
+    assert p.read_bytes() == b"a=1\r\nb=20\nc=3\r\n"
+
+
+def test_last_line_without_terminator_stays_without_terminator(tmp_path: Path) -> None:
+    """§7.4: an edit to a last line with no terminator must not invent one."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\nb=2")
+    apply_edits(p, [PropertyEdit("b", "20")])
+    assert p.read_bytes() == b"a=1\nb=20"
+
+
+def test_last_line_no_terminator_with_append(tmp_path: Path) -> None:
+    """§7.4: edit last line AND append -> the terminator is added by the append."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\nb=2")
+    apply_edits(p, [PropertyEdit("b", "20"), PropertyEdit("c", "3")])
+    assert p.read_bytes() == b"a=1\nb=20\nc=3\n"
+
+
+def test_non_ascii_bytes_preserved_elsewhere(tmp_path: Path) -> None:
+    """§10.1: non-ASCII bytes in unrelated lines survive an edit."""
+    original = "# café\nrequire-resource-pack=false\n".encode()
+    p = tmp_path / "server.properties"
+    p.write_bytes(original)
+    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
+    assert p.read_bytes() == "# café\nrequire-resource-pack=true\n".encode()
+
+
+def test_non_ascii_bytes_preserved_arbitrary_positions(tmp_path: Path) -> None:
+    """§10.1: arbitrary non-ASCII bytes survive an edit."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"# \xa7 \xe9\nrequire-resource-pack=false\n# \xff\n")
+    apply_edits(p, [PropertyEdit("require-resource-pack", "true")])
+    assert p.read_bytes() == b"# \xa7 \xe9\nrequire-resource-pack=true\n# \xff\n"
+
+
+def test_non_ascii_managed_value_utf8_matches(tmp_path: Path) -> None:
+    """§7.4: managed values are UTF-8; comparison is byte-exact."""
+    p = tmp_path / "server.properties"
+    p.write_bytes("resource-pack-prompt=café\n".encode())
+    assert not compute_diff(p, [PropertyEdit("resource-pack-prompt", "café")]).any
+
+
+# ---------------------------------------------------------------------------
+# §7.4: duplicate keys -- last occurrence authoritative
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_keys_last_replaced_earlier_untouched(tmp_path: Path) -> None:
+    """§7.4: only the last occurrence is rewritten; earlier ones are left alone."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"require-resource-pack=false\n# in between\nrequire-resource-pack=false\n")
+    assert apply_edits(p, [PropertyEdit("require-resource-pack", "true")]).any
+    assert p.read_bytes() == b"require-resource-pack=false\n# in between\nrequire-resource-pack=true\n"
+
+
+def test_duplicate_keys_effective_value_is_last(tmp_path: Path) -> None:
+    """§7.4: comparison uses the last occurrence's effective value."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"k=false\nk=true\n")
+    assert not compute_diff(p, [PropertyEdit("k", "true")]).any
+
+
+def test_duplicate_keys_emits_one_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """§7.4: a single warning per duplicated key per call."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"k=a\nk=b\nk=c\n")
+    with caplog.at_level(logging.WARNING):
+        apply_edits(p, [PropertyEdit("k", "z")], logger=logging.getLogger("test"))
+    assert sum("duplicate" in r.message for r in caplog.records) == 1
+
+
+# ---------------------------------------------------------------------------
+# Multiple edits and edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_edits_in_one_call(tmp_path: Path) -> None:
+    """Multiple edits apply in one atomic write."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\nresource-pack=old\n")
     diff = apply_edits(
-        p, [PropertyEdit("resource-pack", "http://x/p.zip"), PropertyEdit("require-resource-pack", "true"), PropertyEdit("resource-pack-sha1", "abcdef0123")]
+        p,
+        [
+            PropertyEdit("resource-pack", "http://x/p.zip"),
+            PropertyEdit("require-resource-pack", "true"),
+            PropertyEdit("resource-pack-sha1", "abcdef0123"),
+        ],
     )
     assert set(diff.changed_keys) == {"resource-pack", "require-resource-pack", "resource-pack-sha1"}
-    assert _read(p) == b"a=1\nresource-pack=http://x/p.zip\nrequire-resource-pack=true\nresource-pack-sha1=abcdef0123\n"
+    assert p.read_bytes() == b"a=1\nresource-pack=http://x/p.zip\nrequire-resource-pack=true\nresource-pack-sha1=abcdef0123\n"
 
 
-def test_all_four_managed_keys_smoke(tmp_path: Path) -> None:
-    """The four keys this module is specified to manage, end-to-end."""
-    assert frozenset({"require-resource-pack", "resource-pack", "resource-pack-prompt", "resource-pack-sha1"}) == MANAGED_KEYS
+def test_duplicate_edit_keys_last_wins(tmp_path: Path) -> None:
+    """Last edit for a key wins; order of first appearance is preserved."""
     p = tmp_path / "server.properties"
-    _write(p, b"")
+    p.write_bytes(b"")
+    apply_edits(p, [PropertyEdit("k", "first"), PropertyEdit("k", "second")])
+    assert p.read_bytes() == b"k=second\n"
+
+
+def test_empty_edit_list_is_noop(tmp_path: Path) -> None:
+    """An empty edit list touches nothing."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"a=1\n")
+    before = p.stat().st_mtime_ns
+    diff = apply_edits(p, [])
+    assert not diff.any
+    assert p.stat().st_mtime_ns == before
+
+
+# ---------------------------------------------------------------------------
+# §7.4 end-to-end: the four keys, from an empty file
+# ---------------------------------------------------------------------------
+
+
+def test_all_four_managed_keys_written_from_empty_file(tmp_path: Path) -> None:
+    """§7.4: the resource-pack scope writes exactly these four keys."""
+    p = tmp_path / "server.properties"
+    p.write_bytes(b"")
     apply_edits(
         p,
         [
@@ -366,25 +411,14 @@ def test_all_four_managed_keys_smoke(tmp_path: Path) -> None:
             PropertyEdit("resource-pack-sha1", "0123456789abcdef"),
         ],
     )
-    assert (
-        _read(p)
-        == b"require-resource-pack=true\nresource-pack=http://example/pack.zip\nresource-pack-prompt=Please accept\nresource-pack-sha1=0123456789abcdef\n"
+    assert p.read_bytes() == (
+        b"require-resource-pack=true\nresource-pack=http://example/pack.zip\nresource-pack-prompt=Please accept\nresource-pack-sha1=0123456789abcdef\n"
     )
 
 
-def test_duplicate_edit_keys_last_wins(tmp_path: Path) -> None:
-    """Tests that when multiple edits target the same key, the last edit's value is applied."""
+def test_boolean_values_are_lowercase(tmp_path: Path) -> None:
+    """§7.4: booleans are true / false, lowercase."""
     p = tmp_path / "server.properties"
-    _write(p, b"")
-    apply_edits(p, [PropertyEdit("k", "first"), PropertyEdit("k", "second")])
-    assert _read(p) == b"k=second\n"
-
-
-def test_empty_edit_list_is_noop(tmp_path: Path) -> None:
-    """Tests that applying an empty edit list does not modify the file or its modification time."""
-    p = tmp_path / "server.properties"
-    _write(p, b"a=1\n")
-    before = p.stat().st_mtime_ns
-    diff = apply_edits(p, [])
-    assert not diff.any
-    assert p.stat().st_mtime_ns == before
+    p.write_bytes(b"")
+    apply_edits(p, [PropertyEdit("require-resource-pack", "false")])
+    assert p.read_bytes() == b"require-resource-pack=false\n"

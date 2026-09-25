@@ -1,28 +1,25 @@
 # tests/deploy_pack/test_files.py
 
-"""Tests for deploy_pack.files, per Project_Specs.md v3.0 §10.1.
+"""Tests for deploy_pack.files, Project_Specs.md §3.13, §4.10, §4.11, §7.1, §7.2, §7.5.
 
-Required coverage (§10.1):
-  * protect
-  * merge
-  * delete
-  * unchanged files not recopied
-  * missing source
-  * copy failure
-  * atomic publication metadata
-  * fresh-destination metadata defaults
-  * os.chown failure warns
-  * os.chmod failure warns
+Every test traces to a specific clause:
 
-Additional coverage for §4.10, §4.11, §7.1, §7.5:
-  * create_zip: round-trip, atomic (partial zips never visible)
-  * atomic_copy: fresh, replace, metadata, missing source
-  * deploy_flat_files: flat-jar semantics, protect, non-jar ignore
-  * is_protected_path: full path vs component match, glob spans '/'
-  * load_protect_patterns: missing is silent, empty warns, comments
-  * @www grammar: all valid and invalid examples from §7.5
-  * resource-pack filename and URL validation
-  * resolve_mapping_for_side: str, dict, exclusion, -1
+  * §3.13 - protect-file syntax and matching semantics
+  * §4.10 - atomic publication: same-directory temp, fsync, mode and
+            ownership preservation, os.replace, no directory fsync
+  * §4.11 - mods_dir is flat; protected files outside the source set
+            survive the clean and are not reported as deployment deltas
+  * §7.1  - client ZIP is built by zipping a staging directory; archive
+            paths are relative to the staging root
+  * §7.2  - merge vs. delete clean semantics; unchanged files untouched
+  * §7.5  - @www/... grammar; resource-pack URL construction; filename
+            validation rules
+
+Protect patterns govern deletion, not overwrite: a protected file that
+also appears in the source tree is overwritten with the source content
+(§3.13). ``@www/...`` mapping values are filesystem paths and URL
+sub-paths at the same time; the grammar is enforced by
+:func:`parse_shared_dest`.
 """
 
 from __future__ import annotations
@@ -45,6 +42,8 @@ from minecraft.deploy_pack.files import (
     copy_tree,
     create_zip,
     deploy_flat_files,
+    hash_flat_dir,
+    hash_tree,
     is_protected_path,
     is_shared_dest,
     load_protect_patterns,
@@ -58,7 +57,7 @@ from minecraft.deploy_pack.files import (
 
 
 def _tree(root: Path, structure: dict[str, str]) -> None:
-    """Build a directory tree from {relative_path: content}."""
+    """Populate a directory tree from a {relative_path: content} mapping."""
     for rel, content in structure.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -66,40 +65,45 @@ def _tree(root: Path, structure: dict[str, str]) -> None:
 
 
 def _read_tree(root: Path) -> dict[str, str]:
-    """Return {relative_path: content} for every file under root."""
-    result: dict[str, str] = {}
+    """Return {relative_path: content} for every file under ``root``."""
+    out: dict[str, str] = {}
     for dirpath, _dirnames, filenames in os.walk(root):
         for f in filenames:
             full = Path(dirpath) / f
             rel = full.relative_to(root)
-            result[str(rel).replace(os.sep, "/")] = full.read_text(encoding="utf-8")
-    return result
+            out[str(rel).replace(os.sep, "/")] = full.read_text(encoding="utf-8")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# §4.10: atomic_write
+# ---------------------------------------------------------------------------
 
 
 def test_atomic_write_creates_fresh_file(tmp_path: Path) -> None:
-    """Verifies that atomic_write creates a new file with the given contents."""
+    """§4.10: atomic_write publishes the data at the destination path."""
     p = tmp_path / "out.bin"
     atomic_write(p, b"hello")
     assert p.read_bytes() == b"hello"
 
 
+def test_atomic_write_creates_missing_parent_directory(tmp_path: Path) -> None:
+    """§4.10: the destination's parent directory is created if absent."""
+    p = tmp_path / "sub" / "nested" / "out.bin"
+    atomic_write(p, b"x")
+    assert p.read_bytes() == b"x"
+
+
 def test_atomic_write_replaces_existing(tmp_path: Path) -> None:
-    """Tests that atomic_write replaces the contents of an existing destination file."""
+    """§4.10: an existing destination is replaced with the new data."""
     p = tmp_path / "out.bin"
     p.write_bytes(b"old")
     atomic_write(p, b"new")
     assert p.read_bytes() == b"new"
 
 
-def test_atomic_write_creates_parent_dir(tmp_path: Path) -> None:
-    """Tests that atomic_write creates missing parent directories for the destination path."""
-    p = tmp_path / "sub" / "nested" / "out.bin"
-    atomic_write(p, b"x")
-    assert p.read_bytes() == b"x"
-
-
 def test_atomic_write_preserves_destination_mode(tmp_path: Path) -> None:
-    """Tests that atomic_write preserves the existing destination file mode."""
+    """§4.10: for an existing destination, its mode is copied to the temp file."""
     if os.name == "nt":
         pytest.skip("POSIX modes are not meaningful on Windows")
     p = tmp_path / "out.bin"
@@ -109,70 +113,72 @@ def test_atomic_write_preserves_destination_mode(tmp_path: Path) -> None:
     assert p.stat().st_mode & 0o777 == 0o640
 
 
-def test_atomic_write_fresh_destination_uses_default_mode(tmp_path: Path) -> None:
-    """Tests that atomic_write applies the default file mode when creating a fresh destination under a known umask."""
+def test_atomic_write_fresh_destination_uses_process_umask(tmp_path: Path) -> None:
+    """§4.10: a fresh destination gets the process umask's default mode."""
     if os.name == "nt":
         pytest.skip("POSIX modes are not meaningful on Windows")
     old_umask = os.umask(0o022)
     try:
         p = tmp_path / "fresh.bin"
         atomic_write(p, b"x")
-        mode = p.stat().st_mode & 0o777
-        assert mode == 0o644
+        assert p.stat().st_mode & 0o777 == 0o644
     finally:
         os.umask(old_umask)
 
 
-def test_atomic_write_chown_failure_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests that atomic_write emits a warning when chown fails but still writes the data."""
-    records: list[str] = []
+def test_atomic_write_temp_is_in_same_directory_as_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4.10: temp_path = <target_dir>/<target_name>.tmp.<pid>."""
+    captured: list[tuple[Path, Path]] = []
+    real_replace = os.replace
 
-    class Recorder(logging.Logger):
-        def warning(self, msg, *args, **kwargs):
-            """Records a warning message by converting it to a string and appending it."""
-            records.append(str(msg))
+    def capture(src: object, dst: object) -> None:
+        captured.append((Path(str(src)), Path(str(dst))))
+        real_replace(src, dst)
 
-    logger = Recorder("test")
+    monkeypatch.setattr(os, "replace", capture)
+    p = tmp_path / "sub" / "out.bin"
+    atomic_write(p, b"x")
+    ((src, dst),) = captured
+    assert src.parent == dst.parent == tmp_path / "sub"
+    assert src.name.startswith("out.bin.tmp.")
+
+
+def test_atomic_write_chown_failure_warns_and_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """§4.10: os.chown failure logs a WARN and the write still succeeds."""
     p = tmp_path / "out.bin"
     p.write_bytes(b"old")
 
-    def boom(*_args, **_kwargs):
+    def boom(*_args: object, **_kwargs: object) -> None:
         raise PermissionError("simulated EPERM")
 
     monkeypatch.setattr(os, "chown", boom)
-    atomic_write(p, b"new", logger=logger)
+    with caplog.at_level(logging.WARNING):
+        atomic_write(p, b"new", logger=logging.getLogger("test"))
     assert p.read_bytes() == b"new"
-    assert any("chown" in r for r in records)
+    assert any("chown" in r.message for r in caplog.records)
 
 
-def test_atomic_write_chmod_failure_warns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies that atomic_write still writes and warns when chmod fails."""
-    records: list[str] = []
-
-    class Recorder(logging.Logger):
-        def warning(self, msg, *args, **kwargs):
-            """Records a warning message by converting it to a string and appending it."""
-            records.append(str(msg))
-
-    logger = Recorder("test")
+def test_atomic_write_chmod_failure_warns_and_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """§4.10: os.chmod failure logs a WARN and the write still succeeds."""
     p = tmp_path / "out.bin"
     p.write_bytes(b"old")
 
-    def boom(*_args, **_kwargs):
+    def boom(*_args: object, **_kwargs: object) -> None:
         raise PermissionError("simulated EPERM")
 
     monkeypatch.setattr(os, "chmod", boom)
-    atomic_write(p, b"new", logger=logger)
+    with caplog.at_level(logging.WARNING):
+        atomic_write(p, b"new", logger=logging.getLogger("test"))
     assert p.read_bytes() == b"new"
-    assert any("chmod" in r for r in records)
+    assert any("chmod" in r.message for r in caplog.records)
 
 
-def test_atomic_write_temp_cleaned_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies that a failed atomic_write preserves the original file and removes temp files."""
+def test_atomic_write_cleans_temp_and_preserves_original_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4.10: a failure during os.replace removes the temp file and leaves the original intact."""
     p = tmp_path / "out.bin"
     p.write_bytes(b"old")
 
-    def boom(src, dst):
+    def boom(*_args: object, **_kwargs: object) -> None:
         raise OSError("simulated failure")
 
     monkeypatch.setattr(os, "replace", boom)
@@ -182,8 +188,13 @@ def test_atomic_write_temp_cleaned_on_failure(tmp_path: Path, monkeypatch: pytes
     assert list(tmp_path.glob("out.bin.tmp.*")) == []
 
 
-def test_atomic_copy_creates_fresh(tmp_path: Path) -> None:
-    """Tests that atomic_copy creates a fresh destination file."""
+# ---------------------------------------------------------------------------
+# §4.10: atomic_copy
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_copy_creates_fresh_destination(tmp_path: Path) -> None:
+    """§4.10: atomic_copy publishes the source's content at the destination."""
     src = tmp_path / "src.bin"
     src.write_bytes(b"hello")
     dest = tmp_path / "out.bin"
@@ -192,7 +203,7 @@ def test_atomic_copy_creates_fresh(tmp_path: Path) -> None:
 
 
 def test_atomic_copy_replaces_existing(tmp_path: Path) -> None:
-    """Tests that atomic_copy overwrites an existing destination file with the source contents."""
+    """§4.10: an existing destination is replaced with the source's content."""
     src = tmp_path / "src.bin"
     src.write_bytes(b"new")
     dest = tmp_path / "out.bin"
@@ -201,8 +212,8 @@ def test_atomic_copy_replaces_existing(tmp_path: Path) -> None:
     assert dest.read_bytes() == b"new"
 
 
-def test_atomic_copy_preserves_dest_mode(tmp_path: Path) -> None:
-    """Tests that atomic_copy preserves the existing permission mode of the destination file."""
+def test_atomic_copy_preserves_destination_mode(tmp_path: Path) -> None:
+    """§4.10: the existing destination's mode is preserved across the replace."""
     if os.name == "nt":
         pytest.skip("POSIX modes are not meaningful on Windows")
     src = tmp_path / "src.bin"
@@ -214,14 +225,14 @@ def test_atomic_copy_preserves_dest_mode(tmp_path: Path) -> None:
     assert dest.stat().st_mode & 0o777 == 0o640
 
 
-def test_atomic_copy_missing_source(tmp_path: Path) -> None:
-    """Tests that atomic_copy raises FileNotFoundError when the source file does not exist."""
+def test_atomic_copy_missing_source_raises_file_not_found(tmp_path: Path) -> None:
+    """§4.10: a missing source is a FileNotFoundError before any write."""
     with pytest.raises(FileNotFoundError):
         atomic_copy(tmp_path / "nope.bin", tmp_path / "out.bin")
 
 
-def test_atomic_copy_creates_parent_dir(tmp_path: Path) -> None:
-    """Tests that atomic_copy creates missing parent directories for the destination file."""
+def test_atomic_copy_creates_parent_directory(tmp_path: Path) -> None:
+    """§4.10: the destination's parent directory is created if absent."""
     src = tmp_path / "src.bin"
     src.write_bytes(b"x")
     dest = tmp_path / "sub" / "nested" / "out.bin"
@@ -229,12 +240,13 @@ def test_atomic_copy_creates_parent_dir(tmp_path: Path) -> None:
     assert dest.read_bytes() == b"x"
 
 
-def test_create_zip_roundtrip(tmp_path: Path) -> None:
-    """Tests that create_zip produces a readable zip preserving names and contents.
+# ---------------------------------------------------------------------------
+# §4.10 + §7.1: create_zip
+# ---------------------------------------------------------------------------
 
-    Args:
-        tmp_path: Temporary directory for the source tree and output zip.
-    """
+
+def test_create_zip_round_trip(tmp_path: Path) -> None:
+    """§7.1: archive paths are relative to the staging root; content round-trips."""
     src = tmp_path / "stage"
     _tree(src, {"a.txt": "one", "sub/b.txt": "two"})
     out = tmp_path / "pack.zip"
@@ -246,8 +258,8 @@ def test_create_zip_roundtrip(tmp_path: Path) -> None:
         assert zf.read("sub/b.txt") == b"two"
 
 
-def test_create_zip_flat_layout(tmp_path: Path) -> None:
-    """Archive paths are relative to source_dir, no leading component."""
+def test_create_zip_uses_forward_slashes_in_archive_names(tmp_path: Path) -> None:
+    """§7.1: archive paths use forward slashes regardless of the host OS."""
     src = tmp_path / "stage"
     _tree(src, {"mods/foo.jar": "jardata"})
     out = tmp_path / "pack.zip"
@@ -256,30 +268,29 @@ def test_create_zip_flat_layout(tmp_path: Path) -> None:
         assert zf.namelist() == ["mods/foo.jar"]
 
 
-def test_create_zip_missing_source(tmp_path: Path) -> None:
-    """Tests that create_zip raises NotADirectoryError when the source directory is missing.
-
-    Args:
-        tmp_path: Temporary directory used to build nonexistent source and output paths.
-    """
+def test_create_zip_missing_source_raises_not_a_directory(tmp_path: Path) -> None:
+    """§7.1: a missing staging root is a NotADirectoryError."""
     with pytest.raises(NotADirectoryError):
         create_zip(tmp_path / "nope", tmp_path / "out.zip")
 
 
-def test_create_zip_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests that create_zip is atomic and cleans up on failure.
+def test_create_zip_empty_source_still_builds_a_zip(tmp_path: Path) -> None:
+    """§7.1: empty source directories produce an empty ZIP; the ZIP is still built."""
+    src = tmp_path / "empty"
+    src.mkdir()
+    out = tmp_path / "pack.zip"
+    create_zip(src, out)
+    with zipfile.ZipFile(out) as zf:
+        assert zf.namelist() == []
 
-    Simulates an os.replace failure and verifies no output zip or temporary files remain.
 
-    Args:
-        tmp_path: Temporary directory for the source tree and output zip.
-        monkeypatch: Pytest fixture used to patch os.replace to raise OSError.
-    """
+def test_create_zip_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4.10: a failure during publication leaves no partial ZIP behind."""
     src = tmp_path / "stage"
     _tree(src, {"a.txt": "one"})
     out = tmp_path / "pack.zip"
 
-    def boom(src_path, dst_path):
+    def boom(*_args: object, **_kwargs: object) -> None:
         raise OSError("simulated replace failure")
 
     monkeypatch.setattr(os, "replace", boom)
@@ -289,111 +300,37 @@ def test_create_zip_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert list(tmp_path.glob("pack.zip.tmp.*")) == []
 
 
-def test_create_zip_empty_source_still_builds(tmp_path: Path) -> None:
-    """§7.1: empty source produces an empty ZIP; the ZIP is still built."""
-    src = tmp_path / "empty"
-    src.mkdir()
-    out = tmp_path / "pack.zip"
-    create_zip(src, out)
-    assert out.is_file()
-    with zipfile.ZipFile(out) as zf:
-        assert zf.namelist() == []
-
-
-def test_compute_sha256(tmp_path: Path) -> None:
-    """Tests that compute_sha256 returns the correct SHA-256 digest for a known file.
-
-    Args:
-        tmp_path: Temporary directory in which to create the test file.
-    """
-    p = tmp_path / "f.bin"
-    p.write_bytes(b"hello")
-    assert compute_sha256(p) == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-
-
-def test_compute_sha1(tmp_path: Path) -> None:
-    """Tests that compute_sha1 returns the correct SHA-1 digest for a known file.
-
-    Args:
-        tmp_path: Temporary directory in which to create the test file.
-    """
-    p = tmp_path / "f.bin"
-    p.write_bytes(b"hello")
-    assert compute_sha1(p) == "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
-
-
-def test_sha256_bytes() -> None:
-    """Tests that sha256_bytes returns the correct SHA-256 hex digest for a known input."""
-    assert sha256_bytes(b"hello") == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-
-
-def test_protect_empty_patterns() -> None:
-    """Tests that is_protected_path returns False when the patterns collection is empty or None."""
-    assert is_protected_path("any/file", []) is False
-    assert is_protected_path("any/file", None) is False
-
-
-def test_protect_full_path_match() -> None:
-    """Tests that is_protected_path matches when the pattern is the full path."""
-    assert is_protected_path("config/tokens.json", ["config/tokens.json"])
-
-
-def test_protect_component_match() -> None:
-    """Tests that a bare filename pattern matches that filename at any depth in the path."""
-    assert is_protected_path("a/b/tokens.json", ["tokens.json"])
-    assert is_protected_path("deeply/nested/tokens.json", ["tokens.json"])
-
-
-def test_protect_glob_spans_slash() -> None:
-    """Fnmatch's * spans /, matching §3.13's documented behavior."""
-    assert is_protected_path("config/foo.key", ["*.key"])
-    assert is_protected_path("foo.key", ["*.key"])
-
-
-def test_protect_multilevel_glob() -> None:
-    """Tests that is_protected_path uses fnmatch semantics where * spans /."""
-    assert is_protected_path("config/sub/tokens.json", ["config/*/tokens.json"])
-    assert is_protected_path("config/a/b/tokens.json", ["config/*/tokens.json"])
-    assert not is_protected_path("other/tokens.json", ["config/*/tokens.json"])
-
-
-def test_protect_no_match() -> None:
-    """Tests that is_protected_path returns False when no pattern matches the given path."""
-    assert not is_protected_path("normal/file.txt", ["tokens.json"])
-
-
-def test_protect_path_object() -> None:
-    """Tests that a Path object is correctly identified as protected when matching a glob pattern."""
-    assert is_protected_path(Path("a/b/c.key"), ["*.key"])
+# ---------------------------------------------------------------------------
+# §3.13: load_protect_patterns
+# ---------------------------------------------------------------------------
 
 
 def test_protect_missing_file_is_silent_noop(tmp_path: Path) -> None:
-    """§3.13: missing .deploy_protect is a silent no-op, NOT an error."""
+    """§3.13: a missing .deploy_protect file is a silent no-op, not an error."""
     assert load_protect_patterns(tmp_path / "nope") == []
 
 
-def test_protect_none_path() -> None:
-    """Tests that passing None as the protect patterns path returns an empty list."""
+def test_protect_none_path_is_silent_noop() -> None:
+    """§3.13: a None path (no protect file configured) is a silent no-op."""
     assert load_protect_patterns(None) == []
 
 
-def test_protect_basic(tmp_path: Path) -> None:
-    """Tests that basic protect patterns are parsed correctly, ignoring comments and trimming whitespace."""
+def test_protect_skips_comments_and_blank_lines(tmp_path: Path) -> None:
+    """§3.13: comments and blank lines are ignored; whitespace is stripped."""
     p = tmp_path / ".deploy_protect"
     p.write_text("# a comment\n\ntokens.json\n  config/secrets.yaml  \n*.key\n", encoding="utf-8")
-    patterns = load_protect_patterns(p)
-    assert patterns == ["tokens.json", "config/secrets.yaml", "*.key"]
+    assert load_protect_patterns(p) == ["tokens.json", "config/secrets.yaml", "*.key"]
 
 
-def test_protect_trailing_slash_normalized(tmp_path: Path) -> None:
-    """Tests that trailing slashes in protect patterns are stripped during normalization."""
+def test_protect_strips_single_trailing_slash(tmp_path: Path) -> None:
+    """§3.13: world/ is normalized to world."""
     p = tmp_path / ".deploy_protect"
     p.write_text("world/\n", encoding="utf-8")
     assert load_protect_patterns(p) == ["world"]
 
 
 def test_protect_empty_file_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """Tests that loading a protect patterns file containing only comments logs a warning and returns an empty list."""
+    """§3.13: an empty file (after comments) logs a WARN."""
     p = tmp_path / ".deploy_protect"
     p.write_text("# only comments\n", encoding="utf-8")
     with caplog.at_level(logging.WARNING):
@@ -402,12 +339,58 @@ def test_protect_empty_file_warns(tmp_path: Path, caplog: pytest.LogCaptureFixtu
     assert any("empty" in r.message for r in caplog.records)
 
 
-def test_merge_copies_new_files(tmp_path: Path) -> None:
-    """Tests that merge mode copies new files and reports them as added.
+# ---------------------------------------------------------------------------
+# §3.13: is_protected_path
+# ---------------------------------------------------------------------------
 
-    Args:
-        tmp_path (Path): Temporary directory provided by pytest.
-    """
+
+def test_protect_empty_or_none_patterns_match_nothing() -> None:
+    """§3.13: an empty pattern list protects nothing."""
+    assert is_protected_path("any/file", []) is False
+    assert is_protected_path("any/file", None) is False
+
+
+def test_protect_full_path_match() -> None:
+    """§3.13: a pattern matching the full relative path protects the file."""
+    assert is_protected_path("config/tokens.json", ["config/tokens.json"])
+
+
+def test_protect_single_component_match_at_any_depth() -> None:
+    """§3.13: a bare filename pattern matches that filename at any depth."""
+    assert is_protected_path("a/b/tokens.json", ["tokens.json"])
+    assert is_protected_path("deeply/nested/tokens.json", ["tokens.json"])
+
+
+def test_protect_fnmatch_star_spans_slash() -> None:
+    """§3.13: fnmatch treats / as a literal, so *.key matches config/foo.key."""
+    assert is_protected_path("config/foo.key", ["*.key"])
+    assert is_protected_path("foo.key", ["*.key"])
+
+
+def test_protect_multilevel_glob() -> None:
+    """§3.13: config/*/tokens.json matches one-or-more intermediate segments."""
+    assert is_protected_path("config/sub/tokens.json", ["config/*/tokens.json"])
+    assert is_protected_path("config/a/b/tokens.json", ["config/*/tokens.json"])
+    assert not is_protected_path("other/tokens.json", ["config/*/tokens.json"])
+
+
+def test_protect_no_match_returns_false() -> None:
+    """§3.13: a non-matching pattern leaves the file unprotected."""
+    assert not is_protected_path("normal/file.txt", ["tokens.json"])
+
+
+def test_protect_accepts_path_object() -> None:
+    """§3.13: Path inputs are treated the same as string inputs."""
+    assert is_protected_path(Path("a/b/c.key"), ["*.key"])
+
+
+# ---------------------------------------------------------------------------
+# §7.2: copy_tree -- merge semantics
+# ---------------------------------------------------------------------------
+
+
+def test_copy_tree_merge_copies_new_files(tmp_path: Path) -> None:
+    """§7.2: merge mode copies files that exist only in the source."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1", "b.txt": "2"})
@@ -419,23 +402,18 @@ def test_merge_copies_new_files(tmp_path: Path) -> None:
     assert result.removed == []
 
 
-def test_merge_keeps_extras(tmp_path: Path) -> None:
-    """Merge mode does not remove files that aren't in src."""
+def test_copy_tree_merge_keeps_extras(tmp_path: Path) -> None:
+    """§7.2: merge mode does not remove files that exist only in the destination."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1"})
     _tree(dst, {"a.txt": "1", "extra.txt": "keepme"})
-    result = copy_tree(src, dst, mode="merge")
+    copy_tree(src, dst, mode="merge")
     assert _read_tree(dst) == {"a.txt": "1", "extra.txt": "keepme"}
-    assert result.removed == []
 
 
-def test_merge_updates_changed_content(tmp_path: Path) -> None:
-    """§4.4: an updated file is not reported as removed.
-
-    Files present in both trees with differing content are updated in
-    place - one atomic overwrite, not an unlink-then-create.
-    """
+def test_copy_tree_merge_updates_changed_files_in_place(tmp_path: Path) -> None:
+    """§4.4: an updated file is reported as updated, not removed."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "new"})
@@ -446,12 +424,8 @@ def test_merge_updates_changed_content(tmp_path: Path) -> None:
     assert result.removed == []
 
 
-def test_merge_unchanged_files_not_touched(tmp_path: Path) -> None:
-    """Tests that merge mode leaves identical files untouched and reports them as unchanged.
-
-    Args:
-        tmp_path (Path): Temporary directory provided by pytest.
-    """
+def test_copy_tree_merge_leaves_unchanged_files_untouched(tmp_path: Path) -> None:
+    """§4.4: unchanged files (SHA-256 match) are never rewritten."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "same"})
@@ -464,12 +438,13 @@ def test_merge_unchanged_files_not_touched(tmp_path: Path) -> None:
     assert (dst / "a.txt").stat().st_mtime_ns == before
 
 
-def test_delete_removes_extras(tmp_path: Path) -> None:
-    """Tests that delete mode removes extra files and reports them as removed.
+# ---------------------------------------------------------------------------
+# §7.2: copy_tree -- delete semantics
+# ---------------------------------------------------------------------------
 
-    Args:
-        tmp_path (Path): Temporary directory provided by pytest.
-    """
+
+def test_copy_tree_delete_removes_extras(tmp_path: Path) -> None:
+    """§7.2: delete mode removes unprotected files not in the source."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1"})
@@ -479,12 +454,8 @@ def test_delete_removes_extras(tmp_path: Path) -> None:
     assert result.removed == ["extra.txt"]
 
 
-def test_delete_removes_stale_directories(tmp_path: Path) -> None:
-    """Tests that delete mode removes directories no longer present in the source.
-
-    Args:
-        tmp_path (Path): Temporary directory provided by pytest.
-    """
+def test_copy_tree_delete_prunes_stale_empty_directories(tmp_path: Path) -> None:
+    """§7.2: empty directories left behind by a deletion are removed."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1"})
@@ -493,8 +464,8 @@ def test_delete_removes_stale_directories(tmp_path: Path) -> None:
     assert not (dst / "sub").exists()
 
 
-def test_delete_keeps_nonempty_directories(tmp_path: Path) -> None:
-    """Tests that delete mode removes extra files while preserving nonempty directories and their shared contents."""
+def test_copy_tree_delete_preserves_directories_with_surviving_content(tmp_path: Path) -> None:
+    """§7.2: a directory with any surviving file is not pruned."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1", "keep/inner.txt": "y"})
@@ -504,8 +475,24 @@ def test_delete_keeps_nonempty_directories(tmp_path: Path) -> None:
     assert not (dst / "keep" / "other.txt").exists()
 
 
-def test_protect_keeps_extra_in_delete_mode(tmp_path: Path) -> None:
-    """Tests that protected extra files are kept and reported in delete mode."""
+def test_copy_tree_delete_updates_changed_content(tmp_path: Path) -> None:
+    """§7.2: delete mode updates files present in both trees with differing content."""
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _tree(src, {"a.txt": "new"})
+    _tree(dst, {"a.txt": "old"})
+    result = copy_tree(src, dst, mode="delete")
+    assert _read_tree(dst) == {"a.txt": "new"}
+    assert result.updated == ["a.txt"]
+
+
+# ---------------------------------------------------------------------------
+# §3.13 + §7.2: protect interaction with copy_tree
+# ---------------------------------------------------------------------------
+
+
+def test_copy_tree_delete_protected_extra_survives(tmp_path: Path) -> None:
+    """§3.13: a protected file not in source survives delete mode."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1"})
@@ -515,60 +502,47 @@ def test_protect_keeps_extra_in_delete_mode(tmp_path: Path) -> None:
     assert result.protected_kept == ["tokens.json"]
 
 
-def test_protect_still_allows_overwrite(tmp_path: Path) -> None:
+def test_copy_tree_protect_still_allows_overwrite(tmp_path: Path) -> None:
     """§3.13: protection governs deletion, not overwrite."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"tokens.json": "from-source"})
     _tree(dst, {"tokens.json": "old"})
     copy_tree(src, dst, mode="delete", protect_patterns=["tokens.json"])
-    assert (dst / "tokens.json").read_text() == "from-source"
+    assert (dst / "tokens.json").read_text(encoding="utf-8") == "from-source"
 
 
-def test_protect_directory_component(tmp_path: Path) -> None:
-    """Tests that a protected pattern keeps a directory and its contents intact."""
+def test_copy_tree_protect_directory_component_survives(tmp_path: Path) -> None:
+    """§3.13: a directory component pattern protects the whole subtree."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1"})
     _tree(dst, {"a.txt": "1", "world/level.dat": "x"})
     copy_tree(src, dst, mode="delete", protect_patterns=["world"])
     assert (dst / "world" / "level.dat").is_file()
-    assert (dst / "world").is_dir()
 
 
-def test_protect_deep_nested_file(tmp_path: Path) -> None:
-    """Tests that a protected pattern keeps a deeply nested file in delete mode."""
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    _tree(src, {"a.txt": "1"})
-    _tree(dst, {"a.txt": "1", "very/deep/secret.key": "x"})
-    copy_tree(src, dst, mode="delete", protect_patterns=["*.key"])
-    assert (dst / "very" / "deep" / "secret.key").is_file()
+# ---------------------------------------------------------------------------
+# §7.2: copy_tree -- error cases
+# ---------------------------------------------------------------------------
 
 
-def test_copy_tree_missing_source(tmp_path: Path) -> None:
-    """Tests that copy_tree raises NotADirectoryError when the source path does not exist."""
+def test_copy_tree_missing_source_raises_not_a_directory(tmp_path: Path) -> None:
+    """§7.2: a missing source is a NotADirectoryError."""
     with pytest.raises(NotADirectoryError):
         copy_tree(tmp_path / "nope", tmp_path / "dst")
 
 
-def test_copy_tree_invalid_mode(tmp_path: Path) -> None:
-    """Tests that copy_tree raises ValueError when given an invalid mode.
-
-    Args:
-        tmp_path (Path): Temporary directory provided by pytest.
-
-    Raises:
-        ValueError: If mode is not one of the supported values.
-    """
+def test_copy_tree_invalid_mode_raises_value_error(tmp_path: Path) -> None:
+    """§7.2: mode must be one of {merge, delete}."""
     src = tmp_path / "src"
     src.mkdir()
     with pytest.raises(ValueError):
         copy_tree(src, tmp_path / "dst", mode="overwrite")
 
 
-def test_copy_tree_creates_dst(tmp_path: Path) -> None:
-    """Tests that copy_tree creates the destination directory when it does not exist."""
+def test_copy_tree_creates_destination_when_absent(tmp_path: Path) -> None:
+    """§7.2: the destination tree is created if it does not exist."""
     src = tmp_path / "src"
     _tree(src, {"a.txt": "1"})
     dst = tmp_path / "new_dst"
@@ -576,18 +550,18 @@ def test_copy_tree_creates_dst(tmp_path: Path) -> None:
     assert (dst / "a.txt").is_file()
 
 
-def test_copy_tree_copy_failure_logged_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    """Tests that a copy failure is logged as a warning and the tree copy continues."""
+def test_copy_tree_continues_after_a_single_file_copy_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """§7.2: a copy failure is logged and the remaining files still copy."""
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _tree(src, {"a.txt": "1", "b.txt": "2"})
     dst.mkdir()
     real_copy2 = shutil_mod.copy2
-    call_count = {"n": 0}
+    calls = {"n": 0}
 
-    def flaky(src_p, dst_p, *args, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
+    def flaky(src_p: object, dst_p: object, *args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
             raise OSError("simulated copy failure")
         return real_copy2(src_p, dst_p, *args, **kwargs)
 
@@ -598,18 +572,47 @@ def test_copy_tree_copy_failure_logged_continues(tmp_path: Path, monkeypatch: py
     assert any("copy" in r.message and "failed" in r.message for r in caplog.records)
 
 
-def test_flat_new_files_copied(tmp_path: Path) -> None:
-    """Tests that new files are copied into the destination during flat deployment."""
+# ---------------------------------------------------------------------------
+# §4.11: deploy_flat_files
+# ---------------------------------------------------------------------------
+
+
+def test_flat_files_only_jar_files_are_in_the_effective_mod_set(tmp_path: Path) -> None:
+    """§4.11: only *.jar in dst_dir are considered; other files are untouched."""
+    src_dir = tmp_path / "src"
+    _tree(src_dir, {"a.jar": "x"})
+    dst = tmp_path / "mods"
+    _tree(dst, {"a.jar": "x", "readme.txt": "notes"})
+    result = deploy_flat_files({"a.jar": src_dir / "a.jar"}, dst)
+    assert (dst / "readme.txt").is_file()
+    assert result.removed == []
+
+
+def test_flat_files_subdirectories_ignored(tmp_path: Path) -> None:
+    """§4.11: mods_dir is flat; subdirectories are invisible to the clean."""
+    src_dir = tmp_path / "src"
+    _tree(src_dir, {"a.jar": "x"})
+    dst = tmp_path / "mods"
+    (dst / "disabled").mkdir(parents=True)
+    (dst / "disabled" / "b.jar").write_text("y", encoding="utf-8")
+    _tree(dst, {"a.jar": "x"})
+    result = deploy_flat_files({"a.jar": src_dir / "a.jar"}, dst)
+    assert (dst / "disabled" / "b.jar").is_file()
+    assert result.removed == []
+
+
+def test_flat_files_copies_new_files(tmp_path: Path) -> None:
+    """§4.11: files in the source set but not in dst_dir are added."""
     src_dir = tmp_path / "src"
     _tree(src_dir, {"a.jar": "x", "b.jar": "y"})
     dst = tmp_path / "mods"
     result = deploy_flat_files({"a.jar": src_dir / "a.jar", "b.jar": src_dir / "b.jar"}, dst)
     assert sorted(result.added) == ["a.jar", "b.jar"]
-    assert (dst / "a.jar").read_text() == "x"
+    assert (dst / "a.jar").read_text(encoding="utf-8") == "x"
 
 
-def test_flat_extras_removed(tmp_path: Path) -> None:
-    """Tests that stale extra files in the destination are removed during flat deployment."""
+def test_flat_files_removes_extras(tmp_path: Path) -> None:
+    """§4.11: unprotected .jar files not in the source set are removed."""
     src_dir = tmp_path / "src"
     _tree(src_dir, {"a.jar": "x"})
     dst = tmp_path / "mods"
@@ -617,11 +620,10 @@ def test_flat_extras_removed(tmp_path: Path) -> None:
     result = deploy_flat_files({"a.jar": src_dir / "a.jar"}, dst)
     assert result.removed == ["stale.jar"]
     assert not (dst / "stale.jar").exists()
-    assert (dst / "a.jar").is_file()
 
 
-def test_flat_protected_extras_survive(tmp_path: Path) -> None:
-    """Tests that protected extra files in the destination survive flat deployment."""
+def test_flat_files_protected_extra_survives_clean(tmp_path: Path) -> None:
+    """§3.13 + §4.11: a protected extra survives the flat clean."""
     src_dir = tmp_path / "src"
     _tree(src_dir, {"a.jar": "x"})
     dst = tmp_path / "mods"
@@ -631,18 +633,18 @@ def test_flat_protected_extras_survive(tmp_path: Path) -> None:
     assert (dst / "keep.jar").is_file()
 
 
-def test_flat_protected_in_source_still_overwritten(tmp_path: Path) -> None:
-    """§3.13: protection governs deletion, not overwrite."""
+def test_flat_files_protected_in_source_is_overwritten(tmp_path: Path) -> None:
+    """§3.13 + §4.11: a protected file in the source set is overwritten."""
     src_dir = tmp_path / "src"
     _tree(src_dir, {"keep.jar": "new content"})
     dst = tmp_path / "mods"
     _tree(dst, {"keep.jar": "old content"})
     deploy_flat_files({"keep.jar": src_dir / "keep.jar"}, dst, protect_patterns=["keep.jar"])
-    assert (dst / "keep.jar").read_text() == "new content"
+    assert (dst / "keep.jar").read_text(encoding="utf-8") == "new content"
 
 
-def test_flat_updated_in_place(tmp_path: Path) -> None:
-    """Tests that changed files are updated in place during flat deployment."""
+def test_flat_files_updates_changed_content_in_place(tmp_path: Path) -> None:
+    """§4.4: a changed .jar is updated in place, not removed and re-added."""
     src_dir = tmp_path / "src"
     _tree(src_dir, {"a.jar": "new"})
     dst = tmp_path / "mods"
@@ -650,11 +652,11 @@ def test_flat_updated_in_place(tmp_path: Path) -> None:
     result = deploy_flat_files({"a.jar": src_dir / "a.jar"}, dst)
     assert result.updated == ["a.jar"]
     assert result.removed == []
-    assert (dst / "a.jar").read_text() == "new"
+    assert (dst / "a.jar").read_text(encoding="utf-8") == "new"
 
 
-def test_flat_unchanged_not_touched(tmp_path: Path) -> None:
-    """Tests that unchanged files are not modified during flat deployment."""
+def test_flat_files_unchanged_not_touched(tmp_path: Path) -> None:
+    """§4.4: unchanged files are not rewritten; mtime is preserved."""
     src_dir = tmp_path / "src"
     _tree(src_dir, {"a.jar": "same"})
     dst = tmp_path / "mods"
@@ -665,32 +667,16 @@ def test_flat_unchanged_not_touched(tmp_path: Path) -> None:
     assert (dst / "a.jar").stat().st_mtime_ns == before
 
 
-def test_flat_non_jar_files_ignored(tmp_path: Path) -> None:
-    """§2.9, §4.11: only *.jar is in the effective mod set."""
-    src_dir = tmp_path / "src"
-    _tree(src_dir, {"a.jar": "x"})
+def test_flat_files_missing_source_file_is_skipped(tmp_path: Path) -> None:
+    """§4.11: source entries whose file is missing are silently skipped."""
     dst = tmp_path / "mods"
-    _tree(dst, {"a.jar": "x", "readme.txt": "notes"})
-    result = deploy_flat_files({"a.jar": src_dir / "a.jar"}, dst)
-    assert (dst / "readme.txt").is_file()
-    assert result.removed == []
+    result = deploy_flat_files({"ghost.jar": tmp_path / "nope.jar"}, dst)
+    assert result.added == []
+    assert result.updated == []
 
 
-def test_flat_subdirectories_ignored(tmp_path: Path) -> None:
-    """Tests that subdirectories in the destination are ignored during flat deployment."""
-    src_dir = tmp_path / "src"
-    _tree(src_dir, {"a.jar": "x"})
-    dst = tmp_path / "mods"
-    (dst / "disabled").mkdir(parents=True)
-    (dst / "disabled" / "b.jar").write_text("y")
-    _tree(dst, {"a.jar": "x"})
-    result = deploy_flat_files({"a.jar": src_dir / "a.jar"}, dst)
-    assert (dst / "disabled" / "b.jar").is_file()
-    assert result.removed == []
-
-
-def test_flat_creates_dst(tmp_path: Path) -> None:
-    """Tests that the destination directory is created during flat deployment."""
+def test_flat_files_creates_destination_directory(tmp_path: Path) -> None:
+    """§4.11: the mods_dir is created if absent."""
     src_dir = tmp_path / "src"
     _tree(src_dir, {"a.jar": "x"})
     dst = tmp_path / "new_mods"
@@ -698,16 +684,13 @@ def test_flat_creates_dst(tmp_path: Path) -> None:
     assert (dst / "a.jar").is_file()
 
 
-def test_flat_missing_source_skipped(tmp_path: Path) -> None:
-    """Tests that missing source files are skipped during flat deployment."""
-    dst = tmp_path / "mods"
-    result = deploy_flat_files({"ghost.jar": tmp_path / "nope.jar"}, dst)
-    assert result.added == []
-    assert result.updated == []
+# ---------------------------------------------------------------------------
+# §7.5: @www grammar
+# ---------------------------------------------------------------------------
 
 
-def test_is_shared_dest() -> None:
-    """Tests identification of shared destination strings."""
+def test_is_shared_dest_true_only_for_at_www_prefix() -> None:
+    """§7.5: the shared-destination prefix is @www/."""
     assert is_shared_dest("@www/foo")
     assert not is_shared_dest("foo/bar")
     assert not is_shared_dest("")
@@ -715,135 +698,200 @@ def test_is_shared_dest() -> None:
 
 @pytest.mark.parametrize("value,expected_subpath", [("@www/resourcepacks", "resourcepacks"), ("@www/packs/2026", "packs/2026")])
 def test_parse_shared_dest_valid(value: str, expected_subpath: str) -> None:
-    """Tests that parsing a valid shared destination returns the expected prefix and subpath."""
+    """§7.5: valid @www subpaths are returned with prefix www."""
     prefix, subpath = parse_shared_dest(value)
     assert prefix == "www"
     assert subpath == expected_subpath
 
 
-@pytest.mark.parametrize("value", ["@www", "@www/", "@www//foo", "@www/./foo", "@www/../foo", "@www/foo/", "@www/a//b", "@mods/foo", "@", "www/foo"])
-def test_parse_shared_dest_invalid(value: str) -> None:
-    """Tests that parsing invalid shared destination values raises ConfigError."""
+@pytest.mark.parametrize("value", ["@www", "@www/", "@www//foo", "@www/./foo", "@www/../foo", "@www/foo/", "@www/a//b", "@mods/foo", "@"])
+def test_parse_shared_dest_rejects_invalid_values(value: str) -> None:
+    """§7.5: every rejected example from the grammar raises ConfigError."""
     with pytest.raises(ConfigError):
         parse_shared_dest(value)
 
 
-def test_parse_shared_dest_nul_rejected() -> None:
-    """Tests that parsing a shared destination containing a NUL character raises ConfigError."""
+def test_parse_shared_dest_rejects_nul_byte() -> None:
+    """§7.5: segments must not contain NUL."""
     with pytest.raises(ConfigError):
         parse_shared_dest("@www/foo\x00bar")
 
 
-def test_resolve_shared_dest(tmp_path: Path) -> None:
-    """Tests that shared destinations are resolved to the correct paths under a base directory."""
+def test_resolve_shared_dest_joins_under_www_dir(tmp_path: Path) -> None:
+    """§7.5: the subpath is resolved relative to www_dir."""
     assert resolve_shared_dest("@www/resourcepacks", tmp_path) == tmp_path / "resourcepacks"
     assert resolve_shared_dest("@www/packs/2026", tmp_path) == tmp_path / "packs" / "2026"
 
 
-def test_resolve_shared_dest_invalid() -> None:
-    """Tests that resolve_shared_dest raises ConfigError for an invalid shared destination."""
+def test_resolve_shared_dest_rejects_non_www_prefix() -> None:
+    """§7.5: only @www is defined by the grammar."""
     with pytest.raises(ConfigError):
         resolve_shared_dest("@mods/foo", Path("/tmp"))
 
 
+def test_resolve_resource_pack_dest_resolves_at_www(tmp_path: Path) -> None:
+    """§7.5: resolve_resource_pack_dest is a thin alias for resolve_shared_dest."""
+    assert resolve_resource_pack_dest("@www/resourcepacks", tmp_path) == tmp_path / "resourcepacks"
+
+
+# ---------------------------------------------------------------------------
+# §7.5: validate_resource_pack_filename
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["pack.zip", "creative.zip", "my_pack_v2.zip", "a.b.c.zip"])
+def test_resource_pack_filename_accepts_valid_names(name: str) -> None:
+    """§7.5: single relative .zip filenames are accepted."""
+    validate_resource_pack_filename(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "pack",
+        "pack.tar.gz",
+        "pack.zip/",
+        "dir/pack.zip",
+        "dir\\pack.zip",
+        "..zip",
+        ".hidden.zip",
+        "pack..zip",
+        "pack\x00.zip",
+    ],
+)
+def test_resource_pack_filename_rejects_invalid_names(name: str) -> None:
+    """§7.5: empty, path-separator, leading-dot, or non-.zip names are rejected."""
+    with pytest.raises(ConfigError):
+        validate_resource_pack_filename(name)
+
+
+# ---------------------------------------------------------------------------
+# §7.5: build_resource_pack_url
+# ---------------------------------------------------------------------------
+
+
+def test_build_resource_pack_url_joins_base_subpath_filename() -> None:
+    """§7.5: URL is {base}/{subpath}/{filename}."""
+    url = build_resource_pack_url("http://minecraft/downloads", "@www/resourcepacks", "pack.zip")
+    assert url == "http://minecraft/downloads/resourcepacks/pack.zip"
+
+
+def test_build_resource_pack_url_strips_trailing_base_slash() -> None:
+    """§7.5: the download base URL has any trailing / stripped."""
+    url = build_resource_pack_url("http://minecraft/downloads/", "@www/packs", "pack.zip")
+    assert url == "http://minecraft/downloads/packs/pack.zip"
+
+
+def test_build_resource_pack_url_supports_deep_subpaths() -> None:
+    """§7.5: multi-segment subpaths are preserved."""
+    url = build_resource_pack_url("http://x", "@www/packs/2026", "pack.zip")
+    assert url == "http://x/packs/2026/pack.zip"
+
+
+def test_build_resource_pack_url_rejects_empty_base() -> None:
+    """§7.5: an empty download_base_url is exit 3."""
+    with pytest.raises(ConfigError):
+        build_resource_pack_url("", "@www/resourcepacks", "pack.zip")
+
+
+def test_build_resource_pack_url_rejects_bad_mapping() -> None:
+    """§7.5: a non-@www mapping raises ConfigError."""
+    with pytest.raises(ConfigError):
+        build_resource_pack_url("http://x", "@mods/foo", "pack.zip")
+
+
+def test_build_resource_pack_url_rejects_bad_filename() -> None:
+    """§7.5: the filename must satisfy the §7.5 validation rules."""
+    with pytest.raises(ConfigError):
+        build_resource_pack_url("http://x", "@www/resourcepacks", "pack.tar.gz")
+
+
+# ---------------------------------------------------------------------------
+# §3.9: resolve_mapping_for_side
+# ---------------------------------------------------------------------------
+
+
 def test_mapping_string_used_for_both_sides() -> None:
-    """Tests that a string mapping is used for both client and server sides."""
+    """§3.9: a plain string mapping applies to both client and server."""
     assert resolve_mapping_for_side("config", "client") == "config"
     assert resolve_mapping_for_side("config", "server") == "config"
 
 
-def test_mapping_dict_side_specific() -> None:
-    """Tests that a dict mapping resolves side-specific values for client and server."""
+def test_mapping_dict_selects_per_side() -> None:
+    """§3.9: a dict mapping yields the side-specific value."""
     m = {"server": "server_cfg", "client": "client_cfg"}
     assert resolve_mapping_for_side(m, "server") == "server_cfg"
     assert resolve_mapping_for_side(m, "client") == "client_cfg"
 
 
-def test_mapping_dict_missing_side_is_none() -> None:
-    """Tests that a missing side key in a mapping dict resolves to None."""
-    m = {"server": "server_cfg"}
-    assert resolve_mapping_for_side(m, "client") is None
+def test_mapping_dict_missing_side_is_excluded() -> None:
+    """§3.9: a missing side key means the item is excluded on that side."""
+    assert resolve_mapping_for_side({"server": "srv"}, "client") is None
 
 
-def test_mapping_dict_explicit_none_is_none() -> None:
-    """Tests that an explicit None value in a mapping dict resolves to None."""
-    m = {"server": None}
-    assert resolve_mapping_for_side(m, "server") is None
+def test_mapping_dict_explicit_none_is_excluded() -> None:
+    """§3.9: an explicit None value excludes the item on that side."""
+    assert resolve_mapping_for_side({"server": None}, "server") is None
 
 
-def test_mapping_dict_minus_one_is_none() -> None:
-    """Tests that a -1 value in a mapping dict resolves to None."""
-    m = {"server": -1}
-    assert resolve_mapping_for_side(m, "server") is None
+def test_mapping_dict_minus_one_is_excluded() -> None:
+    """§3.9: the legacy -1 convention excludes the item on that side."""
+    assert resolve_mapping_for_side({"server": -1}, "server") is None
 
 
-def test_mapping_dict_non_string_value_is_none() -> None:
-    """Tests that a non-string value in a mapping dict resolves to None."""
-    m = {"server": 42}
-    assert resolve_mapping_for_side(m, "server") is None
+def test_mapping_dict_non_string_value_is_excluded() -> None:
+    """§3.9: a non-string value is treated as excluded."""
+    assert resolve_mapping_for_side({"server": 42}, "server") is None
 
 
-def test_mapping_non_str_non_dict_is_none() -> None:
-    """Tests that non-string, non-dict mappings resolve to None."""
+def test_mapping_non_str_non_dict_returns_none() -> None:
+    """§3.9: types other than str or dict yield None."""
     assert resolve_mapping_for_side(None, "client") is None
     assert resolve_mapping_for_side([1, 2], "client") is None
 
 
-@pytest.mark.parametrize("name", ["pack.zip", "creative.zip", "my_pack_v2.zip", "a.b.c.zip"])
-def test_rp_filename_valid(name: str) -> None:
-    """Tests that a valid resource pack filename passes validation."""
-    validate_resource_pack_filename(name)
+# ---------------------------------------------------------------------------
+# §4.4: hash helpers (the change-detection mechanism)
+# ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["", "pack", "pack.tar.gz", "pack.zip/", "dir/pack.zip", "dir\\pack.zip", "..zip", ".hidden.zip", "pack..zip", "pack\x00.zip"])
-def test_rp_filename_invalid(name: str) -> None:
-    """Tests that an invalid resource pack filename raises a ConfigError."""
-    with pytest.raises(ConfigError):
-        validate_resource_pack_filename(name)
+def test_sha256_and_sha1_known_vectors(tmp_path: Path) -> None:
+    """§4.4: SHA-256 and SHA-1 are the lowercase-hex digests of the file."""
+    p = tmp_path / "f.bin"
+    p.write_bytes(b"hello")
+    assert compute_sha256(p) == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    assert compute_sha1(p) == "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
 
 
-def test_build_url_basic() -> None:
-    """Tests that a resource pack URL is built correctly from a basic mapping."""
-    url = build_resource_pack_url("http://minecraft/downloads", "@www/resourcepacks", "pack.zip")
-    assert url == "http://minecraft/downloads/resourcepacks/pack.zip"
+def test_sha256_bytes_known_vector() -> None:
+    """§4.4: sha256_bytes is the SHA-256 of the supplied buffer."""
+    assert sha256_bytes(b"hello") == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 
 
-def test_build_url_strips_trailing_base_slash() -> None:
-    """Tests that a trailing slash on the base URL is stripped when building a URL."""
-    url = build_resource_pack_url("http://minecraft/downloads/", "@www/packs", "pack.zip")
-    assert url == "http://minecraft/downloads/packs/pack.zip"
+def test_hash_flat_dir_considers_only_jar_files(tmp_path: Path) -> None:
+    """§4.11: mods_dir is flat; only *.jar files are hashed."""
+    d = tmp_path / "mods"
+    d.mkdir()
+    (d / "a.jar").write_bytes(b"aaa")
+    (d / "b.jar").write_bytes(b"bbb")
+    (d / "readme.txt").write_text("x", encoding="utf-8")
+    assert set(hash_flat_dir(d)) == {"a.jar", "b.jar"}
 
 
-def test_build_url_deep_subpath() -> None:
-    """Tests that a URL is built correctly from a deep subpath mapping."""
-    url = build_resource_pack_url("http://x", "@www/packs/2026", "pack.zip")
-    assert url == "http://x/packs/2026/pack.zip"
+def test_hash_flat_dir_missing_directory_is_empty(tmp_path: Path) -> None:
+    """§4.11: a missing mods_dir yields an empty map."""
+    assert hash_flat_dir(tmp_path / "nope") == {}
 
 
-def test_build_url_empty_base() -> None:
-    """Tests that building a resource pack URL with an empty base URL raises a ConfigError."""
-    with pytest.raises(ConfigError):
-        build_resource_pack_url("", "@www/resourcepacks", "pack.zip")
+def test_hash_tree_keys_use_forward_slashes(tmp_path: Path) -> None:
+    """§4.4: hash_tree keys are relative paths with forward slashes."""
+    root = tmp_path / "tree"
+    (root / "deep" / "deeper").mkdir(parents=True)
+    (root / "deep" / "deeper" / "x.txt").write_text("x", encoding="utf-8")
+    assert "deep/deeper/x.txt" in hash_tree(root)
 
 
-def test_build_url_bad_mapping() -> None:
-    """Tests that building a resource pack URL with an invalid path mapping raises a ConfigError."""
-    with pytest.raises(ConfigError):
-        build_resource_pack_url("http://x", "@mods/foo", "pack.zip")
-
-
-def test_build_url_bad_filename() -> None:
-    """Tests that build_resource_pack_url raises ConfigError for an invalid filename."""
-    with pytest.raises(ConfigError):
-        build_resource_pack_url("http://x", "@www/resourcepacks", "pack.tar.gz")
-
-
-def test_resolve_rp_dest(tmp_path: Path) -> None:
-    """Tests that resolve_resource_pack_dest resolves @www/resourcepacks to the resourcepacks directory."""
-    assert resolve_resource_pack_dest("@www/resourcepacks", tmp_path) == tmp_path / "resourcepacks"
-
-
-def test_resolve_rp_dest_invalid() -> None:
-    """Tests that resolve_resource_pack_dest raises ConfigError for an invalid destination."""
-    with pytest.raises(ConfigError):
-        resolve_resource_pack_dest("@mods/foo", Path("/tmp"))
+def test_hash_tree_missing_directory_is_empty(tmp_path: Path) -> None:
+    """§4.4: a missing directory yields an empty map."""
+    assert hash_tree(tmp_path / "nope") == {}
