@@ -535,10 +535,54 @@ def resolve_compose_path(p: Path, base_dir: Path) -> Path:
 
 
 def derive_instance_root(svc: ComposeService) -> Path | None:
-    """Derives the instance root directory from a compose service."""
+    """Derive the instance root directory from a compose service (§3.18).
+
+    Two shapes are supported:
+
+      * A bind mount whose container target is exactly ``/data``. The
+        host source of that bind is the instance root. This is the
+        canonical shape assumed by the spec's reference compose file.
+
+      * Per-subpath binds such as ``/data/config``, ``/data/kubejs``,
+        ``/data/world``, or ``/data/server.properties``. This is a
+        valid deployment pattern: ``/data`` itself is a Docker-managed
+        named volume, and only the pieces that need host access are
+        bound in. The instance root is inferred by stripping the
+        container subpath from each host source and taking the common
+        prefix. ``/data/mods`` is excluded because it is a shared bind
+        derived separately by :func:`derive_mods_dir`.
+
+    Returns None if neither shape is present, or if the per-subpath
+    binds disagree on the implied root.
+    """
     for bind in svc.binds:
         if bind.container_target == "/data":
             return bind.host_source
+
+    implied: set[str] = set()
+    for bind in svc.binds:
+        target = bind.container_target
+        if not target.startswith("/data/") or target == "/data/mods":
+            continue
+        subpath = target[len("/data/") :]
+        host = str(bind.host_source)
+        for sep in ("/", "\\"):
+            suffix = sep + subpath
+            if host.endswith(suffix):
+                implied.add(host[: -len(suffix)])
+                break
+
+    if not implied:
+        return None
+    if len(implied) == 1:
+        return Path(next(iter(implied)))
+
+    paths = sorted(implied)
+    candidate = Path(paths[0])
+    while candidate != candidate.parent:
+        if all(p == str(candidate) or p.startswith(str(candidate) + "/") for p in paths):
+            return candidate
+        candidate = candidate.parent
     return None
 
 

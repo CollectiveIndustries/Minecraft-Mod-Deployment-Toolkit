@@ -711,18 +711,19 @@ def run_preflight(
                 logger.warning(f"[{member}] container {inst.container} is unhealthy at preflight")
             elif state.running and state.health == "starting" and (logger is not None):
                 logger.info(f"[{member}] container {inst.container} is starting")
-        touched_mods = scopes.server and (not targeted)
-        for member, _state in container_states.items():
-            inst = config.instances.get(member)
-            if inst is None or inst.instance_root is None:
-                continue
-            expected: list[tuple[Path, str]] = [(inst.instance_root, "/data")]
-            if touched_mods and derived_mods_dir is not None:
-                expected.append((derived_mods_dir, "/data/mods"))
-            try:
-                check_mount_drift(runtime, inst.container, expected)
-            except ConfigError as exc:
-                failures.append(PreflightFailure(f"§3.17 [{member}]", str(exc)))
+        compose_file = config.compose.file
+        if compose_file is not None:
+            for member, _state in container_states.items():
+                inst = config.instances.get(member)
+                if inst is None or inst.service is None:
+                    continue
+                expected: list[tuple[Path, str]] = [
+                    (resolve_compose_path(bind.host_source, compose_file.base_dir), bind.container_target) for bind in inst.service.binds
+                ]
+                try:
+                    check_mount_drift(runtime, inst.container, expected)
+                except ConfigError as exc:
+                    failures.append(PreflightFailure(f"§3.17 [{member}]", str(exc)))
     if scopes.resource_pack:
         resourcepacks = config.sync_mapping.get("resourcepacks") or {}
         client_sub = resourcepacks.get("client") if isinstance(resourcepacks, dict) else None
@@ -862,8 +863,6 @@ def run_preflight(
         mods_drift=mods_drift,
         pack_required_warning=pack_required_warning,
     )
-
-
 def _has_fatal(failures: list[PreflightFailure], *sources: str) -> bool:
     """True if any failure came from one of the given sources."""
     wanted = set(sources)
