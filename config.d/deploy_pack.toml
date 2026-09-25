@@ -81,12 +81,12 @@ resourcepacks = { resource_pack = "@www/resourcepacks", client = "resourcepacks"
 #
 [restart_policy]
 "config/*" = "restart"
-"kubejs/client_scripts/*" = "none"
+"kubejs/client_scripts/*" = "none+pack"
 "kubejs/server_scripts/*" = "reload"
 "kubejs/startup_scripts/*" = "restart+pack"
 "kubejs/assets/*" = "none+pack"
 "kubejs/data/*" = "reload"
-"mods/*" = "restart"
+"mods/*" = "restart+pack"
 
 # === Docker ============================================================
 # Docker lifecycle timing and in-game notices.
