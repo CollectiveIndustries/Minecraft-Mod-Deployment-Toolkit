@@ -537,29 +537,33 @@ def resolve_compose_path(p: Path, base_dir: Path) -> Path:
 def derive_instance_root(svc: ComposeService) -> Path | None:
     """Derive the instance root directory from a compose service (§3.18).
 
-    Two shapes are supported:
+    Three shapes are supported:
 
       * A bind mount whose container target is exactly ``/data``. The
         host source of that bind is the instance root. This is the
         canonical shape assumed by the spec's reference compose file.
 
       * Per-subpath binds such as ``/data/config``, ``/data/kubejs``,
-        ``/data/world``, or ``/data/server.properties``. This is a
-        valid deployment pattern: ``/data`` itself is a Docker-managed
-        named volume, and only the pieces that need host access are
-        bound in. The instance root is inferred by stripping the
-        container subpath from each host source and taking the common
-        prefix. ``/data/mods`` is excluded because it is a shared bind
-        derived separately by :func:`derive_mods_dir`.
+        ``/data/world``, or ``/data/server.properties``. ``/data`` itself
+        is a Docker-managed named volume, and only the pieces that need
+        host access are bound in. The instance root is inferred by
+        stripping the container subpath from each host source.
 
-    Returns None if neither shape is present, or if the per-subpath
-    binds disagree on the implied root.
+      * A service may also declare binds under ``/data/`` that are not
+        instance data -- for example ``/data/crash-reports`` pointing at
+        ``./logs/survival/crash-reports``. Those binds imply a *different*
+        root and would poison a naive common-prefix computation. The rule
+        is: the candidate root that the most binds agree on wins; a tie
+        is treated as genuinely ambiguous and returns None.
+
+    ``/data/mods`` is excluded from the computation because it is a
+    shared bind derived separately by :func:`derive_mods_dir`.
     """
     for bind in svc.binds:
         if bind.container_target == "/data":
             return bind.host_source
 
-    implied: set[str] = set()
+    implied_counts: dict[str, int] = {}
     for bind in svc.binds:
         target = bind.container_target
         if not target.startswith("/data/") or target == "/data/mods":
@@ -569,22 +573,18 @@ def derive_instance_root(svc: ComposeService) -> Path | None:
         for sep in ("/", "\\"):
             suffix = sep + subpath
             if host.endswith(suffix):
-                implied.add(host[: -len(suffix)])
+                root = host[: -len(suffix)]
+                implied_counts[root] = implied_counts.get(root, 0) + 1
                 break
 
-    if not implied:
+    if not implied_counts:
         return None
-    if len(implied) == 1:
-        return Path(next(iter(implied)))
-
-    paths = sorted(implied)
-    candidate = Path(paths[0])
-    while candidate != candidate.parent:
-        if all(p == str(candidate) or p.startswith(str(candidate) + "/") for p in paths):
-            return candidate
-        candidate = candidate.parent
-    return None
-
+    if len(implied_counts) == 1:
+        return Path(next(iter(implied_counts)))
+    ranked = sorted(implied_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    if ranked[0][1] == ranked[1][1]:
+        return None
+    return Path(ranked[0][0])
 
 def derive_mods_dir(svc: ComposeService) -> Path | None:
     """Derives the mods directory from a compose service."""
