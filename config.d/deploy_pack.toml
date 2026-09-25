@@ -1,7 +1,6 @@
 # ---------------------------------------------------------------------
 # Configuration for deploy_pack.py
 # ---------------------------------------------------------------------
-# This file controls the modpack deployment tool.
 # All paths can be absolute or relative to the working directory.
 #
 # SECRETS (Discord webhook URL, etc.) do NOT belong in this file.
@@ -10,153 +9,175 @@
 #
 #     webhook_url=https://discord.com/api/webhooks/xxx/yyy
 #
-# The .env file is loaded with ConfigCore's file loader, so its keys are
-# used literally. No prefix stripping, no dot expansion.
-#
 # LAYOUT NOTE: top-level keys must all appear BEFORE the first [table]
 # header. In TOML, any key that follows a [section] header belongs to
-# that section, so a flat key placed after [instances.*] silently ends
-# up nested and config.get("key") returns None. This is why the
-# instances tables are at the very bottom of the file.
+# that section. The instances tables are last for this reason.
 
 # === Core paths ========================================================
 
-# Directory where mods, configs, and other assets are synced from.
+# Source tree for config, kubejs, resourcepacks, and any other items
+# listed under [sync_mapping].
 sync_root = "./sync"
 
-# Shared mods directory. Server-side mods are deployed here ONCE and
-# bind-mounted into every instance's /data/mods by Docker Compose.
-mods_dir = "./mods"
-
-# Public web directory. Receives resourcepacks, the client ZIP, BlueMap, etc.
-www_dir = "./www"
-
-# File containing rsync-style exclude patterns (e.g., *.bak, *.tmp).
-# Applied recursively during both staging and live deployment.
-exclude_file = "./.rsync_exclude"
-
-# File listing paths that must NEVER be deleted during a clean deploy
-# (server-authored files that live only at the target, not in git).
-# Committed to the repo. Same format as the exclude file.
-# A missing file causes the clean phase to abort rather than silently
-# delete everything - see file_utils.get_protect_patterns for details.
-protect_file = "./.deploy_protect"
-
-# Template for the output ZIP filename. {date} -> YYYYMMDD.
-# If you want same-day builds to coexist, use a timestamp:
-#     "minecraft_client_{date}_%H%M%S.zip"
-output_filename = "minecraft_client_{date}.zip"
-
-# Directory where mod JAR files are stored (populated by PrismLauncher).
-# The .index subfolder inside this dir holds the Prism .pw.toml metadata.
+# Prism modpack directory. The .index subfolder holds the .pw.toml
+# metadata; the jars themselves live alongside it.
 modpack_dir = "./sync/downloads"
 
-# === MultiMC client deployment ==========================================
-# Used only in client mode (--client).
+# Public web directory. Receives the client ZIP, the changelog HTML,
+# and any @www/... shared items. If omitted, deploy_pack derives it from
+# the compose file's /usr/share/nginx/ bind mount, provided exactly one
+# candidate exists. Setting it explicitly is recommended.
+www_dir = "./www"
 
-# Base path to the MultiMC instances folder.
-multimc_base = "/home/admiral/.local/share/multimc/instances"
+# File listing paths that must never be deleted during a clean deploy
+# (server-authored files that live only at the target, not in git). A
+# missing file is a silent no-op. Format: one glob per line; # comments.
+protect_file = "./.deploy_protect"
 
-# Name of the MultiMC instance to deploy to.
-instance_name = "Mike_N_Ike"
+# Template for the client ZIP filename. {date} -> YYYYMMDD.
+output_filename = "minecraft_client_{date}.zip"
 
-# === Client pack notification ==========================================
-# After the client ZIP is written, deploy_pack generates an HTML
-# changelog page in www_dir and posts a short announcement to Discord
-# pointing at that page. The page carries the download link, the
-# SHA-256, and the diff between this client pack and the previous one.
-#
-# The webhook URL itself is a secret and lives in config.d/.env as
-# `webhook_url`. The keys below are non-secret.
-#
-# A failed notification is logged but never fails the deploy.
-
-# Public base URL for www_dir. The changelog and client ZIP URLs are
-# built as `{download_base_url}/{filename}`. Set this to the URL that
-# actually serves the contents of www_dir.
+# Public base URL for www_dir. Used to build the client ZIP URL, the
+# changelog URL, and the resource-pack URL written into server.properties.
 download_base_url = "http://minecraft/downloads"
 
-# Placeholders available in the message template:
-#   {artifact}       - client ZIP filename
-#   {url}            - direct download URL (download_base_url + artifact)
-#   {changelog_url}  - URL of the generated changelog HTML page
-#   {sha256sum}      - SHA-256 of the client ZIP
-#   {timestamp}      - build time, UTC
-#   {summary}        - one-line teaser, e.g. "3 mods added - 5 KubeJS
-#                      files modified"
-#
-# The message body is trimmed at a blank-line boundary if it exceeds
-# Discord's 2000 character limit.
-
-webhook_message_template = """
-**Minecraft Client Pack Published**
-
-**Update notes:** {changelog_url}
-**Download:** {url}
-
-**SHA-256**
-`{sha256sum}`
-
-**Summary**
-{summary}
-
-Built {timestamp} UTC
-"""
+# Shared mods directory, as declared in compose. This key is read only
+# for a drift warning: deploy_pack derives mods_dir from the /data/mods
+# bind mount and logs a warning if the two disagree. Compose wins.
+mods_dir = "./mods"
 
 # === Sync mapping ======================================================
-# Maps top-level items in `sync_root` to destination paths.
+# Maps top-level items in sync_root to destination paths.
 #
-# Destination rules:
-#
-#   "config"                  -> deployed to EVERY instance at <instance.path>/config
-#   { server = "server/x",
-#     client = "client/x" }   -> per-side destination (relative to instance, or shared)
+#   "config"                  -> every instance at <instance_root>/config
+#   { server = "x", client = "y" }  -> per-side destination
 #   -1                        -> excluded for that side
+#   "@www/..."                -> shared under www_dir
 #
-# Shared destinations (not per-instance) are prefixed with '@':
-#
-#   "@www/resourcepacks"      -> www_dir/resourcepacks
-#   "@www/foo/bar"            -> www_dir/foo/bar
-#   "@mods/foo"               -> mods_dir/foo   (rarely needed - see note above)
+# The resourcepacks key uses a specific shape: it must have a
+# "resource_pack" key (the @www/ destination for the server-side pack
+# publication) and a "client" key (the source directory under sync_root
+# for the client-side staging). scope_resource_pack and scope_client
+# read those keys directly, not via per-side resolution.
 #
 [sync_mapping]
-# These go to every instance (survival AND creative) at the same rel path.
 config = "config"
 kubejs = "kubejs"
+resourcepacks = { resource_pack = "@www/resourcepacks", client = "resourcepacks" }
 
-# resourcepacks: server-side publishes into the public www dir;
-# client-side stays relative so it ends up inside the client ZIP.
-resourcepacks = { server = "@www/resourcepacks", client = "resourcepacks" }
+# === Restart policy ====================================================
+# Per-path action for server-scope changes. Keys are glob patterns,
+# matched by longest literal prefix then by total pattern length. Values
+# are one of:
+#
+#   none         - no action
+#   none+pack    - no lifecycle action; mark client pack stale
+#   reload       - RCON "reload"
+#   reload+pack  - RCON "reload"; mark client pack stale
+#   restart      - stop + start via Docker
+#   restart+pack - restart; mark client pack stale
+#
+# Unlisted paths default to "restart".
+#
+[restart_policy]
+"config/*" = "restart"
+"kubejs/client_scripts/*" = "none"
+"kubejs/server_scripts/*" = "reload"
+"kubejs/startup_scripts/*" = "restart+pack"
+"kubejs/assets/*" = "none+pack"
+"kubejs/data/*" = "reload"
+"mods/*" = "restart"
 
-# You can disable a side entirely:
-# "some_folder" = { server = -1, client = "some_folder" }
+# === Docker ============================================================
+# Docker lifecycle timing and in-game notices.
+#
+# rcon_host is optional. When unset, deploy_pack uses the local docker
+# socket and requires the RCON port to be published to localhost. When
+# set, preflight requires exactly one published mapping for that port.
+#
+[docker]
+compose_file = "docker-compose.yml"
+restart_wait_seconds = 30
+in_game_notice_required = false
+health_timeout_seconds = 120
+health_poll_seconds = 2
+preflight_restarting_wait_seconds = 10
+cancel_notice_ready_timeout_seconds = 5
+restart_notice_template = "Server is restarting in {time} - please log out."
+restart_cancel_notice_template = "Restart cancelled - stay logged in."
+# rcon_host = "10.0.0.5"
 
-# === Logging configuration =============================================
+# === Discord ===========================================================
+# Templates are validated at preflight when --notify is active. Only
+# the placeholders defined for each context are accepted; unknown or
+# cross-template placeholders are a preflight failure.
+#
+#   live:       {tool_version} {timestamp} {requested_scopes}
+#               {instance_count} {instance_list} {dry_run_marker}
+#               {player_tags} {operator_tags}
+#               {section_server} {section_client} {section_resource_pack}
+#   online:     {tool_version} {timestamp} {player_tags}
+#               {container_status}
+#   failure:    {tool_version} {timestamp} {operator_tags}
+#               {failure_stage} {error} {container_status}
+#   diagnostic: {tool_version} {timestamp}
+#
+# The webhook URL itself lives in config.d/.env as `webhook_url`.
+# Role IDs are Discord role IDs; empty lists disable mentions.
+#
+[discord.tags]
+player_roles = []
+operator_roles = []
 
-[logging]
-color = true
-handlers = [
-    { type = "console", color = true },
-    { type = "file", path = "logs/deploy_pack.log", max_bytes = 10485760, backup_count = 5 }
-]
+[discord.messages.live]
+template = """**Deploy live**
+scopes: {requested_scopes}
+instances: {instance_list}
+{tool_version} @ {timestamp}
+{section_server}{section_client}{section_resource_pack}"""
+
+[discord.messages.online]
+template = """**Deploy online**
+{tool_version} @ {timestamp}"""
+
+[discord.messages.failure]
+template = """**Deploy failed**
+stage: {failure_stage}
+error: {error}
+{tool_version} @ {timestamp}"""
+
+[discord.messages.diagnostic]
+template = """**Deploy diagnostic**
+{tool_version} @ {timestamp}"""
 
 # === Server instances ==================================================
-# Each instance receives its own copy of every instance-mapped sync item
-# (config, kubejs, etc.). Mods are shared from `mods_dir` - do NOT put a
-# mods mapping here.
+# Each instance's container name must match a container_name in
+# docker-compose.yml. The instance_root, config path, kubejs path, and
+# server.properties path are derived from the compose service's /data
+# bind mount - there is no separate "path" key in this file.
 #
-# Two equivalent forms are supported:
+# config_mode: "merge" (default) or "delete" - §7.2 semantics for
+#              <instance_root>/config.
+# kubejs_mode: must be "delete" (the only value the spec defines).
 #
-#   [instances.survival]        instances = {
-#   path = "./survival"             survival = "./survival",
-#                                   creative = "./creative",
-#                               }
+# The partition is derived from these tables: every instance listed here
+# is deployed. Use --instance to target a subset at runtime.
 #
-# NOTE: these tables are intentionally last. See the layout note at the
-# top of the file.
-
+# These tables are intentionally last. See the layout note at the top.
+#
 [instances.survival]
-path = "./survival"
+container = "mc-survival"
 
 [instances.creative]
-path = "./creative"
+container = "mc-creative"
+
+# === Resource packs (optional, per instance) ===========================
+# When present, the resource-pack scope publishes the named ZIP from
+# sync_root/<sync_mapping.resourcepacks.client>/ and updates that
+# instance's server.properties with the four managed keys. When absent,
+# the instance is reported in no_pack_members and left untouched.
+#
+# [resource_pack.survival]
+# filename = "survival-pack.zip"
+# required = true
+# prompt = "This pack is required to play on this server."
