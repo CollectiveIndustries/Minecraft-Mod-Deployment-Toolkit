@@ -586,6 +586,7 @@ def derive_instance_root(svc: ComposeService) -> Path | None:
         return None
     return Path(ranked[0][0])
 
+
 def derive_mods_dir(svc: ComposeService) -> Path | None:
     """Derives the mods directory from a compose service."""
     for bind in svc.binds:

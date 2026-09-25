@@ -579,3 +579,35 @@ def build_resource_pack_url(download_base_url: str, mapping_value: str, filename
     _prefix, subpath = parse_shared_dest(mapping_value)
     base = download_base_url.rstrip("/")
     return f"{base}/{subpath}/{filename}"
+
+
+# ---------------------------------------------------------------------------
+# Public hash helpers (used by preflight/changes.py)
+# ---------------------------------------------------------------------------
+
+
+def hash_tree(root: Path) -> dict[str, str]:
+    """Return ``{rel_path: sha256}`` for every regular file under ``root``.
+
+    Path keys use forward slashes. Symlink semantics match :func:`_hash_tree`.
+    """
+    return _hash_tree(root)
+
+
+def hash_flat_dir(root: Path) -> dict[str, str]:
+    """Return ``{filename: sha256}`` for the ``.jar`` files directly in ``root``.
+
+    Non-``.jar`` files and subdirectories are ignored (§4.11: ``mods_dir``
+    is treated as flat).
+    """
+    if not root.is_dir():
+        return {}
+    out: dict[str, str] = {}
+    for entry in root.iterdir():
+        if not entry.is_file() or entry.suffix != ".jar":
+            continue
+        try:
+            out[entry.name] = compute_sha256(entry)
+        except OSError:
+            continue
+    return out

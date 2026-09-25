@@ -41,8 +41,10 @@ import tomllib
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .errors import ConfigError
+from .overrides import apply_side_overrides
 
 __all__ = [
     "ClosureResult",
@@ -53,9 +55,11 @@ __all__ = [
     "filter_prism_entries_by_side",
     "find_unmarked",
     "format_diagnostic",
+    "is_unmarked",
     "load_prism_index",
     "parse_prism_toml",
     "remove_unmarked",
+    "resolve_mod_sources",
     "scan_manifests",
 ]
 
@@ -581,3 +585,65 @@ def remove_unmarked(entries: list[dict], unmarked: list[UnmarkedJar]) -> list[di
     """
     drop = {u.filename for u in unmarked}
     return [e for e in entries if e.get("file") not in drop]
+
+
+# ---------------------------------------------------------------------------
+# Shared mod-source resolution (used by preflight, scope_server, scope_client)
+# ---------------------------------------------------------------------------
+
+
+_UNMARKED_VALID_SIDES = frozenset({"client", "server", "both"})
+
+
+def is_unmarked(entry: dict) -> bool:
+    """§6.3: an entry whose declared side is outside {client, server, both}.
+
+    ``side_raw is None`` means the ``.pw.toml`` had no ``side`` key at all;
+    the parser defaults that to ``"both"``, so such an entry is marked.
+    """
+    raw = entry.get("side_raw")
+    if raw is None:
+        return False
+    return raw not in _UNMARKED_VALID_SIDES
+
+
+def resolve_mod_sources(
+    modpack_dir: Path,
+    target_side: str,
+    overrides: Any,
+) -> dict[str, Path]:
+    """Prism index -> marked -> overridden -> side-filtered -> closed -> {filename: path}.
+
+    The shared "intent set" used by preflight's change computation and by
+    both write scopes. ``overrides`` must be a
+    :class:`minecraft.deploy_pack.overrides.SideOverrides` instance; it is
+    duck-typed here to avoid a circular import.
+    """
+    index_dir = modpack_dir / ".index"
+    if not index_dir.is_dir():
+        return {}
+    entries = load_prism_index(index_dir)
+    if not entries:
+        return {}
+    marked = [e for e in entries if (not is_unmarked(e)) or overrides.matches(e)]
+    if not overrides.is_empty():
+        marked = apply_side_overrides(marked, overrides)
+    side_entries = filter_prism_entries_by_side(marked, target_side)
+    closure = expand_with_required(
+        all_entries=marked,
+        seed_entries=side_entries,
+        target_side=target_side,
+        modpack_dir=modpack_dir,
+        logger=_logger,
+    )
+    out: dict[str, Path] = {}
+    for entry in closure.entries:
+        filename = entry.get("file")
+        if not filename:
+            continue
+        path = modpack_dir / filename
+        if not path.is_file():
+            _logger.warning(f"mod source missing from disk, skipping: {filename}")
+            continue
+        out[str(filename)] = path
+    return out
