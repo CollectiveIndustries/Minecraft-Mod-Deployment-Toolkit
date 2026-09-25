@@ -156,3 +156,9 @@ disable = ["0060"]           # backtick + en dash
 enable = []                  # optional: re-enable some
 normalize_accents = false    # keep false unless you want "café" -> "cafe"
 #line_endings = "lf"      # or "crlf" tool.ruff.format.line-ending already handles this
+
+[tool.risky-files]
+max_complexity = 15
+min_coverage = 70.0
+max_risk = 5.0
+fail_on = "complexity,coverage,risk,d-rank"
