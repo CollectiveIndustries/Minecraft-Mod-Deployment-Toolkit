@@ -235,7 +235,7 @@ def locate_vanilla_source_resources(archive: AssetArchive) -> dict[str, str]:
 
         matches = find_resource_by_fragments(
             archive.names,
-            ("assets/minecraft/textures/block", f"{wood}_planks"),
+            ("assets/minecraft/textures/block", f"/{wood}_planks"),
         )
         if len(matches) == 1:
             resources[wood] = matches[0]
@@ -845,7 +845,7 @@ def parse_wood_type(spec: str | None) -> tuple[str, str]:
     """Parse ``namespace:wood`` into (namespace, wood)."""
     if spec is None:
         raise ValueError("--wood-type is required to generate a wood")
-    parts = spec.split(":", 1)
+    parts = spec.split(":")
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ValueError(f"--wood-type must be 'namespace:wood' (e.g. biomesoplenty:maple); got {spec!r}")
     return parts[0].strip(), parts[1].strip()
