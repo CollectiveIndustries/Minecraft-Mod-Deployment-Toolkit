@@ -30,7 +30,7 @@ Design notes
 
 * **Duplicate keys.** Last occurrence is authoritative (§7.4). Only the
   last occurrence is rewritten; earlier ones are left alone. A single
-  warning is emitted per duplicated key per call.
+  warning is emitted per duplicated key per public call.
 
 * **No-op writes.** If nothing would change, the file is not touched.
   This preserves mtime and keeps §4.4's "not a change" property honest
@@ -166,11 +166,22 @@ def _read_or_error(path: Path) -> bytes:
         raise ConfigError(f"Could not read {path}: {exc}") from exc
 
 
-def _parse_existing(data: bytes, path: Path, logger: Any, keys: Collection[str]) -> dict[str, tuple[int, bytes]]:
+def _parse_existing(
+    data: bytes,
+    path: Path,
+    logger: Any,
+    keys: Collection[str],
+    *,
+    warn_duplicates: bool = True,
+) -> dict[str, tuple[int, bytes]]:
     """Return {key: (line_index_of_last_occurrence, stripped_value_bytes)}.
 
-    Only the given ``keys`` are considered. A warning is emitted once
-    per key when the file contains multiple occurrences.
+    Only the given ``keys`` are considered. When ``warn_duplicates`` is
+    true, a single warning is emitted per key that appears more than
+    once. Callers that parse the same file twice in one public call
+    (``apply_edits`` parses via ``_compute_diff`` and again via
+    ``_apply``) pass ``warn_duplicates=False`` on the second parse so
+    §7.4's "one warning per duplicated key per call" holds.
     """
     lines = _split_lines(data)
     result: dict[str, tuple[int, bytes]] = {}
@@ -183,7 +194,7 @@ def _parse_existing(data: bytes, path: Path, logger: Any, keys: Collection[str])
             result[key] = (idx, content[m.end() :].strip())
             seen_count[key] = seen_count.get(key, 0) + 1
             break
-    if logger is not None:
+    if warn_duplicates and logger is not None:
         for key, count in seen_count.items():
             if count > 1:
                 logger.warning(f"{path}: duplicate key {key!r} ({count} occurrences); the last is authoritative (§7.4)")
@@ -221,7 +232,7 @@ def _compute_diff(data: bytes, edits: list[PropertyEdit], path: Path, logger: An
 def _apply(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any) -> bytes:
     deduped = _dedupe_last_wins(edits)
     lines = _split_lines(data)
-    existing = _parse_existing(data, path, logger, {e.key for e in deduped})
+    existing = _parse_existing(data, path, logger, {e.key for e in deduped}, warn_duplicates=False)
     default_eol = _detect_eol(data)
     updates: dict[int, bytes] = {}
     appends: list[bytes] = []
@@ -268,6 +279,9 @@ def apply_edits(path: Path, edits: list[PropertyEdit], logger: Any = None) -> Pr
     If no effective change is needed, the file is not rewritten. Writes
     go through :func:`files.atomic_write` (§4.10): same-directory temp
     file, fsync, preserved mode and ownership, then ``os.replace``.
+
+    The duplicate-key warning (§7.4) is emitted once per public call:
+    the internal re-parse performed by :func:`_apply` suppresses it.
 
     Raises ConfigError if the file is missing (§7.4).
     """
