@@ -961,11 +961,11 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
     try:
         plan = run_preflight(
             config=config,
-            scope_set=scopes.scope_set,
-            protect_patterns=protect_patterns,
-            runtime=runtime,
+            scopes=scopes.scope_set,
+            with_resources=scopes.with_resources,
             notify=args.notify,
-            logger=logger,
+            dry_run=args.dry_run,
+            runtime=runtime,
         )
     except Exception as exc:
         logger.error(f"preflight failed: {exc}")
