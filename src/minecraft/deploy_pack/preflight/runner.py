@@ -273,8 +273,7 @@ def run_preflight(
     if (scopes.client or scopes.resource_pack) and config.www_dir is None:
         # §3.19: when www_dir is undeterminable, every candidate is
         # logged at WARN (one host source path per line) before the
-        # fatal raise. The candidate list is empty when there were
-        # zero candidates; the failure text carries the reason.
+        # fatal raise.
         for candidate in getattr(config, "www_dir_candidates", None) or []:
             logger.warning(f"www_dir candidate: {candidate}")
         failures.append(
