@@ -1,3 +1,5 @@
+# src/minecraft/deploy_pack/logging_setup.py
+
 """Per-module LoggingCore loggers for deploy_pack.
 
 Every deploy_pack module obtains its logger via :func:`get_logger`. The
