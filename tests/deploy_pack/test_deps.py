@@ -14,6 +14,8 @@ Coverage:
   * §6.3 unmarked detection: jar without .pw.toml, or .pw.toml whose
     side is outside {client, server, both}
   * §6.2 remove_unmarked: filters by filename
+  * resolve_mod_sources: unmarked-drop rule and the override-retention
+    rule that depends on :meth:`SideOverrides.matches`
 
 ``parse_prism_toml`` never raises: malformed TOML, missing files, and
 entries with no filename all return None.
@@ -27,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from minecraft.deploy_pack import deps
 from minecraft.deploy_pack.deps import (
     UnmarkedJar,
     clear_manifest_cache,
@@ -40,6 +43,7 @@ from minecraft.deploy_pack.deps import (
     scan_manifests,
 )
 from minecraft.deploy_pack.errors import ConfigError
+from minecraft.deploy_pack.overrides import SideOverrides
 
 _LOG = logging.getLogger("test_deps")
 
@@ -578,3 +582,47 @@ def test_remove_unmarked_empty_list_is_a_noop() -> None:
     """§6.2: nothing unmarked -> entries unchanged."""
     entries = [{"file": "a.jar"}]
     assert remove_unmarked(entries, []) == entries
+
+
+# ---------------------------------------------------------------------------
+# resolve_mod_sources: unmarked-drop rule and override retention
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_mod_sources_keeps_unmarked_with_override(tmp_path: Path) -> None:
+    """An unmarked entry survives when overrides.matches() reports it overridden."""
+    index = tmp_path / ".index"
+    index.mkdir()
+    (index / "a.pw.toml").write_text('filename = "a.jar"\nside = "skipped"\n', encoding="utf-8")
+    (tmp_path / "a.jar").write_bytes(b"x")
+
+    ov = SideOverrides(by_filename={"a.jar": "both"})
+    sources = deps.resolve_mod_sources(tmp_path, "server", ov)
+    assert "a.jar" in sources
+
+
+def test_resolve_mod_sources_drops_unmarked_without_override(tmp_path: Path) -> None:
+    """An unmarked entry with no override is dropped before the side filter."""
+    index = tmp_path / ".index"
+    index.mkdir()
+    (index / "a.pw.toml").write_text('filename = "a.jar"\nside = "skipped"\n', encoding="utf-8")
+    (tmp_path / "a.jar").write_bytes(b"x")
+
+    sources = deps.resolve_mod_sources(tmp_path, "server", SideOverrides())
+    assert "a.jar" not in sources
+
+
+def test_resolve_mod_sources_marked_entry_passes_through(tmp_path: Path) -> None:
+    """A marked entry with no override reaches the source set unchanged."""
+    index = tmp_path / ".index"
+    index.mkdir()
+    (index / "a.pw.toml").write_text('filename = "a.jar"\nside = "server"\n', encoding="utf-8")
+    (tmp_path / "a.jar").write_bytes(b"x")
+
+    sources = deps.resolve_mod_sources(tmp_path, "server", SideOverrides())
+    assert "a.jar" in sources
+
+
+def test_resolve_mod_sources_missing_index_returns_empty(tmp_path: Path) -> None:
+    """No .index directory -> no sources."""
+    assert deps.resolve_mod_sources(tmp_path, "server", SideOverrides()) == {}

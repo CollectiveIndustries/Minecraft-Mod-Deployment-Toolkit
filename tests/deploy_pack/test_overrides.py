@@ -399,3 +399,38 @@ def test_save_replaces_file_atomically(tmp_path: Path, monkeypatch: pytest.Monke
     with pytest.raises(OSError):
         save_side_overrides(p, {"new.jar": "client"}, timestamp="2026-09-23T12:00:00Z")
     assert p.read_bytes() == original
+
+
+def test_matches_returns_true_for_overridden_entry() -> None:
+    """An entry matched by any section reports as overridden."""
+    ov = SideOverrides(by_id={"123": "client"})
+    assert ov.matches({"id": "123", "file": "x.jar"}) is True
+
+
+def test_matches_returns_true_for_by_filename_override() -> None:
+    """A filename match is enough to count as overridden."""
+    ov = SideOverrides(by_filename={"x.jar": "server"})
+    assert ov.matches({"id": "999", "file": "x.jar"}) is True
+
+
+def test_matches_returns_true_for_review_override() -> None:
+    """A deployment_tool_review entry counts as an override."""
+    ov = SideOverrides(deployment_tool_review={"x.jar": "both"})
+    assert ov.matches({"id": "999", "file": "x.jar"}) is True
+
+
+def test_matches_returns_false_for_unoverridden_entry() -> None:
+    """An entry with no override in any section returns False."""
+    ov = SideOverrides(by_id={"123": "client"})
+    assert ov.matches({"id": "999", "file": "x.jar"}) is False
+
+
+def test_matches_handles_missing_fields() -> None:
+    """An entry with no id and no file does not raise."""
+    ov = SideOverrides(by_id={"123": "client"})
+    assert ov.matches({}) is False
+
+
+def test_matches_handles_empty_overrides() -> None:
+    """An empty SideOverrides reports every entry as unoverridden."""
+    assert SideOverrides().matches({"id": "1", "file": "x.jar"}) is False

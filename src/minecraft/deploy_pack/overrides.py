@@ -73,6 +73,19 @@ class SideOverrides:
             return self.deployment_tool_review[filename]
         return None
 
+    def matches(self, entry: dict) -> bool:
+        """Return True if this Prism entry is overridden in any section.
+
+        Used by :func:`deps.resolve_mod_sources` to decide whether an
+        otherwise-unmarked entry (§6.3) should be kept. An override on
+        an unmarked entry marks it; the caller uses this to build the
+        marked set before applying overrides. This is a thin wrapper
+        over :meth:`lookup`, so the precedence rule is not duplicated.
+        """
+        mod_id = str(entry.get("id", ""))
+        filename = str(entry.get("file", ""))
+        return self.lookup(mod_id, filename) is not None
+
 
 def load_side_overrides(path: Path) -> SideOverrides:
     """Load and validate side_overrides.toml (§3.11).
