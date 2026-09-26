@@ -1,0 +1,28 @@
+@media (prefers-color-scheme: dark) {
+  body {
+    color: #e6e6e6;
+    background: #1a1a1a;
+  }
+
+  h2 {
+    border-bottom-color: #333;
+  }
+
+  a {
+    color: #6ea8fe;
+  }
+
+  code {
+    color: #e6e6e6;
+    background: #2a2a2a;
+  }
+
+  .changelog {
+    background: #222;
+    border-color: #333;
+  }
+
+  .empty {
+    color: #999;
+  }
+}

@@ -24,6 +24,18 @@ description of what the user sees.
 No network calls, no LLM, no git. Output is deterministic and can be
 diffed across builds.
 
+Templates
+---------
+
+The HTML shell, the changelog body, and the stylesheets live under
+``templates/`` next to this module and are loaded as
+:class:`string.Template` documents (``$name`` placeholders). Editing a
+template or a CSS file changes the rendered output without touching
+Python; the only Python-side knowledge of the markup is the set of
+placeholder names exchanged with ``changelog.html`` and
+``changelog_body.html``. The light and dark stylesheets are inlined
+into a single ``<style>`` element so the page stays self-contained.
+
 Logging
 -------
 
@@ -47,14 +59,15 @@ DEBUG. ``write_changelog`` logs its path at DEBUG and success at INFO
 (the second INFO site in the module, reached only on the direct-write
 path; ``scope_client`` routes through ``render_changelog_html`` +
 ``atomic_write`` and does not call it). Pure helpers
-(``_hash_bytes``, ``_esc``) and the ``DiffReport`` data class emit
-nothing; the aggregate logs already cover their work.
+(``_hash_bytes``, ``_esc``, ``_load_asset``) and the ``DiffReport``
+data class emit nothing; the aggregate logs already cover their work.
 """
 
 from __future__ import annotations
 
 import hashlib
 import html
+import string
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,6 +76,27 @@ from typing import Any
 from minecraft.deploy_pack.logging_setup import get_logger
 
 _log = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+
+def _load_asset(name: str) -> str:
+    """Read a UTF-8 template or CSS asset from the templates directory.
+
+    Pure I/O; a missing or unreadable file raises OSError to the caller
+    (``scope_client`` wraps it at ERROR), so nothing is caught here.
+    """
+    return (_TEMPLATE_DIR / name).read_text(encoding="utf-8")
+
+
+def _load_template(name: str) -> string.Template:
+    """Load a template file as a ``$name``-placeholder Template."""
+    return string.Template(_load_asset(name))
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +340,62 @@ def _esc(text: str) -> str:
     return html.escape(text, quote=True)
 
 
+def _render_section(
+    title: str,
+    items: list[str],
+    *,
+    ordered: bool = False,
+    code: bool = False,
+) -> str:
+    """Render one changelog section, or '' when ``items`` is empty."""
+    if not items:
+        return ""
+    list_tag = "ol" if ordered else "ul"
+    if code:
+        body = "\n".join(f"  <li><code>{_esc(i)}</code></li>" for i in items)
+    else:
+        body = "\n".join(f"  <li>{_esc(i)}</li>" for i in items)
+    return f"<h3>{_esc(title)}</h3>\n<{list_tag}>\n{body}\n</{list_tag}>"
+
+
+def _render_changelog_body(report: DiffReport) -> str:
+    """Fill ``changelog_body.html`` with the report's sections.
+
+    Empty section placeholders are replaced with the empty string so
+    the template file can list every slot unconditionally.
+    """
+    if report.initial_build:
+        n = report.total_mods
+        plural = "s" if n != 1 else ""
+        initial_note = f'<p class="empty">Initial build - no previous pack to compare against. This pack contains {n} mod{plural}.</p>'
+        no_changes_note = ""
+        added_mods_section = removed_mods_section = ""
+        added_kubejs_section = modified_kubejs_section = removed_kubejs_section = ""
+    elif report.is_empty():
+        initial_note = ""
+        no_changes_note = '<p class="empty">No changes since last build.</p>'
+        added_mods_section = removed_mods_section = ""
+        added_kubejs_section = modified_kubejs_section = removed_kubejs_section = ""
+    else:
+        initial_note = ""
+        no_changes_note = ""
+        added_mods_section = _render_section("Added mods", report.added_mods, ordered=True)
+        removed_mods_section = _render_section("Removed mods", report.removed_mods)
+        added_kubejs_section = _render_section("Added KubeJS files", report.added_kubejs, code=True)
+        modified_kubejs_section = _render_section("Modified KubeJS files", report.modified_kubejs, code=True)
+        removed_kubejs_section = _render_section("Removed KubeJS files", report.removed_kubejs, code=True)
+
+    return _load_template("changelog_body.html").substitute(
+        initial_note=initial_note,
+        no_changes_note=no_changes_note,
+        added_mods_section=added_mods_section,
+        removed_mods_section=removed_mods_section,
+        added_kubejs_section=added_kubejs_section,
+        modified_kubejs_section=modified_kubejs_section,
+        removed_kubejs_section=removed_kubejs_section,
+    )
+
+
 def render_changelog_html(
     report: DiffReport,
     artifact_name: str,
@@ -316,8 +406,8 @@ def render_changelog_html(
 ) -> str:
     """Render the changelog page as a self-contained HTML document.
 
-    Pure string transform; logs its inputs and the rendered length at
-    DEBUG, no WARN/ERROR.
+    Loads the page template and the two stylesheets from ``templates/``;
+    logs its inputs and the rendered length at DEBUG, no WARN/ERROR.
     """
     if logger is None:
         logger = _log
@@ -326,59 +416,21 @@ def render_changelog_html(
         f"mods +{len(report.added_mods)} -{len(report.removed_mods)} "
         f"kubejs +{len(report.added_kubejs)} ~{len(report.modified_kubejs)} -{len(report.removed_kubejs)}"
     )
-    lines: list[str] = []
-    lines.append("<!DOCTYPE html>")
-    lines.append('<html lang="en"><head>')
-    lines.append('<meta charset="utf-8">')
-    lines.append(f"<title>Client Pack - {_esc(artifact_name)}</title>")
-    lines.append(
-        "<style>body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; color: #222; }code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.95em; }.changelog { max-height: 500px; overflow-y: auto; border: 1px solid #ccc; padding: 1em; background: #fafafa; border-radius: 4px; }.changelog h3 { margin-top: 1.2em; }.changelog h3:first-child { margin-top: 0; }.empty { color: #888; font-style: italic; }h2 { margin-top: 1.6em; }</style>"
+
+    # Light sheet first, dark sheet second (dark is wrapped in a
+    # @media (prefers-color-scheme: dark) block so it only takes effect
+    # when the viewer's OS asks for it).
+    css = _load_asset("changelog.css").rstrip() + "\n\n" + _load_asset("changelog-dark.css").rstrip() + "\n"
+
+    html_text = _load_template("changelog.html").substitute(
+        title=_esc(f"Client Pack - {artifact_name}"),
+        artifact_name=_esc(artifact_name),
+        artifact_url=_esc(artifact_url),
+        sha256sum=_esc(sha256sum),
+        timestamp=_esc(timestamp),
+        css=css,
+        changelog_body=_render_changelog_body(report),
     )
-    lines.append("</head><body>")
-    lines.append(f"<h1>Client Pack - {_esc(artifact_name)}</h1>")
-    lines.append(f"<p>Built {_esc(timestamp)} UTC</p>")
-    lines.append("<h2>Download</h2>")
-    lines.append(f'<p><a href="{_esc(artifact_url)}">{_esc(artifact_name)}</a></p>')
-    lines.append(f"<p>SHA-256: <code>{_esc(sha256sum)}</code></p>")
-    lines.append("<h2>Changelog</h2>")
-    lines.append('<div class="changelog">')
-
-    if report.initial_build:
-        n = report.total_mods
-        plural = "s" if n != 1 else ""
-        lines.append(f'<p class="empty">Initial build - no previous pack to compare against. This pack contains {n} mod{plural}.</p>')
-    elif report.is_empty():
-        lines.append('<p class="empty">No changes since last build.</p>')
-    else:
-        if report.added_mods:
-            lines.append("<h3>Added mods</h3><ol>")
-            for mod in report.added_mods:
-                lines.append(f"<li>{_esc(mod)}</li>")
-            lines.append("</ol>")
-        if report.removed_mods:
-            lines.append("<h3>Removed mods</h3><ul>")
-            for mod in report.removed_mods:
-                lines.append(f"<li>{_esc(mod)}</li>")
-            lines.append("</ul>")
-        if report.added_kubejs:
-            lines.append("<h3>Added KubeJS files</h3><ul>")
-            for path in report.added_kubejs:
-                lines.append(f"<li><code>{_esc(path)}</code></li>")
-            lines.append("</ul>")
-        if report.modified_kubejs:
-            lines.append("<h3>Modified KubeJS files</h3><ul>")
-            for path in report.modified_kubejs:
-                lines.append(f"<li><code>{_esc(path)}</code></li>")
-            lines.append("</ul>")
-        if report.removed_kubejs:
-            lines.append("<h3>Removed KubeJS files</h3><ul>")
-            for path in report.removed_kubejs:
-                lines.append(f"<li><code>{_esc(path)}</code></li>")
-            lines.append("</ul>")
-
-    lines.append("</div>")
-    lines.append("</body></html>")
-    html_text = "\n".join(lines)
     logger.debug(f"render_changelog_html: rendered {len(html_text)} char(s)")
     return html_text
 
