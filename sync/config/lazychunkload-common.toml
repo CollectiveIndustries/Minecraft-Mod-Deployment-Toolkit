@@ -1,0 +1,78 @@
+[loading]
+        # CPU usage threshold (0.0-1.0). Below this, chunk loading is UNLIMITED.
+        cpu_threshold = 0.85
+
+        # MSPT threshold. Start throttling before we approach the 50 ms/20 TPS boundary.
+        mspt_threshold = 40.0
+
+        # 6 GiB heap: start protecting the heap around 80% (~4.8 GiB).
+        memory_threshold = 0.80
+
+        # Moderate burst size after the server has headroom.
+        max_budget = 32
+
+        # Keep forward progress even under heavy load.
+        min_budget = 4
+
+        # Keep the existing 10-second login/startup grace period.
+        warmup_ticks = 200
+
+
+[priority]
+        # Keep local chunks dominant.
+        distance_weight = 0.5
+
+        # Favor chunks in the player's facing direction.
+        direction_weight = 0.4
+
+        # Small amount of starvation prevention.
+        aging_weight = 0.1
+
+        direction_multiplier = 5.0
+        speed_threshold = 0.1
+        aging_factor_ms = 10000
+
+        # Keep prediction, but don't let it overwhelm normal distance/direction priority.
+        prediction_weight = 0.2
+
+
+[hotspot]
+        enabled = true
+
+        # Require a little more evidence before treating a chunk as "hot".
+        threshold = 4
+
+        # Shorter retention reduces unnecessary chunk-ticket persistence.
+        retention_ms = 20000
+
+
+[preload]
+        enabled = true
+
+        # 64 is extremely aggressive for a 6 GiB modded server.
+        # 24 gives a 49x49 chunk scan area instead of 129x129.
+        preload_delay_seconds = 2
+
+        preload_radius = 24
+
+        preload_speed_threshold = 0.22
+
+
+[unload]
+        # Leave disabled until we establish that the heap is genuinely under pressure.
+        enabled = false
+        always_on = false
+        interval_ms = 30000
+        batch_size = 50
+        min_age_ms = 120000
+        min_distance = 16
+
+
+[dimensions]
+        whitelist = []
+        blacklist = []
+
+
+[debug]
+        log_loading = false
+        performance_tips = true
