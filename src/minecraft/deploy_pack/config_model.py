@@ -32,6 +32,21 @@ Non-raising compose handling:
   failures collected before any write") - a broken compose must not
   short-circuit a run that also has, say, an orphan [resource_pack.X]
   section.
+
+Logging
+-------
+
+Module logger is ``minecraft.deploy_pack.config_model``. Config load
+logs at INFO on entry and on success with the resolved partition and
+path roots; each resolution step (path normalization, compose
+derivation, instance/partition matching, CLI overlay merge) logs its
+inputs and outcomes at DEBUG. Degraded-but-continuing conditions (a
+broken compose file, an ambiguous www_dir, a TOML-vs-compose
+disagreement on www_dir) log at WARN. Validation failures log at ERROR
+immediately before the ``ConfigError``/``ValueError`` raise, so the
+specific diagnostic lands in the sink regardless of how the caller
+handles the exception. ``load_deployment_config`` accepts an optional
+``logger=`` override; downstream helpers use the module logger.
 """
 
 from __future__ import annotations
@@ -46,6 +61,9 @@ import yaml
 from ConfigCore import ConfigManager
 
 from .errors import ConfigError
+from .logging_setup import get_logger
+
+_log = get_logger(__name__)
 
 DEFAULT_RESTART_NOTICE_TEMPLATE = "Server pack updated. Restart in {time}."
 DEFAULT_RESTART_CANCEL_NOTICE_TEMPLATE = "Server restart canceled; the deployment could not safely proceed."
@@ -277,16 +295,20 @@ def parse_go_duration(value: str) -> int:
     """
     s = value.strip()
     if not s:
+        _log.error(f"parse_go_duration: empty duration {value!r}")
         raise ValueError("empty duration")
     total = 0
     pos = 0
     for m in _DURATION_TOKEN.finditer(s):
         if m.start() != pos:
+            _log.error(f"parse_go_duration: invalid duration {value!r} (unexpected token at offset {pos})")
             raise ValueError(f"invalid duration: {value!r}")
         total += int(m.group(1)) * _UNIT_SECONDS[m.group(2)]
         pos = m.end()
     if pos != len(s):
+        _log.error(f"parse_go_duration: invalid duration {value!r} (trailing data at offset {pos})")
         raise ValueError(f"invalid duration: {value!r}")
+    _log.debug(f"parse_go_duration: {value!r} -> {total}s")
     return total
 
 
@@ -301,29 +323,40 @@ def validate_in_game_templates(docker: DockerConfig) -> None:
     """
     t = docker.restart_notice_template
     if not t:
+        _log.error("validate_in_game_templates: [docker].restart_notice_template is empty")
         raise ConfigError("[docker].restart_notice_template must be non-empty")
     for m in _PLACEHOLDER_RE.finditer(t):
         if m.group(1) != "time":
+            _log.error(f"validate_in_game_templates: [docker].restart_notice_template has unknown placeholder {{{m.group(1)}}}")
             raise ConfigError(f"[docker].restart_notice_template: unknown placeholder {{{m.group(1)}}} (only {{time}} is permitted)")
     c = docker.restart_cancel_notice_template
     if not c:
+        _log.error("validate_in_game_templates: [docker].restart_cancel_notice_template is empty")
         raise ConfigError("[docker].restart_cancel_notice_template must be non-empty")
     if _PLACEHOLDER_RE.search(c):
+        _log.error(f"validate_in_game_templates: [docker].restart_cancel_notice_template contains a placeholder ({c!r})")
         raise ConfigError("[docker].restart_cancel_notice_template must not contain placeholders")
+    _log.debug("validate_in_game_templates: both in-game templates valid")
 
 
 def validate_output_filename(name: str) -> None:
     """Validates an output filename for safety and required format."""
     if not name:
+        _log.error("validate_output_filename: output_filename is empty")
         raise ConfigError("output_filename must be non-empty")
     if "\x00" in name:
+        _log.error(f"validate_output_filename: output_filename contains NUL ({name!r})")
         raise ConfigError("output_filename must not contain NUL")
     if "/" in name or "\\" in name:
+        _log.error(f"validate_output_filename: output_filename contains a path separator ({name!r})")
         raise ConfigError("output_filename must not contain path separators")
     if name in (".", ".."):
+        _log.error(f"validate_output_filename: output_filename is {name!r}")
         raise ConfigError("output_filename must not be '.' or '..'")
     if not name.endswith(".zip"):
+        _log.error(f"validate_output_filename: output_filename does not end in .zip ({name!r})")
         raise ConfigError("output_filename must end in '.zip'")
+    _log.debug(f"validate_output_filename: {name!r} OK")
 
 
 def validate_download_base_url(url: str) -> None:
@@ -333,7 +366,9 @@ def validate_download_base_url(url: str) -> None:
         ConfigError: If the URL is empty.
     """
     if not url:
+        _log.error("validate_download_base_url: download_base_url is empty")
         raise ConfigError("download_base_url must be non-empty")
+    _log.debug(f"validate_download_base_url: {url!r} OK")
 
 
 _NON_NEGATIVE = ("restart_wait_seconds", "preflight_restarting_wait_seconds", "cancel_notice_ready_timeout_seconds")
@@ -344,17 +379,21 @@ def _validate_docker_timings(docker: DockerConfig) -> None:
     for key in _NON_NEGATIVE:
         value = getattr(docker, key)
         if value < 0:
+            _log.error(f"_validate_docker_timings: [docker].{key} must be >= 0, got {value}")
             raise ConfigError(f"[docker].{key} must be >= 0, got {value}")
     for key in _POSITIVE:
         value = getattr(docker, key)
         if value <= 0:
+            _log.error(f"_validate_docker_timings: [docker].{key} must be > 0, got {value}")
             raise ConfigError(f"[docker].{key} must be > 0, got {value}")
+    _log.debug("_validate_docker_timings: all docker timing keys valid")
 
 
 def _parse_binds(volumes: Any) -> list[BindMount]:
     """Return bind mounts only. Named and anonymous volumes are ignored."""
     result: list[BindMount] = []
     if not isinstance(volumes, list):
+        _log.debug("_parse_binds: volumes is not a list; no binds parsed")
         return result
     for vol in volumes:
         if isinstance(vol, str):
@@ -372,6 +411,7 @@ def _parse_binds(volumes: Any) -> list[BindMount]:
             dst = vol.get("target")
             if src and dst:
                 result.append(BindMount(host_source=Path(str(src)), container_target=str(dst)))
+    _log.debug(f"_parse_binds: parsed {len(result)} bind mount(s)")
     return result
 
 
@@ -402,6 +442,7 @@ def _parse_env_files(value: Any, base_dir: Path) -> list[Path]:
         if not p.is_absolute():
             p = base_dir / p
         result.append(p)
+    _log.debug(f"_parse_env_files: resolved {len(result)} env_file(s) under {base_dir}")
     return result
 
 
@@ -416,10 +457,12 @@ def _parse_secrets(value: Any) -> list[str]:
             src = item.get("source")
             if src:
                 result.append(str(src))
+    _log.debug(f"_parse_secrets: parsed {len(result)} secret name(s)")
     return result
 
 
 def _parse_service(name: str, raw: dict, base_dir: Path) -> ComposeService:
+    _log.debug(f"_parse_service: parsing service {name!r}")
     return ComposeService(
         name=name,
         container_name=str(raw["container_name"]) if raw.get("container_name") else None,
@@ -442,23 +485,30 @@ def load_compose(path: Path) -> ComposeLoadResult:
     --server and (conditionally) --resource-pack, but only a warning for
     --client unless www_dir becomes undeterminable.
     """
+    _log.debug(f"load_compose: reading {path}")
     if not path.is_file():
+        _log.warning(f"load_compose: compose file not found: {path}")
         return ComposeLoadResult(None, f"Compose file not found: {path}")
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
+        _log.warning(f"load_compose: could not read {path}: {exc}")
         return ComposeLoadResult(None, f"Could not read compose file {path}: {exc}")
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
+        _log.warning(f"load_compose: could not parse {path}: {exc}")
         return ComposeLoadResult(None, f"Could not parse compose file {path}: {exc}")
     if raw is None:
+        _log.warning(f"load_compose: compose file is empty: {path}")
         return ComposeLoadResult(None, f"Compose file is empty: {path}")
     if not isinstance(raw, dict):
+        _log.warning(f"load_compose: {path}: top-level is not a mapping")
         return ComposeLoadResult(None, f"Compose file {path}: top-level must be a mapping")
     base_dir = path.parent
     services_raw = raw.get("services") or {}
     if not isinstance(services_raw, dict):
+        _log.warning(f"load_compose: {path}: 'services' is not a mapping")
         return ComposeLoadResult(None, f"Compose file {path}: 'services' must be a mapping")
     services: dict[str, ComposeService] = {}
     for svc_name, svc_raw in services_raw.items():
@@ -478,6 +528,7 @@ def load_compose(path: Path) -> ComposeLoadResult:
             if not p.is_absolute():
                 p = base_dir / p
             secret_files[str(sec_name)] = p
+    _log.info(f"load_compose: loaded {len(services)} service(s) and {len(secret_files)} secret file(s) from {path}")
     return ComposeLoadResult(ComposeFile(path=path, base_dir=base_dir, services=services, secret_files=secret_files), None)
 
 
@@ -497,12 +548,16 @@ def match_service_by_container(compose: ComposeFile, container_name: str) -> Com
     matches. This is the config-layer API; preflight is responsible for
     deciding what to do with the failure.
     """
+    _log.debug(f"match_service_by_container: looking up container_name={container_name!r} in {len(compose.services)} service(s)")
     matches = [svc for svc in compose.services.values() if svc.container_name == container_name]
     if not matches:
+        _log.error(f"match_service_by_container: no compose service has container_name={container_name!r}")
         raise ServiceMatchError(f"No compose service has container_name={container_name!r}")
     if len(matches) > 1:
         names = ", ".join(sorted(s.name for s in matches))
+        _log.error(f"match_service_by_container: multiple services match container_name={container_name!r}: {names}")
         raise ServiceMatchError(f"Multiple compose services match container_name={container_name!r}: {names}")
+    _log.debug(f"match_service_by_container: {container_name!r} -> service {matches[0].name!r}")
     return matches[0]
 
 
@@ -531,7 +586,9 @@ def resolve_compose_path(p: Path, base_dir: Path) -> Path:
     different base than project-root TOML paths and must not be
     conflated.
     """
-    return _resolve_compose_path(p, base_dir)
+    resolved = _resolve_compose_path(p, base_dir)
+    _log.debug(f"resolve_compose_path: {p} (base={base_dir}) -> {resolved}")
+    return resolved
 
 
 def derive_instance_root(svc: ComposeService) -> Path | None:
@@ -561,6 +618,7 @@ def derive_instance_root(svc: ComposeService) -> Path | None:
     """
     for bind in svc.binds:
         if bind.container_target == "/data":
+            _log.debug(f"derive_instance_root: [{svc.name}] canonical /data bind -> {bind.host_source}")
             return bind.host_source
 
     implied_counts: dict[str, int] = {}
@@ -578,12 +636,17 @@ def derive_instance_root(svc: ComposeService) -> Path | None:
                 break
 
     if not implied_counts:
+        _log.debug(f"derive_instance_root: [{svc.name}] no /data or /data/* bind found")
         return None
     if len(implied_counts) == 1:
-        return Path(next(iter(implied_counts)))
+        root = next(iter(implied_counts))
+        _log.debug(f"derive_instance_root: [{svc.name}] single implied root -> {root}")
+        return Path(root)
     ranked = sorted(implied_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     if ranked[0][1] == ranked[1][1]:
+        _log.warning(f"derive_instance_root: [{svc.name}] ambiguous /data/* binds (tie): " + ", ".join(f"{r} x{n}" for r, n in ranked))
         return None
+    _log.debug(f"derive_instance_root: [{svc.name}] most-agreed root -> {ranked[0][0]} ({ranked[0][1]} bind(s))")
     return Path(ranked[0][0])
 
 
@@ -591,7 +654,9 @@ def derive_mods_dir(svc: ComposeService) -> Path | None:
     """Derives the mods directory from a compose service."""
     for bind in svc.binds:
         if bind.container_target == "/data/mods":
+            _log.debug(f"derive_mods_dir: [{svc.name}] -> {bind.host_source}")
             return bind.host_source
+    _log.debug(f"derive_mods_dir: [{svc.name}] no /data/mods bind found")
     return None
 
 
@@ -616,9 +681,12 @@ def derive_www_dir(compose: ComposeFile) -> WwwDirResult:
         seen.add(key)
         unique.append(c)
     if not unique:
+        _log.warning("derive_www_dir: no bind mount whose target starts with /usr/share/nginx/")
         return WwwDirResult(None, "www_dir could not be derived: no bind mount whose target starts with /usr/share/nginx/", [])
     if len(unique) > 1:
+        _log.warning(f"derive_www_dir: {len(unique)} candidate mount(s) found; ambiguous: " + ", ".join(str(p) for p in unique))
         return WwwDirResult(None, f"www_dir could not be derived: {len(unique)} candidate mounts", unique)
+    _log.debug(f"derive_www_dir: -> {unique[0]}")
     return WwwDirResult(unique[0], None, [])
 
 
@@ -639,10 +707,13 @@ def resolve_partition(instances: Mapping[str, InstanceConfig], requested: Iterab
     """
     configured = set(instances.keys())
     if requested is None:
-        return (sorted(configured), [])
+        partition = sorted(configured)
+        _log.debug(f"resolve_partition: no --instance; partition = all {len(partition)} configured instance(s)")
+        return (partition, [])
     requested_set = {str(name) for name in requested}
     unknown = sorted(requested_set - configured)
     partition = sorted(requested_set & configured)
+    _log.info(f"resolve_partition: requested={sorted(requested_set)} -> partition={partition}; unknown={unknown}")
     return (partition, unknown)
 
 
@@ -650,7 +721,9 @@ def _find_config_file(config_dir: Path) -> Path | None:
     for ext in (".toml", ".yaml", ".yml"):
         candidate = config_dir / f"deploy_pack{ext}"
         if candidate.is_file():
+            _log.debug(f"_find_config_file: using {candidate}")
             return candidate
+    _log.debug(f"_find_config_file: no deploy_pack.{{toml,yaml,yml}} under {config_dir}")
     return None
 
 
@@ -668,16 +741,22 @@ def _load_config_files(config_dir: Path) -> dict[str, Any]:
     env_file = config_dir / ".env"
     toml_path = _find_config_file(config_dir)
     if not env_file.is_file() and toml_path is None:
+        _log.debug(f"_load_config_files: neither .env nor deploy_pack.{{toml,yaml,yml}} present under {config_dir}")
         return {}
     mgr = ConfigManager()
     if env_file.is_file():
+        _log.debug(f"_load_config_files: loading .env {env_file}")
         mgr.file(env_file, format="env")
     if toml_path is not None:
+        _log.debug(f"_load_config_files: loading {toml_path}")
         mgr.file(toml_path)
     config = mgr.load()
     if hasattr(config, "as_dict"):
-        return dict(config.as_dict())
-    return dict(config)
+        result = dict(config.as_dict())
+    else:
+        result = dict(config)
+    _log.debug(f"_load_config_files: loaded {len(result)} top-level key(s)")
+    return result
 
 
 def _parse_cli_overrides(args: list[str]) -> dict[str, Any]:
@@ -710,6 +789,8 @@ def _parse_cli_overrides(args: list[str]) -> dict[str, Any]:
         else:
             result[key] = value
         i += 1
+    if result:
+        _log.debug(f"_parse_cli_overrides: parsed {len(result)} override(s): {sorted(result)}")
     return result
 
 
@@ -740,19 +821,25 @@ def load_deployment_config(
     A broken compose file does NOT raise. The DeploymentConfig.compose
     field carries the diagnostic; preflight applies §3.5.
     """
+    if logger is None:
+        logger = _log
+    logger.info(f"config load: config_dir={config_dir} requested_instances={sorted(requested_instances) if requested_instances is not None else None}")
     config_dir = config_dir.resolve()
     project_root = config_dir.parent
     raw = _load_config_files(config_dir)
     if cli_remaining:
         cli_overlay = _parse_cli_overrides(cli_remaining)
         _deep_merge(raw, cli_overlay)
+        logger.debug(f"config load: merged {len(cli_overlay)} CLI override(s) over file sources")
     return _build_deployment_config(raw=raw, config_dir=config_dir, project_root=project_root, requested_instances=requested_instances, logger=logger)
 
 
 def _build_deployment_config(
-    raw: dict[str, Any], config_dir: Path, project_root: Path, requested_instances: Iterable[str] | None, logger: Any
+    raw: dict[str, Any], config_dir: Path, project_root: Path, requested_instances: Iterable[str] | None, logger: Any = None
 ) -> DeploymentConfig:
     """Turn the merged raw dict into a typed DeploymentConfig."""
+    if logger is None:
+        logger = _log
 
     def _path(value: str | None, default: str | None = None) -> Path | None:
         v = value if value is not None else default
@@ -768,6 +855,7 @@ def _build_deployment_config(
 
     instance_discovery = str(raw.get("instance_discovery", "explicit"))
     if instance_discovery != "explicit":
+        logger.error(f"config: instance_discovery must be 'explicit', got {instance_discovery!r}")
         raise ConfigError(f"instance_discovery must be 'explicit', got {instance_discovery!r}")
     sync_root = _path(raw.get("sync_root"), "./sync")
     modpack_dir = _path(raw.get("modpack_dir"), "./sync/downloads")
@@ -777,8 +865,10 @@ def _build_deployment_config(
     protect_file_raw = raw.get("protect_file")
     validate_output_filename(output_filename)
     validate_download_base_url(download_base_url)
+    logger.debug(f"config: project_root={project_root} sync_root={sync_root} modpack_dir={modpack_dir} mods_dir_toml={mods_dir_toml}")
     docker_raw = raw.get("docker") or {}
     if not isinstance(docker_raw, dict):
+        logger.error("config: [docker] is not a table")
         raise ConfigError("[docker] must be a table")
     compose_file = _path(docker_raw.get("compose_file"), "./docker-compose.yml")
     docker = DockerConfig(
@@ -795,24 +885,32 @@ def _build_deployment_config(
     )
     _validate_docker_timings(docker)
     validate_in_game_templates(docker)
+    logger.debug(f"config: [docker] resolved; compose_file={compose_file} rcon_host={docker.rcon_host}")
     compose_result = load_compose(compose_file)
+    if not compose_result.ok:
+        logger.warning(f"config: compose unavailable ({compose_result.error}); preflight will apply §3.5")
     instances_raw = raw.get("instances") or {}
     if not isinstance(instances_raw, dict):
+        logger.error("config: [instances] is not a table")
         raise ConfigError("[instances] must be a table")
     instances: dict[str, InstanceConfig] = {}
     for name, body in instances_raw.items():
         name = str(name)
         if not isinstance(body, dict):
+            logger.error(f"config: [instances.{name}] is not a table")
             raise ConfigError(f"[instances.{name}] must be a table")
         container = body.get("container")
         if not container:
+            logger.error(f"config: [instances.{name}].container is required")
             raise ConfigError(f"[instances.{name}].container is required")
         inst = InstanceConfig(
             name=name, container=str(container), config_mode=str(body.get("config_mode", "merge")), kubejs_mode=str(body.get("kubejs_mode", "delete"))
         )
         if inst.config_mode not in ("merge", "delete"):
+            logger.error(f"config: [instances.{name}].config_mode must be 'merge' or 'delete', got {inst.config_mode!r}")
             raise ConfigError(f"[instances.{name}].config_mode must be 'merge' or 'delete'")
         if inst.kubejs_mode != "delete":
+            logger.error(f"config: [instances.{name}].kubejs_mode must be 'delete', got {inst.kubejs_mode!r}")
             raise ConfigError(f"[instances.{name}].kubejs_mode must be 'delete'")
         if compose_result.ok:
             compose = compose_result.file
@@ -821,6 +919,7 @@ def _build_deployment_config(
                 svc = match_service_by_container(compose, inst.container)
             except ServiceMatchError as exc:
                 inst.service_match_error = str(exc)
+                logger.warning(f"config: [instances.{name}] compose match failed: {exc}")
             else:
                 inst.service = svc
                 root = derive_instance_root(svc)
@@ -829,6 +928,8 @@ def _build_deployment_config(
                     inst.config_path = inst.instance_root / "config"
                     inst.kubejs_path = inst.instance_root / "kubejs"
                     inst.server_properties_path = inst.instance_root / "server.properties"
+                else:
+                    logger.warning(f"config: [instances.{name}] no /data bind found on service {svc.name!r}; instance_root unresolved")
                 if svc.stop_grace_period:
                     inst.stop_grace_period_raw = svc.stop_grace_period
                     try:
@@ -837,38 +938,50 @@ def _build_deployment_config(
                         inst.stop_grace_parse_error = str(exc)
                 inst.stop_signal = svc.stop_signal
         instances[name] = inst
+    logger.info(f"config: resolved {len(instances)} instance(s): {sorted(instances)}")
     partition, partition_unknown = resolve_partition(instances, requested_instances)
     rp_raw = raw.get("resource_pack") or {}
     if not isinstance(rp_raw, dict):
+        logger.error("config: [resource_pack] is not a table")
         raise ConfigError("[resource_pack] must be a table")
     resource_packs: dict[str, ResourcePackConfig] = {}
     for name, body in rp_raw.items():
         name = str(name)
         if not isinstance(body, dict):
+            logger.error(f"config: [resource_pack.{name}] is not a table")
             raise ConfigError(f"[resource_pack.{name}] must be a table")
         if "filename" not in body:
+            logger.error(f"config: [resource_pack.{name}].filename is required")
             raise ConfigError(f"[resource_pack.{name}].filename is required")
         if "required" not in body:
+            logger.error(f"config: [resource_pack.{name}].required is required")
             raise ConfigError(f"[resource_pack.{name}].required is required")
         resource_packs[name] = ResourcePackConfig(filename=str(body["filename"]), required=bool(body["required"]), prompt=str(body.get("prompt", "")))
         if name not in instances:
+            logger.error(f"config: [resource_pack.{name}] has no matching [instances.{name}]")
             raise ConfigError(f"[resource_pack.{name}] has no matching [instances.{name}]")
+    logger.debug(f"config: resolved {len(resource_packs)} resource pack(s): {sorted(resource_packs)}")
     sync_mapping_raw = raw.get("sync_mapping") or {}
     if not isinstance(sync_mapping_raw, dict):
+        logger.error("config: [sync_mapping] is not a table")
         raise ConfigError("[sync_mapping] must be a table")
     sync_mapping = dict(sync_mapping_raw)
     restart_policy_raw = raw.get("restart_policy") or {}
     if not isinstance(restart_policy_raw, dict):
+        logger.error("config: [restart_policy] is not a table")
         raise ConfigError("[restart_policy] must be a table")
     restart_policy = {str(k): str(v) for k, v in restart_policy_raw.items()}
     discord_raw = raw.get("discord") or {}
     if not isinstance(discord_raw, dict):
+        logger.error("config: [discord] is not a table")
         raise ConfigError("[discord] must be a table")
     tags_raw = discord_raw.get("tags") or {}
     if not isinstance(tags_raw, dict):
+        logger.error("config: [discord.tags] is not a table")
         raise ConfigError("[discord.tags] must be a table")
     messages_raw = discord_raw.get("messages") or {}
     if not isinstance(messages_raw, dict):
+        logger.error("config: [discord.messages] is not a table")
         raise ConfigError("[discord.messages] must be a table")
 
     def _msg_template(name: str) -> str | None:
@@ -876,6 +989,7 @@ def _build_deployment_config(
         if block is None:
             return None
         if not isinstance(block, dict):
+            logger.error(f"config: [discord.messages.{name}] is not a table")
             raise ConfigError(f"[discord.messages.{name}] must be a table")
         t = block.get("template")
         return str(t) if t is not None else None
@@ -888,6 +1002,11 @@ def _build_deployment_config(
         failure_template=_msg_template("failure"),
         diagnostic_template=_msg_template("diagnostic"),
     )
+    logger.debug(
+        f"config: [discord] resolved; player_roles={len(discord.player_roles)} operator_roles={len(discord.operator_roles)} "
+        f"templates live={'y' if discord.live_template else 'n'} online={'y' if discord.online_template else 'n'} "
+        f"failure={'y' if discord.failure_template else 'n'} diagnostic={'y' if discord.diagnostic_template else 'n'}"
+    )
     webhook_url_raw = raw.get("webhook_url")
     webhook_url = str(webhook_url_raw) if webhook_url_raw else None
     www_dir_toml = _path(raw.get("www_dir"))
@@ -898,7 +1017,8 @@ def _build_deployment_config(
         www_dir = www_dir_toml
         www_dir_error = None
         www_dir_candidates = []
-        if compose_result.ok and logger is not None:
+        logger.debug(f"config: www_dir set from TOML -> {www_dir}")
+        if compose_result.ok:
             compose = compose_result.file
             assert compose is not None
             derived = derive_www_dir(compose)
@@ -906,6 +1026,8 @@ def _build_deployment_config(
                 derived_resolved = _resolve_compose_path(derived.path, compose.base_dir)
                 if derived_resolved != www_dir:
                     logger.warning(f"www_dir: TOML={www_dir} compose={derived_resolved} (TOML wins)")
+                else:
+                    logger.debug(f"config: www_dir TOML and compose agree on {www_dir}")
     elif compose_result.ok:
         compose = compose_result.file
         assert compose is not None
@@ -913,12 +1035,18 @@ def _build_deployment_config(
         www_dir_error = derived.error
         www_dir_candidates = [_resolve_compose_path(c, compose.base_dir) for c in derived.candidates]
         www_dir = _resolve_compose_path(derived.path, compose.base_dir) if derived.path is not None else None
+        if www_dir is not None:
+            logger.debug(f"config: www_dir derived from compose -> {www_dir}")
+        else:
+            logger.warning(f"config: www_dir could not be derived from compose: {www_dir_error}")
     else:
         www_dir = None
         www_dir_error = compose_result.error or "www_dir is not set in TOML and no compose file is available"
         www_dir_candidates = []
+        logger.warning(f"config: www_dir unresolved: {www_dir_error}")
     protect_file = _path(protect_file_raw) if protect_file_raw else None
-    return DeploymentConfig(
+    logger.debug(f"config: protect_file={protect_file} webhook_url={'set' if webhook_url else 'unset'}")
+    result = DeploymentConfig(
         project_root=project_root,
         config_dir=config_dir,
         sync_root=sync_root,
@@ -943,6 +1071,8 @@ def _build_deployment_config(
         compose=compose_result,
         mods_dir_toml=mods_dir_toml,
     )
+    logger.info(f"config: built; partition={partition} compose_ok={compose_result.ok} www_dir={www_dir}")
+    return result
 
 
 __all__ = [

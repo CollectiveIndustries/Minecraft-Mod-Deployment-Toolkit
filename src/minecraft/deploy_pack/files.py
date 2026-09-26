@@ -21,6 +21,19 @@ Non-responsibilities:
     staging directory; this module just zips it.
   * URL assembly for anything other than resource packs. Deploy
     notifications build their own URLs.
+
+Logging
+-------
+
+Atomic publication logs at DEBUG with destination paths, at INFO when
+a file lands, and at WARN when metadata preservation fails on an
+existing destination (permission errors are non-fatal per §4.10).
+Copy-with-clean logs at DEBUG with the full result breakdown and at
+WARN when an individual unlink or copy fails. Protect patterns log at
+INFO on load and WARN when the protect file is empty. Hash helpers and
+parse/resolve helpers log at DEBUG. The module logger is
+``minecraft.deploy_pack.files``; callers may inject an override via
+``logger=`` for a single call.
 """
 
 from __future__ import annotations
@@ -37,6 +50,9 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
+from .logging_setup import get_logger
+
+_log = get_logger(__name__)
 
 __all__ = [
     "CopyResult",
@@ -76,8 +92,11 @@ def _publish_atomically(dest: Path, writer: Callable[[Path], None], logger: Any 
     failure unlinks the temp file and re-raises. Directory-level fsync
     after replace is not performed (§4.10 durability note).
     """
+    if logger is None:
+        logger = _log
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(f"{dest.name}.tmp.{os.getpid()}")
+    logger.debug(f"atomic publish: writing {dest} via temp {tmp.name}")
     try:
         writer(tmp)
         fd = os.open(tmp, os.O_RDONLY)
@@ -89,20 +108,18 @@ def _publish_atomically(dest: Path, writer: Callable[[Path], None], logger: Any 
             try:
                 st = os.stat(dest)
             except OSError as exc:
-                if logger is not None:
-                    logger.warning(f"atomic write: stat({dest}) failed: {exc}")
+                logger.warning(f"atomic write: stat({dest}) failed: {exc}")
             else:
                 try:
                     os.chmod(tmp, st.st_mode)
                 except (PermissionError, OSError) as exc:
-                    if logger is not None:
-                        logger.warning(f"atomic write: chmod({tmp}) failed: {exc}")
+                    logger.warning(f"atomic write: chmod({tmp}) failed: {exc}")
                 try:
                     os.chown(tmp, st.st_uid, st.st_gid)
                 except (PermissionError, OSError) as exc:
-                    if logger is not None:
-                        logger.warning(f"atomic write: chown({tmp}) failed: {exc}")
+                    logger.warning(f"atomic write: chown({tmp}) failed: {exc}")
         os.replace(tmp, dest)
+        logger.debug(f"atomic publish: {dest} published")
     except Exception:
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -111,6 +128,9 @@ def _publish_atomically(dest: Path, writer: Callable[[Path], None], logger: Any 
 
 def atomic_write(path: Path, data: bytes, logger: Any = None) -> None:
     """Write ``data`` to ``path`` atomically (§4.10)."""
+    if logger is None:
+        logger = _log
+    logger.debug(f"atomic_write: {path} ({len(data)} byte(s))")
     _publish_atomically(path, lambda p: p.write_bytes(data), logger)
 
 
@@ -125,12 +145,15 @@ def atomic_copy(src: Path, dest: Path, logger: Any = None) -> None:
     Raises OSError on any unrecoverable failure; the temp file is
     unlinked first.
     """
+    if logger is None:
+        logger = _log
     if not src.is_file():
         raise FileNotFoundError(f"atomic_copy: source not found: {src}")
 
     def writer(tmp: Path) -> None:
         shutil.copyfile(src, tmp)
 
+    logger.debug(f"atomic_copy: {src} -> {dest}")
     _publish_atomically(dest, writer, logger)
 
 
@@ -141,8 +164,12 @@ def create_zip(source_dir: Path, output_zip: Path, logger: Any = None) -> None:
     directory component). Atomic publication via :func:`_publish_atomically`
     means a partial ZIP can never appear at ``output_zip`` (§4.10).
     """
+    if logger is None:
+        logger = _log
     if not source_dir.is_dir():
         raise NotADirectoryError(f"source directory not found: {source_dir}")
+
+    file_count = [0]
 
     def writer(tmp: Path) -> None:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -151,8 +178,11 @@ def create_zip(source_dir: Path, output_zip: Path, logger: Any = None) -> None:
                     full = Path(dirpath) / fname
                     rel = full.relative_to(source_dir)
                     zf.write(full, arcname=str(rel).replace(os.sep, "/"))
+                    file_count[0] += 1
 
+    logger.debug(f"create_zip: {source_dir} -> {output_zip}")
     _publish_atomically(output_zip, writer, logger)
+    logger.info(f"create_zip: wrote {file_count[0]} file(s) to {output_zip}")
 
 
 def _hash_file(path: Path, algo: str) -> str:
@@ -219,10 +249,15 @@ def load_protect_patterns(path: Path | None, logger: Any = None) -> list[str]:
 
     Format: one pattern per line; blank lines and ``#`` comments ignored;
     leading/trailing whitespace stripped; a single trailing ``/`` is
-    stripped so ``world/`` behaves like ``world`` (matching the pattern
-    against the same string the walker produces).
+    stripped so ``world/`` behaves like ``world``.
     """
-    if path is None or not path.is_file():
+    if logger is None:
+        logger = _log
+    if path is None:
+        logger.debug("load_protect_patterns: no protect file configured")
+        return []
+    if not path.is_file():
+        logger.debug(f"load_protect_patterns: {path} not present; no patterns loaded")
         return []
     patterns: list[str] = []
     with path.open("r", encoding="utf-8") as f:
@@ -234,9 +269,8 @@ def load_protect_patterns(path: Path | None, logger: Any = None) -> list[str]:
                 line = line.rstrip("/")
             patterns.append(line)
     if not patterns:
-        if logger is not None:
-            logger.warning(f"protect file is empty: {path}")
-    elif logger is not None:
+        logger.warning(f"protect file is empty: {path}")
+    else:
         logger.info(f"Loaded {len(patterns)} protect pattern(s) from {path}")
     return patterns
 
@@ -289,12 +323,20 @@ def _prune_empty_dirs(root: Path, protect_patterns: list[str], logger: Any) -> N
             full = Path(dirpath) / dname
             rel = full.relative_to(root)
             if is_protected_path(rel, protect_patterns):
+                logger.debug(f"prune: keeping protected dir {rel}")
                 continue
             with contextlib.suppress(OSError):
                 full.rmdir()
+                logger.debug(f"prune: removed empty dir {rel}")
 
 
-def copy_tree(src: Path, dst: Path, mode: str = "merge", protect_patterns: list[str] | None = None, logger: Any = None) -> CopyResult:
+def copy_tree(
+    src: Path,
+    dst: Path,
+    mode: str = "merge",
+    protect_patterns: list[str] | None = None,
+    logger: Any = None,
+) -> CopyResult:
     """Deploy ``src``'s contents into ``dst`` per §7.2.
 
     ``mode`` is one of:
@@ -312,21 +354,19 @@ def copy_tree(src: Path, dst: Path, mode: str = "merge", protect_patterns: list[
 
     Directory pruning runs after removals: an empty directory left
     behind by a deletion is removed unless it matches a protect pattern.
-    Directories with protected descendants survive automatically,
-    because ``rmdir`` fails on a non-empty directory.
 
     Change detection is SHA-256 on file content (§4.4). Unchanged files
-    are neither removed nor rewritten. Files present on both sides with
-    different content are *updated in place* by the copy step: §4.4 says
-    unmodified files are never removed or rewritten, and an atomic
-    overwrite of a changed file is not a removal.
+    are neither removed nor rewritten.
     """
+    if logger is None:
+        logger = _log
     if mode not in ("merge", "delete"):
         raise ValueError(f"mode must be 'merge' or 'delete', got {mode!r}")
     if not src.is_dir():
         raise NotADirectoryError(f"source directory not found: {src}")
     protect = protect_patterns or []
     dst.mkdir(parents=True, exist_ok=True)
+    logger.debug(f"copy_tree: {src} -> {dst} (mode={mode}, {len(protect)} protect pattern(s))")
     src_map = _hash_tree(src)
     dst_map = _hash_tree(dst)
     src_set = set(src_map)
@@ -341,13 +381,13 @@ def copy_tree(src: Path, dst: Path, mode: str = "merge", protect_patterns: list[
         for rel in sorted(extras):
             if is_protected_path(rel, protect):
                 result.protected_kept.append(rel)
+                logger.debug(f"copy_tree: keeping protected extra {rel}")
             else:
                 try:
                     (dst / rel).unlink()
                     result.removed.append(rel)
                 except OSError as exc:
-                    if logger is not None:
-                        logger.warning(f"copy_tree: unlink {rel} failed: {exc}")
+                    logger.warning(f"copy_tree: unlink {rel} failed: {exc}")
     for rel in sorted(new_files | updated):
         src_file = src / rel
         dst_file = dst / rel
@@ -357,8 +397,7 @@ def copy_tree(src: Path, dst: Path, mode: str = "merge", protect_patterns: list[
         try:
             shutil.copy2(src_file, dst_file)
         except OSError as exc:
-            if logger is not None:
-                logger.warning(f"copy_tree: copy {rel} failed: {exc}")
+            logger.warning(f"copy_tree: copy {rel} failed: {exc}")
             continue
         if rel in new_files:
             result.added.append(rel)
@@ -368,14 +407,24 @@ def copy_tree(src: Path, dst: Path, mode: str = "merge", protect_patterns: list[
         result.unchanged.append(rel)
     if result.removed:
         _prune_empty_dirs(dst, protect, logger)
-    if logger is not None and result.any_change:
-        logger.debug(
-            f"copy_tree({src} -> {dst}, mode={mode}): {len(result.added)} added, {len(result.updated)} updated, {len(result.removed)} removed, {len(result.protected_kept)} protected-kept, {len(result.unchanged)} unchanged"
+    if result.any_change:
+        logger.info(
+            f"copy_tree({src} -> {dst}, mode={mode}): "
+            f"{len(result.added)} added, {len(result.updated)} updated, "
+            f"{len(result.removed)} removed, {len(result.protected_kept)} protected-kept, "
+            f"{len(result.unchanged)} unchanged"
         )
+    else:
+        logger.debug(f"copy_tree({src} -> {dst}, mode={mode}): no changes ({len(result.unchanged)} unchanged, {len(result.protected_kept)} protected-kept)")
     return result
 
 
-def deploy_flat_files(src_files: dict[str, Path], dst_dir: Path, protect_patterns: list[str] | None = None, logger: Any = None) -> CopyResult:
+def deploy_flat_files(
+    src_files: dict[str, Path],
+    dst_dir: Path,
+    protect_patterns: list[str] | None = None,
+    logger: Any = None,
+) -> CopyResult:
     """Deploy a flat set of source files into ``dst_dir`` (§7.2, §4.11).
 
     ``src_files`` maps destination filename to source path. The source
@@ -384,24 +433,24 @@ def deploy_flat_files(src_files: dict[str, Path], dst_dir: Path, protect_pattern
     call over ``sync/downloads``.
 
     Only files ending in ``.jar`` in ``dst_dir`` are considered, per
-    §2.9's drift definition and §4.11's flat-directory rule. Files in
-    ``dst_dir`` that are not ``.jar`` are left untouched and are never
-    reported. Subdirectories are ignored.
+    §2.9's drift definition and §4.11's flat-directory rule.
 
     Change detection is SHA-256 (§4.4). Unchanged files are left alone.
     Protected files (§3.13) that are not in the source set survive; a
     protected file that *is* in the source set is overwritten with
-    source content, matching §3.13's overwrite-vs-protect rule.
+    source content.
     """
+    if logger is None:
+        logger = _log
     protect = protect_patterns or []
     dst_dir.mkdir(parents=True, exist_ok=True)
+    logger.debug(f"deploy_flat_files: {len(src_files)} source(s) -> {dst_dir}")
     src_map: dict[str, str] = {}
     for name, path in src_files.items():
         try:
             src_map[name] = compute_sha256(path)
         except OSError as exc:
-            if logger is not None:
-                logger.warning(f"deploy_flat_files: hash {name} failed: {exc}")
+            logger.warning(f"deploy_flat_files: hash {name} failed: {exc}")
             continue
     dst_map: dict[str, str] = {}
     for entry in dst_dir.iterdir():
@@ -422,13 +471,13 @@ def deploy_flat_files(src_files: dict[str, Path], dst_dir: Path, protect_pattern
     for name in extras:
         if is_protected_path(name, protect):
             result.protected_kept.append(name)
+            logger.debug(f"deploy_flat_files: keeping protected extra {name}")
         else:
             try:
                 (dst_dir / name).unlink()
                 result.removed.append(name)
             except OSError as exc:
-                if logger is not None:
-                    logger.warning(f"deploy_flat_files: unlink {name} failed: {exc}")
+                logger.warning(f"deploy_flat_files: unlink {name} failed: {exc}")
     for name in new_files + updated:
         src_path = src_files.get(name)
         if src_path is None:
@@ -436,14 +485,22 @@ def deploy_flat_files(src_files: dict[str, Path], dst_dir: Path, protect_pattern
         try:
             shutil.copy2(src_path, dst_dir / name)
         except OSError as exc:
-            if logger is not None:
-                logger.warning(f"deploy_flat_files: copy {name} failed: {exc}")
+            logger.warning(f"deploy_flat_files: copy {name} failed: {exc}")
             continue
         if name in new_files:
             result.added.append(name)
         else:
             result.updated.append(name)
     result.unchanged = list(unchanged)
+    if result.any_change:
+        logger.info(
+            f"deploy_flat_files({dst_dir}): "
+            f"{len(result.added)} added, {len(result.updated)} updated, "
+            f"{len(result.removed)} removed, {len(result.protected_kept)} protected-kept, "
+            f"{len(result.unchanged)} unchanged"
+        )
+    else:
+        logger.debug(f"deploy_flat_files({dst_dir}): no changes ({len(result.unchanged)} unchanged, {len(result.protected_kept)} protected-kept)")
     return result
 
 
@@ -452,28 +509,17 @@ def is_shared_dest(value: str) -> bool:
     return isinstance(value, str) and value.startswith("@")
 
 
-def parse_shared_dest(value: str) -> tuple[str, str]:
+def parse_shared_dest(value: str, logger: Any = None) -> tuple[str, str]:
     """Parse ``@www/<segment>(/<segment>)*`` per §7.5.
 
     Returns ``(prefix, subpath)`` - currently only ``prefix == "www"``
     is supported. ``subpath`` is the portion after ``@www/`` with no
-    leading or trailing slash (the grammar ensures this).
+    leading or trailing slash.
 
-    Raises ConfigError on any malformed value. The following are
-    rejected, matching §7.5's examples:
-
-      ``@www``       no subpath
-      ``@www/``      empty subpath
-      ``@www//foo``  empty segment
-      ``@www/./foo`` dot segment
-      ``@www/../foo`` dot-dot segment
-
-    §7.5's "leading/trailing ``/`` stripped" normalization clause
-    conflicts with its grammar (which requires every segment non-empty).
-    The grammar wins, because the examples require it: ``@www/foo/`` is
-    rejected as having an empty final segment. The normalization clause
-    is therefore a no-op under a valid parse.
+    Raises ConfigError on any malformed value.
     """
+    if logger is None:
+        logger = _log
     if not isinstance(value, str) or not value.startswith("@"):
         raise ConfigError(f"not a shared destination: {value!r}")
     head, sep, rest = value[1:].partition("/")
@@ -488,17 +534,22 @@ def parse_shared_dest(value: str) -> tuple[str, str]:
             raise ConfigError(f"dot or dot-dot segment in @www subpath: {value!r}")
         if "\x00" in segment:
             raise ConfigError(f"NUL byte in @www subpath: {value!r}")
+    logger.debug(f"parse_shared_dest: {value!r} -> (www, {rest!r})")
     return ("www", rest)
 
 
-def resolve_shared_dest(value: str, www_dir: Path) -> Path:
+def resolve_shared_dest(value: str, www_dir: Path, logger: Any = None) -> Path:
     """Resolve ``@www/...`` to an absolute path under ``www_dir``.
 
     Raises ConfigError for any malformed value or non-``www`` prefix.
     """
-    prefix, subpath = parse_shared_dest(value)
+    if logger is None:
+        logger = _log
+    prefix, subpath = parse_shared_dest(value, logger)
     assert prefix == "www"
-    return www_dir / subpath
+    resolved = www_dir / subpath
+    logger.debug(f"resolve_shared_dest: {value!r} -> {resolved}")
+    return resolved
 
 
 def resolve_mapping_for_side(mapping_value: Any, side: str) -> str | None:
@@ -512,8 +563,6 @@ def resolve_mapping_for_side(mapping_value: Any, side: str) -> str | None:
     A dict's missing or ``None`` value for a side means the item is
     excluded on that side. A value of ``-1`` is also treated as
     excluded, matching the legacy convention.
-
-    ``side`` must be ``"client"`` or ``"server"``.
     """
     if isinstance(mapping_value, str):
         return mapping_value
@@ -530,16 +579,8 @@ def resolve_mapping_for_side(mapping_value: Any, side: str) -> str | None:
 def validate_resource_pack_filename(name: str) -> None:
     r"""Validate a resource-pack filename per §7.5.
 
-    Rules:
-
-      * non-empty
-      * no ``/``, no ``\\``
-      * no ``..`` anywhere
-      * no leading ``.``
-      * no NUL
-      * ends in ``.zip``
-
-    Raises ConfigError on any violation.
+    Rules: non-empty, no ``/`` or ``\\``, no ``..`` anywhere, no leading
+    ``.``, no NUL, ends in ``.zip``. Raises ConfigError on any violation.
     """
     if not name:
         raise ConfigError("resource-pack filename must be non-empty")
@@ -555,16 +596,25 @@ def validate_resource_pack_filename(name: str) -> None:
         raise ConfigError(f"resource-pack filename must end in '.zip': {name!r}")
 
 
-def resolve_resource_pack_dest(value: str, www_dir: Path) -> Path:
+def resolve_resource_pack_dest(value: str, www_dir: Path, logger: Any = None) -> Path:
     """Return the directory under ``www_dir`` where resource packs land.
 
-    ``value`` is the ``[sync_mapping.resourcepacks].resource_pack`` string,
+    ``value`` is the ``[sync_mapping].resourcepacks.resource_pack`` string,
     which must be a valid ``@www/...`` destination (§7.5).
     """
-    return resolve_shared_dest(value, www_dir)
+    if logger is None:
+        logger = _log
+    dest = resolve_shared_dest(value, www_dir, logger)
+    logger.debug(f"resolve_resource_pack_dest: {value!r} -> {dest}")
+    return dest
 
 
-def build_resource_pack_url(download_base_url: str, mapping_value: str, filename: str) -> str:
+def build_resource_pack_url(
+    download_base_url: str,
+    mapping_value: str,
+    filename: str,
+    logger: Any = None,
+) -> str:
     """Compose the public URL for a resource-pack ZIP (§7.5).
 
     ``{base}/{subpath}/{filename}``, with ``base`` trailing-slash-stripped
@@ -573,12 +623,16 @@ def build_resource_pack_url(download_base_url: str, mapping_value: str, filename
     Raises ConfigError if the mapping value is malformed or the filename
     is invalid.
     """
+    if logger is None:
+        logger = _log
     if not download_base_url:
         raise ConfigError("download_base_url must be non-empty")
     validate_resource_pack_filename(filename)
-    _prefix, subpath = parse_shared_dest(mapping_value)
+    _prefix, subpath = parse_shared_dest(mapping_value, logger)
     base = download_base_url.rstrip("/")
-    return f"{base}/{subpath}/{filename}"
+    url = f"{base}/{subpath}/{filename}"
+    logger.debug(f"build_resource_pack_url: -> {url}")
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -586,21 +640,28 @@ def build_resource_pack_url(download_base_url: str, mapping_value: str, filename
 # ---------------------------------------------------------------------------
 
 
-def hash_tree(root: Path) -> dict[str, str]:
+def hash_tree(root: Path, logger: Any = None) -> dict[str, str]:
     """Return ``{rel_path: sha256}`` for every regular file under ``root``.
 
     Path keys use forward slashes. Symlink semantics match :func:`_hash_tree`.
     """
-    return _hash_tree(root)
+    if logger is None:
+        logger = _log
+    result = _hash_tree(root)
+    logger.debug(f"hash_tree({root}): {len(result)} file(s) hashed")
+    return result
 
 
-def hash_flat_dir(root: Path) -> dict[str, str]:
+def hash_flat_dir(root: Path, logger: Any = None) -> dict[str, str]:
     """Return ``{filename: sha256}`` for the ``.jar`` files directly in ``root``.
 
     Non-``.jar`` files and subdirectories are ignored (§4.11: ``mods_dir``
     is treated as flat).
     """
+    if logger is None:
+        logger = _log
     if not root.is_dir():
+        logger.debug(f"hash_flat_dir({root}): directory missing; returning empty")
         return {}
     out: dict[str, str] = {}
     for entry in root.iterdir():
@@ -610,4 +671,5 @@ def hash_flat_dir(root: Path) -> dict[str, str]:
             out[entry.name] = compute_sha256(entry)
         except OSError:
             continue
+    logger.debug(f"hash_flat_dir({root}): {len(out)} jar(s) hashed")
     return out

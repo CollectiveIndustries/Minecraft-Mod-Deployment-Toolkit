@@ -32,11 +32,19 @@ Non-responsibilities:
 Known limitation: an unmarked jar is invisible to the closure. A
 ``mandatory=true`` dependency on its modId cannot be satisfied. The fix
 is to add a ``.pw.toml`` or an override; the tool does not guess.
+
+Logging
+-------
+
+Parsing, filtering, closure, and unmarked detection each log coarse
+milestones at INFO and per-entry detail at DEBUG. Skips and misconfig
+that a user needs to act on log at WARN. The module logger is
+``minecraft.deploy_pack.deps``; callers may inject an override via
+``logger=`` for a single call.
 """
 
 from __future__ import annotations
 
-import logging
 import tomllib
 import zipfile
 from dataclasses import dataclass, field
@@ -44,6 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
+from .logging_setup import get_logger
 from .overrides import apply_side_overrides
 
 __all__ = [
@@ -63,15 +72,13 @@ __all__ = [
     "scan_manifests",
 ]
 
-
-_logger = logging.getLogger(__name__)
-
+_log = get_logger(__name__)
 
 _VALID_SIDES = frozenset({"client", "server", "both"})
 
 
 # ---------------------------------------------------------------------------
-# Prism index parsing (ported and extended from common/prism.py)
+# Prism index parsing
 # ---------------------------------------------------------------------------
 
 
@@ -103,15 +110,21 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
                            ``[[x-prismlauncher-dependencies]]`` blocks.
 
     Returns None only if the file cannot be parsed or has no filename.
+    Malformed files and missing filenames log at WARN.
     """
     try:
         with open(toml_path, "rb") as f:
             data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, OSError):
+    except tomllib.TOMLDecodeError as exc:
+        _log.warning(f"{toml_path}: malformed TOML; skipping ({exc})")
+        return None
+    except OSError as exc:
+        _log.warning(f"{toml_path}: could not read; skipping ({exc})")
         return None
 
     filename = data.get("filename")
     if not filename:
+        _log.warning(f"{toml_path}: no 'filename' key; skipping")
         return None
 
     name = data.get("name", "")
@@ -122,7 +135,11 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
         side = "both"
     else:
         side_raw = str(raw_side).lower()
-        side = side_raw if side_raw in _VALID_SIDES else "both"
+        if side_raw in _VALID_SIDES:
+            side = side_raw
+        else:
+            _log.debug(f"{toml_path}: side={side_raw!r} outside valid set; coercing to 'both' (side_raw preserved)")
+            side = "both"
 
     download = data.get("download", {})
     download_url = download.get("url")
@@ -163,6 +180,7 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
                 }
             )
 
+    _log.debug(f"parsed {toml_path.name}: file={filename!r} side={side!r} side_raw={side_raw!r} source={source} deps={len(dependencies)}")
     return {
         "id": mod_id,
         "file": str(filename),
@@ -183,15 +201,21 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
 def load_prism_index(index_dir: Path) -> list[dict]:
     """Load all ``.pw.toml`` files from ``index_dir``.
 
-    Returns entries in filesystem-glob order, which is stable for a given filesystem.
+    Returns entries in filesystem-glob order, which is stable for a
+    given filesystem. A missing index directory logs at WARN and
+    returns an empty list.
     """
     entries: list[dict] = []
     if not index_dir.is_dir():
+        _log.warning(f"Prism index directory missing: {index_dir}")
         return entries
-    for toml_path in index_dir.glob("*.pw.toml"):
+    paths = sorted(index_dir.glob("*.pw.toml"))
+    _log.debug(f"loading Prism index from {index_dir} ({len(paths)} .pw.toml file(s))")
+    for toml_path in paths:
         entry = parse_prism_toml(toml_path)
         if entry is not None:
             entries.append(entry)
+    _log.info(f"loaded {len(entries)} Prism entr(ies) from {index_dir}")
     return entries
 
 
@@ -206,11 +230,13 @@ def filter_prism_entries_by_side(entries: list[dict], target_side: str) -> list[
     """
     if target_side not in ("client", "server"):
         raise ValueError(f"target_side must be 'client' or 'server', got {target_side!r}")
-    return [e for e in entries if e.get("side") in ("both", target_side)]
+    out = [e for e in entries if e.get("side") in ("both", target_side)]
+    _log.debug(f"side filter [{target_side}]: {len(entries)} -> {len(out)}")
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Jar manifests (ported from common/deps.py)
+# Jar manifests
 # ---------------------------------------------------------------------------
 
 
@@ -235,11 +261,13 @@ def clear_manifest_cache() -> None:
     to, because one deploy uses one modpack_dir for its lifetime.
     """
     _MANIFEST_CACHE.clear()
+    _log.debug("manifest cache cleared")
 
 
-def _read_jar_manifest(jar_path: Path, logger) -> JarManifest | None:
+def _read_jar_manifest(jar_path: Path, logger: Any) -> JarManifest | None:
     """Parse ``META-INF/mods.toml`` from a jar. Never raises."""
     if not jar_path.is_file():
+        logger.debug(f"jar not present: {jar_path.name}")
         return None
     try:
         with zipfile.ZipFile(jar_path) as zf:
@@ -255,15 +283,15 @@ def _read_jar_manifest(jar_path: Path, logger) -> JarManifest | None:
                 try:
                     data = tomllib.loads(raw.decode("utf-8"))
                 except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
-                    if logger is not None:
-                        logger.warning(f"Could not parse {candidate} in {jar_path.name}: {exc}")
+                    logger.warning(f"Could not parse {candidate} in {jar_path.name}: {exc}")
                     return None
+                logger.debug(f"read manifest from {jar_path.name} via {candidate}")
                 break
             if data is None:
+                logger.debug(f"no mods.toml found in {jar_path.name}")
                 return None
     except (zipfile.BadZipFile, OSError) as exc:
-        if logger is not None:
-            logger.warning(f"Could not read jar {jar_path.name}: {exc}")
+        logger.warning(f"Could not read jar {jar_path.name}: {exc}")
         return None
 
     manifest = JarManifest(filename=jar_path.name)
@@ -293,20 +321,30 @@ def _read_jar_manifest(jar_path: Path, logger) -> JarManifest | None:
                 manifest.required_client.add(dep_mod_id)
             if side in ("BOTH", "SERVER"):
                 manifest.required_server.add(dep_mod_id)
+
+    logger.debug(
+        f"manifest {jar_path.name}: modIds={sorted(manifest.mod_ids)} "
+        f"required_client={sorted(manifest.required_client)} "
+        f"required_server={sorted(manifest.required_server)}"
+    )
     return manifest
 
 
-def scan_manifests(entries: list[dict], modpack_dir: Path, logger) -> dict[str, JarManifest]:
+def scan_manifests(entries: list[dict], modpack_dir: Path, logger: Any = None) -> dict[str, JarManifest]:
     """Read every entry's jar manifest, keyed by filename.
 
     Cached per ``modpack_dir`` for the lifetime of the process. The
     multiple ``load_mod_list``-style calls in one deploy therefore only
     pay the scan cost once. Call ``clear_manifest_cache`` to reset.
     """
+    if logger is None:
+        logger = _log
     key = modpack_dir.resolve()
     cached = _MANIFEST_CACHE.get(key)
     if cached is not None:
+        logger.debug(f"manifest cache hit for {key} ({len(cached)} jar(s))")
         return cached
+    logger.debug(f"manifest cache miss for {key}; scanning {len(entries)} entr(ies)")
     result: dict[str, JarManifest] = {}
     for entry in entries:
         filename = entry.get("file")
@@ -316,11 +354,12 @@ def scan_manifests(entries: list[dict], modpack_dir: Path, logger) -> dict[str, 
         if manifest is not None:
             result[filename] = manifest
     _MANIFEST_CACHE[key] = result
+    logger.info(f"scanned {len(result)} jar manifest(s) under {key}")
     return result
 
 
 # ---------------------------------------------------------------------------
-# Closure (ported from common/deps.py)
+# Closure
 # ---------------------------------------------------------------------------
 
 
@@ -337,9 +376,7 @@ class ClosureResult:
         """Number of entries that were force-included by the closure."""
         return len(self.entries) - len(self.seed_ids)
 
-    def grouped(
-        self,
-    ) -> dict[str, tuple[dict, list[tuple[dict, str]]]]:
+    def grouped(self) -> dict[str, tuple[dict, list[tuple[dict, str]]]]:
         """Return ``{dep_id: (dep_entry, [(dependent, reason), ...])}``."""
         grouped: dict[str, tuple[dict, list[tuple[dict, str]]]] = {}
         for dependent, dependency, reason in self.forced:
@@ -353,7 +390,7 @@ class ClosureResult:
 def _build_lookup(
     entries: list[dict],
     manifests: dict[str, JarManifest],
-    logger,
+    logger: Any,
 ) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
     """Return (by_id, by_project, by_modid)."""
     entry_by_id: dict[str, dict] = {}
@@ -374,8 +411,7 @@ def _build_lookup(
         for mid in manifest.mod_ids:
             existing = entry_by_modid.get(mid)
             if existing is not None and existing is not entry:
-                if logger is not None:
-                    logger.debug(f"modId {mid!r} provided by both {existing.get('file')!r} and {filename!r}; using the first")
+                logger.debug(f"modId {mid!r} provided by both {existing.get('file')!r} and {filename!r}; using the first")
                 continue
             entry_by_modid[mid] = entry
     return entry_by_id, entry_by_project, entry_by_modid
@@ -393,11 +429,7 @@ def _index_deps(entry: dict) -> set[str]:
     return result
 
 
-def _jar_deps(
-    entry: dict,
-    manifests: dict[str, JarManifest],
-    target_side: str,
-) -> set[str]:
+def _jar_deps(entry: dict, manifests: dict[str, JarManifest], target_side: str) -> set[str]:
     """ModIds that this entry's jar marks REQUIRED for the target side."""
     filename = entry.get("file")
     manifest = manifests.get(filename) if filename else None
@@ -413,7 +445,7 @@ def expand_with_required(
     seed_entries: list[dict],
     target_side: str,
     modpack_dir: Path,
-    logger,
+    logger: Any = None,
 ) -> ClosureResult:
     """Expand a side-filtered seed with its transitive mandatory deps.
 
@@ -424,11 +456,17 @@ def expand_with_required(
     The returned list preserves ``all_entries`` order so output is
     deterministic across builds.
     """
+    if logger is None:
+        logger = _log
     side = target_side.lower()
     if side not in ("client", "server"):
         raise ValueError(f"target_side must be 'client' or 'server', got {target_side!r}")
+
+    logger.debug(f"closure [{side}]: seed={len(seed_entries)} of {len(all_entries)} entr(ies)")
     manifests = scan_manifests(all_entries, modpack_dir, logger)
     entry_by_id, entry_by_project, entry_by_modid = _build_lookup(all_entries, manifests, logger)
+    logger.debug(f"closure [{side}]: lookup tables id={len(entry_by_id)} project={len(entry_by_project)} modid={len(entry_by_modid)}")
+
     seed_ids: set[str] = {str(e.get("id")) for e in seed_entries if e.get("id")}
     closure: set[str] = set(seed_ids)
     worklist: list[str] = list(seed_ids)
@@ -442,25 +480,32 @@ def expand_with_required(
         for project_id in _index_deps(entry):
             dep_entry = entry_by_project.get(project_id)
             if dep_entry is None:
+                logger.debug(f"closure [{side}]: {current_id} -> project {project_id}: no indexed entry")
                 continue
             dep_id = str(dep_entry.get("id"))
             if dep_id in closure:
                 continue
             closure.add(dep_id)
             worklist.append(dep_id)
-            forced.append((entry, dep_entry, f"index addonId={project_id}"))
+            reason = f"index addonId={project_id}"
+            forced.append((entry, dep_entry, reason))
+            logger.debug(f"closure [{side}]: force-include {dep_entry.get('file')} (reason: {reason})")
         for dep_mod_id in _jar_deps(entry, manifests, side):
             dep_entry = entry_by_modid.get(dep_mod_id)
             if dep_entry is None:
+                logger.debug(f"closure [{side}]: {current_id} -> modId {dep_mod_id}: no indexed entry")
                 continue
             dep_id = str(dep_entry.get("id"))
             if dep_id in closure:
                 continue
             closure.add(dep_id)
             worklist.append(dep_id)
-            forced.append((entry, dep_entry, f"jar modId={dep_mod_id}"))
+            reason = f"jar modId={dep_mod_id}"
+            forced.append((entry, dep_entry, reason))
+            logger.debug(f"closure [{side}]: force-include {dep_entry.get('file')} (reason: {reason})")
 
     ordered = [e for e in all_entries if str(e.get("id")) in closure]
+    logger.info(f"closure [{side}]: expanded {len(seed_ids)} -> {len(ordered)} mod(s); {len(forced)} forced")
     return ClosureResult(entries=ordered, seed_ids=seed_ids, forced=forced)
 
 
@@ -468,7 +513,7 @@ def format_diagnostic(
     all_entries: list[dict],
     seeds: dict[str, list[dict]],
     modpack_dir: Path,
-    logger,
+    logger: Any = None,
 ) -> str:
     """Multi-section human-readable diagnostic for ``--debug-deps``.
 
@@ -476,6 +521,8 @@ def format_diagnostic(
     list. For each side, prints the seed count, closure count, and every
     force-included entry with its dependents.
     """
+    if logger is None:
+        logger = _log
     lines: list[str] = []
     lines.append("=== Dependency closure diagnostic ===")
     lines.append(f"Modpack dir:         {modpack_dir}")
@@ -521,11 +568,9 @@ class UnmarkedJar:
 
     filename: str
     reason: str
-    """Human-readable: ``"no .pw.toml"`` or
-    ``"declared side 'skipped' is outside {client, server, both}"``."""
 
 
-def find_unmarked(modpack_dir: Path, entries: list[dict]) -> list[UnmarkedJar]:
+def find_unmarked(modpack_dir: Path, entries: list[dict], logger: Any = None) -> list[UnmarkedJar]:
     """Return jars that are unmarked per §6.3.
 
     Two sources, both reported:
@@ -538,25 +583,21 @@ def find_unmarked(modpack_dir: Path, entries: list[dict]) -> list[UnmarkedJar]:
     ``side_raw is None`` (no ``side`` key in the .pw.toml) is treated as
     marked, matching the parser's default of ``"both"``.
 
-    Returns results sorted by filename, with no duplicates: a jar that
-    is unmarked by rule (1) cannot also be unmarked by rule (2), because
-    rule (2) requires an index entry.
+    Returns results sorted by filename, with no duplicates.
 
     Raises ConfigError if ``modpack_dir`` is not a directory.
     """
+    if logger is None:
+        logger = _log
     if not modpack_dir.is_dir():
         raise ConfigError(f"modpack_dir is not a directory: {modpack_dir}")
 
     indexed_files: set[str] = {str(e["file"]) for e in entries if e.get("file")}
-
     by_filename: dict[str, UnmarkedJar] = {}
 
     for jar in modpack_dir.glob("*.jar"):
         if jar.name not in indexed_files:
-            by_filename[jar.name] = UnmarkedJar(
-                filename=jar.name,
-                reason="no .pw.toml",
-            )
+            by_filename[jar.name] = UnmarkedJar(filename=jar.name, reason="no .pw.toml")
 
     for entry in entries:
         raw = entry.get("side_raw")
@@ -572,10 +613,17 @@ def find_unmarked(modpack_dir: Path, entries: list[dict]) -> list[UnmarkedJar]:
             reason=(f"declared side {raw!r} is outside {{client, server, both}}"),
         )
 
-    return [by_filename[name] for name in sorted(by_filename)]
+    result = [by_filename[name] for name in sorted(by_filename)]
+    if result:
+        logger.debug(f"find_unmarked: {len(result)} jar(s) unmarked")
+        for u in result:
+            logger.debug(f"  {u.filename}: {u.reason}")
+    else:
+        logger.debug("find_unmarked: no unmarked jars")
+    return result
 
 
-def remove_unmarked(entries: list[dict], unmarked: list[UnmarkedJar]) -> list[dict]:
+def remove_unmarked(entries: list[dict], unmarked: list[UnmarkedJar], logger: Any = None) -> list[dict]:
     """Return ``entries`` with every unmarked filename removed.
 
     Used by ``--non-interactive`` (§6.2): unmarked mods are not
@@ -583,13 +631,13 @@ def remove_unmarked(entries: list[dict], unmarked: list[UnmarkedJar]) -> list[di
     instead prompt for each unmarked entry and splice the decisions
     back in via ``overrides.py``.
     """
+    if logger is None:
+        logger = _log
     drop = {u.filename for u in unmarked}
-    return [e for e in entries if e.get("file") not in drop]
-
-
-# ---------------------------------------------------------------------------
-# Shared mod-source resolution (used by preflight, scope_server, scope_client)
-# ---------------------------------------------------------------------------
+    out = [e for e in entries if e.get("file") not in drop]
+    if drop:
+        logger.debug(f"remove_unmarked: dropped {len(drop)} jar(s); {len(entries)} -> {len(out)}")
+    return out
 
 
 _UNMARKED_VALID_SIDES = frozenset({"client", "server", "both"})
@@ -611,6 +659,7 @@ def resolve_mod_sources(
     modpack_dir: Path,
     target_side: str,
     overrides: Any,
+    logger: Any = None,
 ) -> dict[str, Path]:
     """Prism index -> marked -> overridden -> side-filtered -> closed -> {filename: path}.
 
@@ -619,31 +668,45 @@ def resolve_mod_sources(
     :class:`minecraft.deploy_pack.overrides.SideOverrides` instance; it is
     duck-typed here to avoid a circular import.
     """
+    if logger is None:
+        logger = _log
     index_dir = modpack_dir / ".index"
     if not index_dir.is_dir():
+        logger.warning(f"resolve_mod_sources: Prism index directory missing: {index_dir}")
         return {}
     entries = load_prism_index(index_dir)
     if not entries:
+        logger.warning(f"resolve_mod_sources: no entries loaded from {index_dir}")
         return {}
+
     marked = [e for e in entries if (not is_unmarked(e)) or overrides.matches(e)]
+    logger.debug(f"resolve_mod_sources [{target_side}]: {len(entries)} -> {len(marked)} after unmarked filter")
+
     if not overrides.is_empty():
         marked = apply_side_overrides(marked, overrides)
+        logger.debug(f"resolve_mod_sources [{target_side}]: overrides applied")
+
     side_entries = filter_prism_entries_by_side(marked, target_side)
     closure = expand_with_required(
         all_entries=marked,
         seed_entries=side_entries,
         target_side=target_side,
         modpack_dir=modpack_dir,
-        logger=_logger,
+        logger=logger,
     )
+
     out: dict[str, Path] = {}
+    missing = 0
     for entry in closure.entries:
         filename = entry.get("file")
         if not filename:
             continue
         path = modpack_dir / filename
         if not path.is_file():
-            _logger.warning(f"mod source missing from disk, skipping: {filename}")
+            logger.warning(f"mod source missing from disk, skipping: {filename}")
+            missing += 1
             continue
         out[str(filename)] = path
+
+    logger.info(f"resolve_mod_sources [{target_side}]: {len(out)} source(s) ({missing} declared but missing on disk)")
     return out

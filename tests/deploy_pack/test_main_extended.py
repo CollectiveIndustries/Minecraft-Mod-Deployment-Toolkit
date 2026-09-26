@@ -175,7 +175,7 @@ class TestSetupLogging:
     def test_debug_enables_debug_level(self) -> None:
         """Tests that --debug raises the root logger to DEBUG."""
         logger = _setup_logging(True)
-        assert logger.name == "deploy_pack"
+        assert logger.name == "minecraft.deploy_pack.main"
         assert logging.getLogger().level == logging.DEBUG
 
     def test_default_is_info_level(self) -> None:

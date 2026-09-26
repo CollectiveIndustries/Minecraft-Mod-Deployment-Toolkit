@@ -1,7 +1,6 @@
 # src/minecraft/common/changelog.py
 
-"""Changelog generation: diff the current client pack against the
-previous one and render human-readable HTML.
+"""Changelog generation: diff the current pack and render HTML.
 
 The page describes the CLIENT PACK - what changed in it since the last
 build. The page is titled after the client ZIP, and the ZIP is what
@@ -24,7 +23,33 @@ description of what the user sees.
 
 No network calls, no LLM, no git. Output is deterministic and can be
 diffed across builds.
-"""  # noqa: D205
+
+Logging
+-------
+
+Module logger is ``minecraft.common.changelog``. The module is a
+read-only diff-and-render pipeline with no failure modes of its own:
+every error comes from a bad ZIP or an unreadable staging file, and
+those propagate to the caller (``scope_client.deploy_client_scope``)
+which wraps them at ERROR. There are therefore no ERROR sites here.
+
+``build_client_diff_report`` emits exactly one INFO line per run: the
+``summary_line`` teaser. Everything else it records - the entry
+context, the staging-mods count, the initial-vs-diff branch - logs at
+DEBUG so a normal deploy shows a single changelog line. Its per-stage
+DEBUG lines cover the phases (mod hashing, KubeJS hashing). The two
+private ZIP readers (``_zip_names``, ``_zip_hashes``) and the
+staging-tree walker (``_staging_hashes``) log entry paths and result
+counts at DEBUG. ``compute_mod_diff`` and ``compute_kubejs_diff`` log
+their branch and result counts at DEBUG. ``render_changelog_html`` is
+a pure string transform and logs only the report field counts at
+DEBUG. ``write_changelog`` logs its path at DEBUG and success at INFO
+(the second INFO site in the module, reached only on the direct-write
+path; ``scope_client`` routes through ``render_changelog_html`` +
+``atomic_write`` and does not call it). Pure helpers
+(``_hash_bytes``, ``_esc``) and the ``DiffReport`` data class emit
+nothing; the aggregate logs already cover their work.
+"""
 
 from __future__ import annotations
 
@@ -33,6 +58,12 @@ import html
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+from minecraft.deploy_pack.logging_setup import get_logger
+
+_log = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Report
@@ -41,7 +72,11 @@ from pathlib import Path
 
 @dataclass
 class DiffReport:
-    """What changed in the client pack since the previous build."""
+    """What changed in the client pack since the previous build.
+
+    Pure data class; emits no events. The aggregate counts are logged
+    by :func:`build_client_diff_report`.
+    """
 
     added_mods: list[str] = field(default_factory=list)
     removed_mods: list[str] = field(default_factory=list)
@@ -90,11 +125,20 @@ class DiffReport:
 
 
 def _hash_bytes(b: bytes) -> str:
+    """SHA-256 of a byte string. Pure; no logging."""
     return hashlib.sha256(b).hexdigest()
 
 
-def _zip_names(zip_path: Path, prefix: str) -> set[str]:
-    """Relative paths of files under prefix in the zip. Directories excluded."""
+def _zip_names(zip_path: Path, prefix: str, logger: Any = None) -> set[str]:
+    """Relative paths of files under prefix in the zip. Directories excluded.
+
+    Raises zipfile.BadZipFile or OSError on an unreadable ZIP; the
+    caller (``scope_client``) wraps the raise at ERROR, so this helper
+    does not catch.
+    """
+    if logger is None:
+        logger = _log
+    logger.debug(f"_zip_names: {zip_path} prefix={prefix!r}")
     result: set[str] = set()
     with zipfile.ZipFile(zip_path) as zf:
         for name in zf.namelist():
@@ -104,11 +148,19 @@ def _zip_names(zip_path: Path, prefix: str) -> set[str]:
             if not rel or rel.endswith("/"):
                 continue
             result.add(rel)
+    logger.debug(f"_zip_names: {zip_path} prefix={prefix!r} -> {len(result)} file(s)")
     return result
 
 
-def _zip_hashes(zip_path: Path, prefix: str) -> dict[str, str]:
-    """{relative_path: sha256} for files under prefix in the zip."""
+def _zip_hashes(zip_path: Path, prefix: str, logger: Any = None) -> dict[str, str]:
+    """{relative_path: sha256} for files under prefix in the zip.
+
+    Raises zipfile.BadZipFile or OSError on an unreadable ZIP; the
+    caller wraps the raise at ERROR, so this helper does not catch.
+    """
+    if logger is None:
+        logger = _log
+    logger.debug(f"_zip_hashes: {zip_path} prefix={prefix!r}")
     result: dict[str, str] = {}
     with zipfile.ZipFile(zip_path) as zf:
         for name in zf.namelist():
@@ -118,12 +170,16 @@ def _zip_hashes(zip_path: Path, prefix: str) -> dict[str, str]:
             if not rel or rel.endswith("/"):
                 continue
             result[rel] = _hash_bytes(zf.read(name))
+    logger.debug(f"_zip_hashes: {zip_path} prefix={prefix!r} -> {len(result)} hashed file(s)")
     return result
 
 
-def _staging_hashes(root: Path) -> dict[str, str]:
+def _staging_hashes(root: Path, logger: Any = None) -> dict[str, str]:
     """{relative_path: sha256} for every file under root."""
+    if logger is None:
+        logger = _log
     if not root.is_dir():
+        logger.debug(f"_staging_hashes: {root} is not a directory; returning empty")
         return {}
     result: dict[str, str] = {}
     for p in root.rglob("*"):
@@ -131,6 +187,7 @@ def _staging_hashes(root: Path) -> dict[str, str]:
             continue
         rel = str(p.relative_to(root)).replace("\\", "/")
         result[rel] = _hash_bytes(p.read_bytes())
+    logger.debug(f"_staging_hashes: {root} -> {len(result)} file(s) hashed")
     return result
 
 
@@ -142,6 +199,7 @@ def _staging_hashes(root: Path) -> dict[str, str]:
 def compute_mod_diff(
     current_mods: set[str],
     previous_zip: Path | None,
+    logger: Any = None,
 ) -> tuple[list[str], list[str]]:
     """Return (added, removed) mod filenames.
 
@@ -149,17 +207,22 @@ def compute_mod_diff(
     addition and one removal, which is what changed in the pack for
     the user.
     """
+    if logger is None:
+        logger = _log
     if previous_zip is None or not previous_zip.is_file():
+        logger.debug(f"compute_mod_diff: no readable baseline ({previous_zip}); treating all {len(current_mods)} mod(s) as added (initial build)")
         return (sorted(current_mods), [])
-    previous_mods = _zip_names(previous_zip, "mods/")
+    previous_mods = _zip_names(previous_zip, "mods/", logger)
     added = sorted(current_mods - previous_mods)
     removed = sorted(previous_mods - current_mods)
+    logger.debug(f"compute_mod_diff: current={len(current_mods)} previous={len(previous_mods)} -> +{len(added)} -{len(removed)}")
     return (added, removed)
 
 
 def compute_kubejs_diff(
     staging_kubejs: Path,
     previous_zip: Path | None,
+    logger: Any = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Return (added, modified, removed) KubeJS paths.
 
@@ -167,20 +230,24 @@ def compute_kubejs_diff(
     Comparison is by content hash, so whitespace-only changes register
     as modifications.
     """
-    current = _staging_hashes(staging_kubejs)
+    if logger is None:
+        logger = _log
+    current = _staging_hashes(staging_kubejs, logger)
     if previous_zip is None or not previous_zip.is_file():
+        logger.debug(f"compute_kubejs_diff: no readable baseline ({previous_zip}); treating all {len(current)} KubeJS file(s) as added (initial build)")
         return (sorted(current.keys()), [], [])
-    previous = _zip_hashes(previous_zip, "kubejs/")
+    previous = _zip_hashes(previous_zip, "kubejs/", logger)
     added = sorted(set(current) - set(previous))
     removed = sorted(set(previous) - set(current))
     modified = sorted(p for p in set(current) & set(previous) if current[p] != previous[p])
+    logger.debug(f"compute_kubejs_diff: current={len(current)} previous={len(previous)} -> +{len(added)} ~{len(modified)} -{len(removed)}")
     return (added, modified, removed)
 
 
 def build_client_diff_report(
     staging_dir: Path,
     previous_zip: Path | None,
-    logger,
+    logger: Any = None,
 ) -> DiffReport:
     """Build a DiffReport from the current client staging vs previous ZIP.
 
@@ -188,17 +255,32 @@ def build_client_diff_report(
     ZIP. ``previous_zip`` is the most recent prior client ZIP, or None
     on a first build. In the None case the report is marked as an
     initial build and reports the total mod count instead of a diff.
+
+    Emits exactly one INFO line per run: the ``summary_line``. The
+    entry context and the per-stage counts land at DEBUG.
     """
+    if logger is None:
+        logger = _log
+
+    logger.debug(f"build_client_diff_report: staging_dir={staging_dir} previous_zip={previous_zip}")
+    if previous_zip is not None and not previous_zip.is_file():
+        logger.warning(
+            f"build_client_diff_report: previous_zip {previous_zip} was supplied but is not a file; "
+            "treating this as an initial build (the changelog will report all current contents as new)"
+        )
+
     staging_mods_dir = staging_dir / "mods"
     if staging_mods_dir.is_dir():
         current_mods = {p.name for p in staging_mods_dir.glob("*.jar")}
+        logger.debug(f"build_client_diff_report: staging mods at {staging_mods_dir}: {len(current_mods)} .jar file(s)")
     else:
         current_mods = set()
+        logger.warning(f"build_client_diff_report: staging mods directory missing: {staging_mods_dir}")
 
     staging_kubejs = staging_dir / "kubejs"
 
-    added_mods, removed_mods = compute_mod_diff(current_mods, previous_zip)
-    added_kjs, modified_kjs, removed_kjs = compute_kubejs_diff(staging_kubejs, previous_zip)
+    added_mods, removed_mods = compute_mod_diff(current_mods, previous_zip, logger)
+    added_kjs, modified_kjs, removed_kjs = compute_kubejs_diff(staging_kubejs, previous_zip, logger)
 
     is_initial = previous_zip is None or not previous_zip.is_file()
     report = DiffReport(
@@ -220,6 +302,7 @@ def build_client_diff_report(
 
 
 def _esc(text: str) -> str:
+    """HTML-escape a string. Pure; no logging."""
     return html.escape(text, quote=True)
 
 
@@ -229,8 +312,20 @@ def render_changelog_html(
     artifact_url: str,
     sha256sum: str,
     timestamp: str,
+    logger: Any = None,
 ) -> str:
-    """Render the changelog page as a self-contained HTML document."""
+    """Render the changelog page as a self-contained HTML document.
+
+    Pure string transform; logs its inputs and the rendered length at
+    DEBUG, no WARN/ERROR.
+    """
+    if logger is None:
+        logger = _log
+    logger.debug(
+        f"render_changelog_html: artifact={artifact_name!r} initial_build={report.initial_build} "
+        f"mods +{len(report.added_mods)} -{len(report.removed_mods)} "
+        f"kubejs +{len(report.added_kubejs)} ~{len(report.modified_kubejs)} -{len(report.removed_kubejs)}"
+    )
     lines: list[str] = []
     lines.append("<!DOCTYPE html>")
     lines.append('<html lang="en"><head>')
@@ -283,7 +378,9 @@ def render_changelog_html(
 
     lines.append("</div>")
     lines.append("</body></html>")
-    return "\n".join(lines)
+    html_text = "\n".join(lines)
+    logger.debug(f"render_changelog_html: rendered {len(html_text)} char(s)")
+    return html_text
 
 
 def write_changelog(
@@ -293,8 +390,17 @@ def write_changelog(
     sha256sum: str,
     timestamp: str,
     output_path: Path,
+    logger: Any = None,
 ) -> None:
-    """Write the changelog HTML page to output_path."""
+    """Write the changelog HTML page to output_path.
+
+    OSError from ``mkdir`` or ``write_text`` propagates to the caller;
+    the scope layer wraps it at ERROR, so this function does not catch.
+    """
+    if logger is None:
+        logger = _log
+    logger.debug(f"write_changelog: writing to {output_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    html_text = render_changelog_html(report, artifact_name, artifact_url, sha256sum, timestamp)
+    html_text = render_changelog_html(report, artifact_name, artifact_url, sha256sum, timestamp, logger)
     output_path.write_text(html_text, encoding="utf-8")
+    logger.info(f"write_changelog: wrote {len(html_text)} char(s) to {output_path}")

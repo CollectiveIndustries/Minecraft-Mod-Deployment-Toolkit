@@ -1,6 +1,23 @@
 # src/minecraft/deploy_pack/preflight/types.py
 
-"""Data model for preflight results. No logic, no I/O."""
+"""Data model for preflight results. No logic, no I/O.
+
+Logging
+-------
+
+Module logger is ``minecraft.deploy_pack.preflight.types``. Every
+dataclass in this file is a pure data container with pure accessors
+(``ScopeSet.names``, ``ModsChange.changed_paths``,
+``ResourcePackChange.prompt_only``, ...); emitting per-call events would
+add hundreds of no-value lines to a real run without any diagnostic
+benefit, so they emit nothing. The single logging site is
+:meth:`PreflightError.__init__`, which records the construction at
+DEBUG. Every raise site in ``runner.py`` already emits an ERROR with
+the failure count and source labels immediately before raising, so
+logging at ERROR here would double-report; DEBUG keeps the
+construction visible for direct callers (tests) and future
+aggregation sites without duplicating the operator-facing diagnostic.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +26,9 @@ from pathlib import Path
 
 from minecraft.deploy_pack.docker_runtime import ContainerState
 from minecraft.deploy_pack.errors import ConfigError
+from minecraft.deploy_pack.logging_setup import get_logger
+
+_log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,7 +75,11 @@ class PreflightFailure:
 
 
 class PreflightError(ConfigError):
-    """Raised after every preflight check has run (§4.3). Exit 3."""
+    """Raised after every preflight check has run (§4.3). Exit 3.
+
+    Construction is logged at DEBUG; the operator-facing ERROR is
+    emitted by the caller immediately before the raise.
+    """
 
     def __init__(self, failures: list[PreflightFailure]) -> None:
         """Collect every aggregated failure into one message."""
@@ -63,6 +87,7 @@ class PreflightError(ConfigError):
         lines = [f"Preflight failed with {len(self.failures)} error(s):"]
         for f in self.failures:
             lines.append(f"  [{f.source}] {f.message}")
+        _log.debug(f"PreflightError constructed with {len(self.failures)} failure(s): {[f.source for f in self.failures]}")
         super().__init__("\n".join(lines))
 
 

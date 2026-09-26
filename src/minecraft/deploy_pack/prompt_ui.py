@@ -54,6 +54,25 @@ deploy pipeline (§6.3), but are not shown here. The review section
 mechanism keys off a filename; a review entry for a jar with no
 ``.pw.toml`` would not be picked up by the marking logic, so
 including such jars would be misleading. Flagged as a limitation.
+
+Logging
+-------
+
+Module logger is ``minecraft.deploy_pack.prompt_ui``. :class:`AuditRow`
+and its methods are pure and emit nothing. The ``AuditApp`` widget
+emits nothing on the hot path (``action_toggle``, ``_refresh_row``,
+``_selected_row`` fire once per keystroke or repaint); only the two
+terminal transitions - :meth:`AuditApp.action_save` and
+:meth:`AuditApp.action_discard` - log at DEBUG. :func:`build_audit_rows`
+logs at INFO with the row count and the distribution of existing
+override sections; :func:`compute_review_entries` logs at DEBUG with
+the number of entries that will be written. :func:`run_audit` is the
+operator-facing surface: INFO on entry with row count, INFO on discard,
+INFO on save with entry count, ERROR before the stderr ``print`` on
+save failure, and ERROR on the defensive ``HAS_TEXTUAL`` check. The
+``HAS_TEXTUAL`` guard is defense-in-depth - ``main.py`` already
+checks the flag before dispatching - but logging it keeps direct
+library use diagnosable.
 """
 
 from __future__ import annotations
@@ -83,6 +102,11 @@ except ImportError:
     Footer = None
     Header = None
     Static = None
+
+from .logging_setup import get_logger
+
+_log = get_logger(__name__)
+
 __all__ = ["HAS_TEXTUAL", "AuditRow", "build_audit_rows", "compute_review_entries", "run_audit"]
 if HAS_TEXTUAL:
     __all__.append("AuditApp")
@@ -91,7 +115,12 @@ VALID_REVIEW_VALUES = ("server", "client", "both", "skipped")
 
 @dataclass
 class AuditRow:
-    """One mod's audit state."""
+    """One mod's audit state.
+
+    Pure data plus pure methods. No logging: :meth:`toggle` runs once
+    per keystroke and :meth:`from_entry` runs once per Prism entry, so
+    per-call logging would drown the sink for no diagnostic gain.
+    """
 
     filename: str
     declared_side: str
@@ -204,32 +233,52 @@ class AuditRow:
         return row
 
 
-def build_audit_rows(config: DeploymentConfig) -> list[AuditRow]:
-    """Load every indexed mod and its current override state."""
+def build_audit_rows(config: DeploymentConfig, logger: Any = None) -> list[AuditRow]:
+    """Load every indexed mod and its current override state.
+
+    Logs at INFO with the final row count and the number of rows that
+    carried a pre-existing override from each section.
+    """
+    if logger is None:
+        logger = _log
     index_dir = config.modpack_dir / ".index"
+    logger.debug(f"build_audit_rows: loading index from {index_dir}")
     entries = deps.load_prism_index(index_dir)
     overrides_path = config.config_dir / "side_overrides.toml"
-    overrides = load_side_overrides(overrides_path)
+    overrides = load_side_overrides(overrides_path, logger)
     rows: list[AuditRow] = []
     for entry in entries:
         row = AuditRow.from_entry(entry, overrides)
         if row is not None:
             rows.append(row)
     rows.sort(key=lambda r: r.filename.lower())
+    from_by_id = sum(1 for r in rows if r.override_section == "by_id")
+    from_by_filename = sum(1 for r in rows if r.override_section == "by_filename")
+    from_review = sum(1 for r in rows if r.override_section == "deployment_tool_review")
+    logger.info(
+        f"build_audit_rows: {len(rows)} row(s) from {len(entries)} index entr(ies); "
+        f"overrides by_id={from_by_id} by_filename={from_by_filename} review={from_review}"
+    )
     return rows
 
 
-def compute_review_entries(rows: list[AuditRow]) -> dict[str, str]:
+def compute_review_entries(rows: list[AuditRow], logger: Any = None) -> dict[str, str]:
     """Build the [deployment_tool_review] dict from the row toggles.
 
     Rows whose :attr:`AuditRow.review_value` is None are omitted, so
     saving after toggling D (or clearing all toggles) removes the entry.
     """
+    if logger is None:
+        logger = _log
     out: dict[str, str] = {}
+    skipped = 0
     for row in rows:
         value = row.review_value
-        if value is not None:
-            out[row.filename] = value
+        if value is None:
+            skipped += 1
+            continue
+        out[row.filename] = value
+    logger.debug(f"compute_review_entries: {len(rows)} row(s) -> {len(out)} entr(ies) ({skipped} without a review value)")
     return out
 
 
@@ -245,7 +294,14 @@ if HAS_TEXTUAL:
     ]
 
     class AuditApp(App):
-        """Textual app for auditing mod side assignments (§6.1)."""
+        """Textual app for auditing mod side assignments (§6.1).
+
+        Widget methods stay silent on the hot path (per-keystroke toggles,
+        per-repaint row updates, per-action selection lookups). Only the
+        two terminal transitions - :meth:`action_save` and
+        :meth:`action_discard` - emit a DEBUG line so the closing intent
+        is visible in the log.
+        """
 
         CSS = "\n        Screen {\n            layers: base overlay;\n        }\n        #status {\n            dock: bottom;\n            height: 1;\n            background: $boost;\n            color: $text;\n            padding: 0 1;\n        }\n        "
         BINDINGS = _BINDINGS
@@ -275,6 +331,7 @@ if HAS_TEXTUAL:
                 self._add_row(table, row)
             self.title = "deploy_pack - audit mods"
             self.sub_title = f"{len(self.rows)} entries"
+            _log.debug(f"AuditApp: mounted with {len(self.rows)} row(s)")
 
         def _add_row(self, table: Any, row: AuditRow) -> None:
             table.add_row(
@@ -322,11 +379,13 @@ if HAS_TEXTUAL:
         def action_save(self) -> None:
             """Handles the save action."""
             self._saved = True
+            _log.debug("AuditApp: save requested; exiting with saved=True")
             self.exit(True)
 
         def action_discard(self) -> None:
             """Handles the discard action."""
             self._saved = False
+            _log.debug("AuditApp: discard requested; exiting with saved=False")
             self.exit(False)
 
     def _app_factory(rows: list[AuditRow]) -> AuditApp:
@@ -343,23 +402,27 @@ def run_audit(config: DeploymentConfig, logger: Any = None) -> int:
     line-based splice used by the CLI. A crash mid-save leaves the
     original file intact (§6.1, §4.10).
     """
+    if logger is None:
+        logger = _log
     if not HAS_TEXTUAL:
-        print("error: --audit-mods requires the 'textual' package. Install it with: pip install textual", file=sys.stderr)
+        msg = "--audit-mods requires the 'textual' package. Install it with: pip install textual"
+        logger.error(f"run_audit: {msg}")
+        print(f"error: {msg}", file=sys.stderr)
         return 1
-    rows = build_audit_rows(config)
+    logger.info(f"run_audit: entering; config_dir={config.config_dir} modpack_dir={config.modpack_dir}")
+    rows = build_audit_rows(config, logger)
     app = _app_factory(rows)
     saved = app.run()
     if not saved:
-        if logger is not None:
-            logger.info("audit-mods: changes discarded")
+        logger.info(f"run_audit: changes discarded ({len(rows)} row(s) not persisted)")
         return 0
-    entries = compute_review_entries(rows)
+    entries = compute_review_entries(rows, logger)
     overrides_path = config.config_dir / "side_overrides.toml"
     try:
         save_side_overrides(overrides_path, entries, logger=logger)
     except Exception as exc:
+        logger.error(f"run_audit: failed to save {overrides_path}: {exc}")
         print(f"error saving {overrides_path}: {exc}", file=sys.stderr)
         return 1
-    if logger is not None:
-        logger.info(f"audit-mods: wrote {len(entries)} review entr(ies) to {overrides_path}")
+    logger.info(f"run_audit: wrote {len(entries)} review entr(ies) to {overrides_path}")
     return 0

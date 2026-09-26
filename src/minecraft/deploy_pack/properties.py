@@ -50,6 +50,22 @@ Public API
                          ``changed_keys``
     compute_diff(path, edits)      read-only; does not write
     apply_edits(path, edits)       atomic; returns the diff it applied
+
+Logging
+-------
+
+Module logger is ``minecraft.deploy_pack.properties``. ``compute_diff``
+logs at DEBUG with the path and the effective-change count.
+``apply_edits`` logs at INFO when a rewrite lands and at DEBUG when the
+file is left untouched (the common case for idempotent re-runs, so the
+DEBUG line does not clutter a normal deploy). ``_parse_existing``
+emits one WARN per duplicated managed key per public call - the
+``warn_duplicates`` flag exists exactly so that ``apply_edits``'s
+two-parse sequence (diff, then apply) emits the warning only once.
+Every ``ConfigError`` raise is preceded by an ERROR line naming the
+path. Pure byte helpers (``_split_lines``, ``_detect_eol``,
+``_key_regex``, ``_dedupe_last_wins``) emit nothing; the aggregate
+counts logged by ``_compute_diff`` and ``_apply`` cover the write path.
 """
 
 from __future__ import annotations
@@ -62,7 +78,9 @@ from typing import Any
 
 from .errors import ConfigError
 from .files import atomic_write
+from .logging_setup import get_logger
 
+_log = get_logger(__name__)
 __all__ = ["MANAGED_KEYS", "PropertiesDiff", "PropertyChange", "PropertyEdit", "apply_edits", "compute_diff"]
 MANAGED_KEYS = frozenset({"require-resource-pack", "resource-pack", "resource-pack-prompt", "resource-pack-sha1"})
 
@@ -109,7 +127,10 @@ _KEY_RE_CACHE: dict[str, re.Pattern[bytes]] = {}
 
 
 def _key_regex(key: str) -> re.Pattern[bytes]:
-    """Bytes regex matching '<leading ws><key><ws>=' at start of a line."""
+    """Bytes regex matching '<leading ws><key><ws>=' at start of a line.
+
+    No logging: cached, called once per key per parse.
+    """
     pat = _KEY_RE_CACHE.get(key)
     if pat is None:
         pat = re.compile(b"^[ \\t]*" + re.escape(key.encode("ascii")) + b"[ \\t]*=")
@@ -123,6 +144,8 @@ def _split_lines(data: bytes) -> list[tuple[bytes, bytes]]:
     Terminators are ``b"\r\n"``, ``b"\n"``, or ``b""`` for the final
     line if the file does not end with a newline. A lone ``\r`` is not
     a line boundary (§7.4).
+
+    No logging: pure and called from both parses of every public call.
     """
     result: list[tuple[bytes, bytes]] = []
     n = len(data)
@@ -150,6 +173,8 @@ def _detect_eol(data: bytes) -> bytes:
     Uses the last ``\n`` in the file: if preceded by ``\r``, the style
     is CRLF; otherwise LF. An empty file (or one with no newlines) uses
     LF, per the spec's "for an empty file, use ``\n``".
+
+    No logging: pure and cheap.
     """
     idx = data.rfind(b"\n")
     if idx > 0 and data[idx - 1 : idx] == b"\r":
@@ -157,20 +182,31 @@ def _detect_eol(data: bytes) -> bytes:
     return b"\n"
 
 
-def _read_or_error(path: Path) -> bytes:
+def _read_or_error(path: Path, logger: Any = None) -> bytes:
+    """Read ``path`` as bytes, or raise ConfigError.
+
+    Logs at ERROR immediately before each raise so the specific
+    diagnostic lands in the sink even when the caller aggregates.
+    """
+    if logger is None:
+        logger = _log
     if not path.is_file():
+        logger.error(f"_read_or_error: server.properties not found: {path}")
         raise ConfigError(f"server.properties not found: {path}")
     try:
-        return path.read_bytes()
+        data = path.read_bytes()
     except OSError as exc:
+        logger.error(f"_read_or_error: could not read {path}: {exc}")
         raise ConfigError(f"Could not read {path}: {exc}") from exc
+    logger.debug(f"_read_or_error: {path} -> {len(data)} byte(s)")
+    return data
 
 
 def _parse_existing(
     data: bytes,
     path: Path,
-    logger: Any,
     keys: Collection[str],
+    logger: Any = None,
     *,
     warn_duplicates: bool = True,
 ) -> dict[str, tuple[int, bytes]]:
@@ -183,6 +219,8 @@ def _parse_existing(
     ``_apply``) pass ``warn_duplicates=False`` on the second parse so
     §7.4's "one warning per duplicated key per call" holds.
     """
+    if logger is None:
+        logger = _log
     lines = _split_lines(data)
     result: dict[str, tuple[int, bytes]] = {}
     seen_count: dict[str, int] = {}
@@ -194,15 +232,19 @@ def _parse_existing(
             result[key] = (idx, content[m.end() :].strip())
             seen_count[key] = seen_count.get(key, 0) + 1
             break
-    if warn_duplicates and logger is not None:
+    if warn_duplicates:
         for key, count in seen_count.items():
             if count > 1:
                 logger.warning(f"{path}: duplicate key {key!r} ({count} occurrences); the last is authoritative (§7.4)")
+    logger.debug(f"_parse_existing: {path}: matched {len(result)} of {len(keys)} managed key(s); warn_duplicates={warn_duplicates}")
     return result
 
 
 def _dedupe_last_wins(edits: list[PropertyEdit]) -> list[PropertyEdit]:
-    """Deduplicate by key: last value wins; order of first appearance kept."""
+    """Deduplicate by key: last value wins; order of first appearance kept.
+
+    No logging: pure and called twice per public call.
+    """
     last: dict[str, PropertyEdit] = {}
     order: list[str] = []
     for e in edits:
@@ -212,9 +254,13 @@ def _dedupe_last_wins(edits: list[PropertyEdit]) -> list[PropertyEdit]:
     return [last[k] for k in order]
 
 
-def _compute_diff(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any) -> PropertiesDiff:
+def _compute_diff(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any = None) -> PropertiesDiff:
+    if logger is None:
+        logger = _log
     deduped = _dedupe_last_wins(edits)
-    existing = _parse_existing(data, path, logger, {e.key for e in deduped})
+    if len(deduped) != len(edits):
+        logger.debug(f"_compute_diff: {len(edits)} edit(s) deduped to {len(deduped)} unique key(s) (last wins)")
+    existing = _parse_existing(data, path, {e.key for e in deduped}, logger)
     changes: list[PropertyChange] = []
     for edit in deduped:
         target = edit.value.encode("utf-8")
@@ -226,13 +272,16 @@ def _compute_diff(data: bytes, edits: list[PropertyEdit], path: Path, logger: An
             changes.append(PropertyChange(key=edit.key, before=current.decode("utf-8", "replace"), after=edit.value))
         else:
             changes.append(PropertyChange(key=edit.key, before=None, after=edit.value))
+    logger.debug(f"_compute_diff: {path}: {len(changes)} effective change(s) of {len(deduped)} key(s): {[c.key for c in changes]}")
     return PropertiesDiff(changes=changes)
 
 
-def _apply(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any) -> bytes:
+def _apply(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any = None) -> bytes:
+    if logger is None:
+        logger = _log
     deduped = _dedupe_last_wins(edits)
     lines = _split_lines(data)
-    existing = _parse_existing(data, path, logger, {e.key for e in deduped}, warn_duplicates=False)
+    existing = _parse_existing(data, path, {e.key for e in deduped}, logger, warn_duplicates=False)
     default_eol = _detect_eol(data)
     updates: dict[int, bytes] = {}
     appends: list[bytes] = []
@@ -261,6 +310,10 @@ def _apply(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any) -> b
             out += default_eol
         for line in appends:
             out += line + default_eol
+    logger.debug(
+        f"_apply: {path}: {len(updates)} in-place rewrite(s), {len(appends)} append(s); "
+        f"eol={'CRLF' if default_eol == b'\\r\\n' else 'LF'}; {len(data)} -> {len(out)} byte(s)"
+    )
     return bytes(out)
 
 
@@ -269,7 +322,10 @@ def compute_diff(path: Path, edits: list[PropertyEdit], logger: Any = None) -> P
 
     Raises ConfigError if the file is missing (§7.4).
     """
-    data = _read_or_error(path)
+    if logger is None:
+        logger = _log
+    logger.debug(f"compute_diff: {path} with {len(edits)} edit(s)")
+    data = _read_or_error(path, logger)
     return _compute_diff(data, edits, path, logger)
 
 
@@ -285,10 +341,15 @@ def apply_edits(path: Path, edits: list[PropertyEdit], logger: Any = None) -> Pr
 
     Raises ConfigError if the file is missing (§7.4).
     """
-    data = _read_or_error(path)
+    if logger is None:
+        logger = _log
+    logger.debug(f"apply_edits: {path} with {len(edits)} edit(s)")
+    data = _read_or_error(path, logger)
     diff = _compute_diff(data, edits, path, logger)
     if not diff.any:
+        logger.debug(f"apply_edits: {path}: no effective change; file untouched")
         return diff
     new_data = _apply(data, edits, path, logger)
     atomic_write(path, new_data, logger=logger)
+    logger.info(f"apply_edits: {path}: wrote {len(diff.changes)} change(s) ({', '.join(diff.changed_keys)})")
     return diff

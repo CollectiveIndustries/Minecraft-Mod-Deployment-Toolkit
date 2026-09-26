@@ -7,6 +7,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import LoggingCore.sync_logger as sync_module
+
+from minecraft.deploy_pack import logging_setup
 from minecraft.deploy_pack import main as main_mod
 from minecraft.deploy_pack.preflight import states as states_mod
 
@@ -131,6 +134,7 @@ def test_resolve_config_dir_file_becomes_parent(tmp_path):
 
 
 def _state(*, exists=True, status="running", health=None, running=True):
+    """Return a SimpleNamespace shaped like ContainerState."""
     return SimpleNamespace(exists=exists, status=status, health=health, running=running)
 
 
@@ -191,3 +195,34 @@ def test_classify_state_unknown_status_fails():
     msg = states_mod.classify_state(_state(status="frobnicating"), "c")
     assert msg is not None
     assert "frobnicating" in msg
+
+
+# ---------------------------------------------------------------------------
+# logging_setup.configure: cache invalidation
+# ---------------------------------------------------------------------------
+
+
+def test_configure_clears_module_logger_cache() -> None:
+    """configure() must clear the module-level logger cache.
+
+    Regression: configure() replaced ``_logging_core`` but not
+    ``_logger_cache``, so module loggers captured at import time kept
+    speaking to the old (default-level) core. ``--debug`` set the new
+    core's level to DEBUG, but those loggers never used it, and their
+    DEBUG output was silently dropped.
+
+    The test captures a logger against whatever core is currently
+    installed, forces configure to run fresh, then captures a same-name
+    logger again. If configure cleared the cache, the second lookup
+    returns a different object bound to the new core. If it did not,
+    the cached pre-configure logger is returned and the assertion
+    fails.
+    """
+    sync_module._logger_cache.clear()
+    pre = logging_setup.get_logger("test.cache_probe")
+
+    logging_setup._configured = False
+    logging_setup.configure(debug=True)
+
+    post = logging_setup.get_logger("test.cache_probe")
+    assert post is not pre, "configure() left the module logger cache populated; loggers captured at import time still speak to the old core"

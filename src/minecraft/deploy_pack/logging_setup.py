@@ -14,6 +14,18 @@ summaries) can keep using stdout without interleaving.
 Configuration runs exactly once, from ``main``, before any other module
 emits. LoggingCore's stock ``setup_logging`` installs a stdout sink and
 is therefore bypassed here.
+
+Cache invalidation
+------------------
+
+``get_logger`` caches per-name logger instances in
+``LoggingCore.sync_logger._logger_cache``. When :func:`configure`
+replaces ``_logging_core``, the cache must be cleared so subsequent
+lookups resolve against the new core. Without this, module-level
+loggers captured at import time keep speaking to the old core and their
+level filter reflects the old core's level. ``--debug`` would set level
+10 on the new core and every module-level ``logger.debug(...)`` call
+would be silently dropped.
 """
 
 from __future__ import annotations
@@ -34,7 +46,7 @@ class _StderrConsoleSink(ConsoleSink):
     """ConsoleSink that writes to stderr. Same format, different stream."""
 
     async def write(self, event: LogEvent) -> None:
-        """Writes a log event to stderr with optional colorized output."""
+        """Write a log event to stderr, optionally colorized."""
         reset = "\x1b[0m" if self.color else ""
         color = _LEVEL_COLORS.get(event.level.upper(), "") if self.color else ""
         line = f"{color}[{event.level.upper()}]{reset} {event.logger}: {event.message}"
@@ -55,6 +67,7 @@ def configure(debug: bool = False) -> None:
     core.add_sink(_StderrConsoleSink(color=True))
     core.set_level(10 if debug else 20)
     _sync_module._logging_core = core
+    _sync_module._logger_cache.clear()
     _configured = True
 
 

@@ -43,6 +43,15 @@ and translates at the boundary. When ``container_of`` is None the two
 names are assumed identical; existing callers that use opaque
 identifiers see no behavior change. The return values are always keyed
 by instance name.
+
+Logging
+-------
+
+Every entry point logs its arguments at DEBUG, every SDK call logs at
+DEBUG, every state transition logs at INFO, and every failure logs at
+ERROR. Recovery flows log at INFO with failures at WARN. The module
+logger is ``minecraft.deploy_pack.hooks``; callers may inject an
+override via ``logger=`` for that call only.
 """
 
 from __future__ import annotations
@@ -54,6 +63,9 @@ from typing import Any
 
 from .docker_runtime import Clock, ContainerState, DockerRuntime, HealthResult, StartResult, StopOutcome, StopResult
 from .errors import DockerRuntimeError, DockerUnavailableError
+from .logging_setup import get_logger
+
+_log = get_logger(__name__)
 
 __all__ = [
     "CancelNoticeFn",
@@ -217,19 +229,28 @@ def compute_warned_and_running(
     The returned list is keyed by instance name; the SDK is queried with
     the corresponding container name when ``container_of`` is supplied.
     """
+    if logger is None:
+        logger = _log
+    logger.debug(f"compute_warned_and_running: restart_set={restart_set} preflight_states={list(preflight_states.keys())}")
     result: list[str] = []
     for name in restart_set:
         pre = preflight_states.get(name)
-        if pre is None or not pre.is_running:
-            if logger is not None:
-                logger.debug(f"compute_warned_and_running: {name} not running at preflight capture")
+        if pre is None:
+            logger.debug(f"compute_warned_and_running: {name} has no preflight state; not eligible")
             continue
+        if not pre.is_running:
+            logger.debug(f"compute_warned_and_running: {name} not running at preflight capture (status={pre.status!r})")
+            continue
+        container = _container_name(name, container_of)
+        logger.debug(f"compute_warned_and_running: re-inspecting {name} (container {container})")
         with _runtime_errors(f"compute_warned_and_running: inspect {name}"):
-            current = runtime.inspect(_container_name(name, container_of))
+            current = runtime.inspect(container)
         if current.is_running:
+            logger.debug(f"compute_warned_and_running: {name} is running at re-inspection; eligible")
             result.append(name)
-        elif logger is not None:
-            logger.debug(f"compute_warned_and_running: {name} not running at pre-notice re-inspection")
+        else:
+            logger.debug(f"compute_warned_and_running: {name} not running at pre-notice re-inspection (status={current.status!r})")
+    logger.debug(f"compute_warned_and_running: returning {result}")
     return result
 
 
@@ -257,37 +278,49 @@ def execute_pre_hook(
     ``PreHookResult.failed``; a daemon loss is raised as
     ``DockerRuntimeError`` (exit 1).
     """
+    if logger is None:
+        logger = _log
+    logger.debug(f"execute_pre_hook: warned_and_running={warned_and_running} stop_timeouts={stop_timeouts}")
+
     stopped: list[str] = []
     exited_before_stop: list[str] = []
     failed: list[str] = []
     to_stop: list[str] = []
+
     for name in warned_and_running:
+        container = _container_name(name, container_of)
+        logger.debug(f"pre-hook: pre-stop re-inspection of {name} (container {container})")
         with _runtime_errors(f"pre-hook: inspect {name}"):
-            state = runtime.inspect(_container_name(name, container_of))
+            state = runtime.inspect(container)
         if state.is_running:
             to_stop.append(name)
-        elif logger is not None:
-            logger.warning(f"pre-hook: {name} not running at pre-stop re-inspection; not stopping")
+        else:
+            logger.warning(f"pre-hook: {name} not running at pre-stop re-inspection (status={state.status!r}); not stopping")
+
     if not to_stop and warned_and_running:
-        logger and logger.warning("pre-hook: to_stop is empty - every warned container exited in the interim")
+        logger.warning("pre-hook: to_stop is empty - every warned container exited in the interim")
+    else:
+        logger.debug(f"pre-hook: to_stop={to_stop}")
+
     for name in to_stop:
+        container = _container_name(name, container_of)
         timeout = stop_timeouts.get(name, 10)
+        logger.debug(f"pre-hook: stopping {name} (container {container}) timeout={timeout}s")
         with _runtime_errors(f"pre-hook: stop {name}"):
-            result: StopResult = runtime.stop(_container_name(name, container_of), timeout)
+            result: StopResult = runtime.stop(container, timeout)
         if result.outcome == StopOutcome.STOPPED:
+            logger.info(f"pre-hook: {name} stopped")
             stopped.append(name)
         elif result.outcome == StopOutcome.EXITED_BEFORE_STOP:
+            logger.info(f"pre-hook: {name} exited before stop; not lifecycle-touched")
             exited_before_stop.append(name)
-            if logger is not None:
-                logger.info(f"pre-hook: {name} exited before stop; not lifecycle-touched")
         else:
+            logger.error(f"pre-hook: stop {name} failed: {result.error or 'unknown error'}")
             failed.append(name)
-            if logger is not None:
-                logger.error(f"pre-hook: stop {name} failed: {result.error or 'unknown'}")
+
     recovery: RecoveryResult | None = None
     if failed:
-        if logger is not None:
-            logger.error(f"pre-hook: {len(failed)} stop failure(s); running §8.8 recovery")
+        logger.error(f"pre-hook: {len(failed)} stop failure(s); running §8.8 recovery for {stopped}")
         recovery = recover_stopped_containers(
             runtime=runtime,
             stopped_by_deployment=stopped,
@@ -296,6 +329,9 @@ def execute_pre_hook(
             logger=logger,
             container_of=container_of,
         )
+    else:
+        logger.debug(f"pre-hook: complete; stopped={stopped} exited_before_stop={exited_before_stop}")
+
     return PreHookResult(stopped=stopped, exited_before_stop=exited_before_stop, failed=failed, recovery=recovery)
 
 
@@ -322,38 +358,52 @@ def execute_post_hook(
     Raise policy: start and health failures are captured in the result;
     a daemon loss is raised as ``DockerRuntimeError``.
     """
+    if logger is None:
+        logger = _log
+    logger.debug(f"execute_post_hook: stopped_by_deployment={stopped_by_deployment} health_timeout={health_timeout}s poll_interval={poll_interval}s")
+
     started: list[str] = []
     start_failed: list[str] = []
     healthy: list[str] = []
     health_failed: list[str] = []
     errors: dict[str, str] = {}
+
     for name in stopped_by_deployment:
+        container = _container_name(name, container_of)
+        logger.debug(f"post-hook: starting {name} (container {container})")
         with _runtime_errors(f"post-hook: start {name}"):
-            result: StartResult = runtime.start(_container_name(name, container_of))
+            result: StartResult = runtime.start(container)
         if result.success:
+            logger.info(f"post-hook: {name} started")
             started.append(name)
         else:
+            logger.error(f"post-hook: start {name} failed: {result.error or 'unknown error'}")
             start_failed.append(name)
             errors[name] = result.error or "start failed"
-            if logger is not None:
-                logger.error(f"post-hook: start {name} failed: {result.error}")
+
     for name in started:
+        container = _container_name(name, container_of)
         pre = preflight_states.get(name)
         preexisting_unhealthy = pre is not None and pre.health == "unhealthy"
+        if preexisting_unhealthy:
+            logger.debug(f"post-hook: {name} was unhealthy at preflight; will annotate health failure")
+        logger.debug(f"post-hook: waiting for {name} to become healthy (timeout={health_timeout}s)")
         with _runtime_errors(f"post-hook: health {name}"):
             result: HealthResult = runtime.wait_healthy(
-                _container_name(name, container_of),
+                container,
                 timeout=health_timeout,
                 poll_interval=poll_interval,
                 preexisting_unhealthy=preexisting_unhealthy,
             )
         if result.healthy:
+            logger.info(f"post-hook: {name} is healthy")
             healthy.append(name)
         else:
+            logger.error(f"post-hook: {name} health failed: {result.error or 'unknown error'}")
             health_failed.append(name)
             errors[name] = result.error or "health check failed"
-            if logger is not None:
-                logger.error(f"post-hook: {name} health failed: {result.error}")
+
+    logger.debug(f"post-hook: complete; started={started} start_failed={start_failed} healthy={healthy} health_failed={health_failed}")
     return PostHookResult(started=started, start_failed=start_failed, healthy=healthy, health_failed=health_failed, errors=errors)
 
 
@@ -362,8 +412,7 @@ def _probe_reachable(probe: ReachabilityProbeFn, name: str, logger: Any) -> bool
     try:
         return bool(probe(name))
     except Exception as exc:
-        if logger is not None:
-            logger.debug(f"reachability probe for {name} raised: {exc}")
+        logger.debug(f"reachability probe for {name} raised: {exc}")
         return False
 
 
@@ -380,30 +429,41 @@ def _wait_for_reachability(names: list[str], ctx: RecoveryContext, logger: Any) 
     """
     if not names:
         return ([], [])
+    logger.debug(f"recovery: waiting for RCON-reachability of {names} (timeout={ctx.cancel_ready_timeout}s)")
+
     pending = list(names)
     reachable: list[str] = []
     still_pending: list[str] = []
+
     for name in pending:
         if _probe_reachable(ctx.reachability_probe, name, logger):
+            logger.debug(f"recovery: {name} reachable on first probe")
             reachable.append(name)
         else:
             still_pending.append(name)
     pending = still_pending
+
     if ctx.cancel_ready_timeout <= 0 or not pending:
+        if pending:
+            logger.warning(f"recovery: cancel_ready_timeout is 0; giving up on {pending}")
         return (reachable, pending)
+
     deadline = ctx.clock.now() + ctx.cancel_ready_timeout
     while pending:
         now = ctx.clock.now()
         if now >= deadline:
+            logger.warning(f"recovery: timeout reached; {len(pending)} container(s) unreachable: {pending}")
             break
         ctx.clock.sleep(min(ctx.poll_interval, deadline - now))
         still_pending = []
         for name in pending:
             if _probe_reachable(ctx.reachability_probe, name, logger):
+                logger.debug(f"recovery: {name} became reachable")
                 reachable.append(name)
             else:
                 still_pending.append(name)
         pending = still_pending
+
     reachable_set = set(reachable)
     ordered_reachable = [n for n in names if n in reachable_set]
     ordered_unreachable = [n for n in names if n not in reachable_set]
@@ -419,10 +479,12 @@ def _select_cancel_recipients(
     """warned_and_running members that are currently running (§8.7)."""
     result: list[str] = []
     for name in warned_and_running:
+        container = _container_name(name, container_of)
         with _runtime_errors(f"recovery: inspect {name}"):
-            state = runtime.inspect(_container_name(name, container_of))
+            state = runtime.inspect(container)
         if state.is_running:
             result.append(name)
+    logger.debug(f"recovery: cancel-notice recipients = {result}")
     return result
 
 
@@ -457,29 +519,53 @@ def recover_stopped_containers(
     daemon loss raises ``DockerRuntimeError`` (exit 1); the caller
     decides how to report it.
     """
+    if logger is None:
+        logger = _log
+    logger.info(f"recovery: starting §4.7/§8.8 flow; stopped_by_deployment={stopped_by_deployment} warned_and_running={warned_and_running}")
+
     started: list[str] = []
     start_failed: list[str] = []
     errors: dict[str, str] = {}
+
     for name in stopped_by_deployment:
+        container = _container_name(name, container_of)
+        logger.debug(f"recovery: starting {name} (container {container})")
         with _runtime_errors(f"recovery: start {name}"):
-            result: StartResult = runtime.start(_container_name(name, container_of))
+            result: StartResult = runtime.start(container)
         if result.success:
+            logger.info(f"recovery: {name} restarted")
             started.append(name)
         else:
+            logger.error(f"recovery: start {name} failed: {result.error or 'unknown error'}")
             start_failed.append(name)
             errors[name] = result.error or "recovery start failed"
-            if logger is not None:
-                logger.error(f"recovery: start {name} failed: {result.error}")
+
     reachable, unreachable = _wait_for_reachability(started, ctx, logger)
     for name in unreachable:
         errors.setdefault(name, "recovery: not RCON-reachable within timeout")
+
+    if started and reachable:
+        logger.info(f"recovery: {len(reachable)}/{len(started)} container(s) reachable: {reachable}")
+    if unreachable:
+        logger.warning(f"recovery: {len(unreachable)} container(s) not reachable: {unreachable}")
+
     recipients = _select_cancel_recipients(runtime, warned_and_running, logger, container_of)
     if recipients:
+        logger.debug(f"recovery: dispatching cancel notice to {recipients}")
         try:
             ctx.cancel_notice_fn(recipients)
+            logger.info(f"recovery: cancel notice sent to {recipients}")
         except Exception as exc:
-            if logger is not None:
-                logger.warning(f"recovery: cancel notice raised: {exc}")
-    elif logger is not None:
+            logger.warning(f"recovery: cancel notice raised: {exc}")
+    else:
         logger.info("recovery: no running warned instances; no cancel notice")
-    return RecoveryResult(started=started, start_failed=start_failed, reachable=reachable, unreachable=unreachable, errors=errors)
+
+    result = RecoveryResult(
+        started=started,
+        start_failed=start_failed,
+        reachable=reachable,
+        unreachable=unreachable,
+        errors=errors,
+    )
+    logger.debug(f"recovery: complete; any_failure={result.any_failure} errors={errors}")
+    return result

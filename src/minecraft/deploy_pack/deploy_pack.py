@@ -13,20 +13,35 @@ exists so that:
 
 It deliberately does nothing else. Argument parsing, config load,
 preflight, and the runtime sequence are all in ``main``.
+
+Logging
+-------
+
+The shim's only unique piece of information is the process exit
+boundary. It logs entry to ``cli`` at DEBUG and the return value from
+``main`` at DEBUG immediately before ``sys.exit``. Every event that
+matters for an operator is emitted by ``main`` or a module it calls -
+the shim never adds its own INFO/ERROR traffic. Module logger is
+``minecraft.deploy_pack.deploy_pack``.
 """
 
 from __future__ import annotations
 
 import sys
 
+from .logging_setup import get_logger
 from .main import main as _main
 
+_log = get_logger(__name__)
 __all__ = ["cli"]
 
 
 def cli() -> None:
     """Console-script entry point. Exits with the code from :func:`main`."""
-    sys.exit(_main())
+    _log.debug("cli: invoking main()")
+    code = _main()
+    _log.debug(f"cli: main() returned exit code {code}; calling sys.exit")
+    sys.exit(code)
 
 
 if __name__ == "__main__":

@@ -70,11 +70,13 @@ Logging
 -------
 
 Every application module emits exclusively through LoggingCore (§9.2's
-"pluggable sinks" contract). The entrypoint wires LoggingCore with a
-stderr sink and, separately, sets the stdlib root logger's level so
-that tooling which reads ``logging.getLogger().level`` sees the
-operator's intent. The two concerns are independent: LoggingCore owns
-emission, stdlib owns level visibility.
+"pluggable sinks" contract). Each module obtains its own logger via
+``logging_setup.get_logger(__name__)`` so the ``event.logger`` label
+reflects the module that produced the message, not the caller.
+``main`` wires the sink and sets the stdlib root logger's level so
+tooling that reads ``logging.getLogger().level`` sees the operator's
+intent. The two concerns are independent: LoggingCore owns emission,
+stdlib owns level visibility.
 """
 
 from __future__ import annotations
@@ -110,10 +112,6 @@ from .preflight import PreflightError, PreflightPlan, ScopeSet, run_preflight, s
 from .scope_client import ClientScopeResult, deploy_client_scope
 from .scope_resource_pack import ResourcePackScopeResult, deploy_resource_pack_scope
 from .scope_server import ServerScopeResult, deploy_server_scope
-
-# ---------------------------------------------------------------------------
-# Config-override flag allowlist (§2.2, §3.1)
-# ---------------------------------------------------------------------------
 
 _KNOWN_OVERRIDE_FLAGS = frozenset(
     {
@@ -278,11 +276,17 @@ def _resolve_scopes(args: _Args) -> _Scopes:
 
 
 def _setup_logging(debug: bool) -> Any:
-    """Configure logging and return the module logger."""
+    """Configure logging and return this module's logger.
+
+    The returned logger is labelled ``minecraft.deploy_pack.main``, so
+    every event emitted by this file carries its own module tag rather
+    than a generic ``deploy_pack`` label. Downstream modules obtain their
+    own loggers via ``logging_setup.get_logger(__name__)``.
+    """
     level = logging.DEBUG if debug else logging.INFO
     logging.getLogger().setLevel(level)
     _configure_logging(debug=debug)
-    return _get_loggingcore_logger("deploy_pack")
+    return _get_loggingcore_logger(__name__)
 
 
 def _sticky_max(actions: list[str]) -> str:
@@ -567,19 +571,15 @@ def _send_online(config: DeploymentConfig, container_status: dict[str, str], log
 
 
 def _build_recovery_ctx(config: DeploymentConfig, rcon_set: _RconSet, cancel_message: str, clock: Clock | None = None) -> RecoveryContext:
-    """Assemble a RecoveryContext around the given RCON set.
-
-    The hooks layer calls the probe and cancel callbacks with *instance
-    names*. The RCON set is keyed by *container name*. This wrapper
-    translates so the hooks layer sees a uniform instance-name
-    interface.
-    """
+    """Assemble a RecoveryContext around the given RCON set."""
     container_of = {name: inst.container for name, inst in config.instances.items() if inst.container}
 
     def probe(instance_name: str) -> bool:
+        """Return True if the instance is RCON-reachable."""
         return rcon_set.probe(container_of.get(instance_name, instance_name))
 
     def cancel(instance_names: list[str]) -> None:
+        """Send the cancellation notice to each named instance."""
         containers = [container_of.get(m, m) for m in instance_names]
         rcon_set.dispatch_cancel(containers, cancel_message)
 
@@ -687,20 +687,24 @@ def _print_cli_container_status(status: dict[str, str]) -> None:
 def _run_writes(
     config: DeploymentConfig, plan: PreflightPlan, scopes: _Scopes, protect_patterns: list[str], logger: Any
 ) -> tuple[bool, ServerScopeResult | None, ClientScopeResult | None, ResourcePackScopeResult | None, str | None]:
-    """Perform scopes in §4.2's order, halting on first failure."""
+    """Perform scopes in §4.2's order, halting on first failure.
+
+    Each scope receives no logger; it uses its own module logger so
+    events are tagged with the module that produced them.
+    """
     server_result: ServerScopeResult | None = None
     client_result: ClientScopeResult | None = None
     rp_result: ResourcePackScopeResult | None = None
     if scopes.scope_set.server:
-        server_result = deploy_server_scope(config, plan, protect_patterns, logger)
+        server_result = deploy_server_scope(config, plan, protect_patterns)
         if not server_result.success:
             return (False, server_result, None, None, server_result.failure_message or "server scope failed")
     if scopes.scope_set.client:
-        client_result = deploy_client_scope(config, scopes.with_resources, protect_patterns, logger)
+        client_result = deploy_client_scope(config, scopes.with_resources, protect_patterns)
         if not client_result.success:
             return (False, server_result, client_result, None, client_result.failure_message or "client scope failed")
     if scopes.scope_set.resource_pack:
-        rp_result = deploy_resource_pack_scope(config, plan, protect_patterns, logger)
+        rp_result = deploy_resource_pack_scope(config, plan, protect_patterns)
         if not rp_result.success:
             return (False, server_result, client_result, rp_result, rp_result.failure_message or "resource-pack scope failed")
     return (True, server_result, client_result, rp_result, None)
@@ -788,6 +792,8 @@ def _run_deployment(
             if mp is None:
                 continue
             logger.info(f"  [{member}] action={mp.effective_action} changed={len(mp.changed_paths)} paths")
+            for path in sorted(mp.changed_paths):
+                logger.debug(f"    [{member}] {path}")
         for w in plan.warnings:
             logger.warning(f"  {w}")
         logger.info("=" * 72)
@@ -795,9 +801,6 @@ def _run_deployment(
             _send_live(config, plan, scopes, None, None, True, logger)
         return 0
 
-    # Instance name -> container name. Deploy-state sets and hook results
-    # are keyed by instance name; the Docker SDK is keyed by container
-    # name. Every hooks entry point translates at its boundary.
     container_of = {name: inst.container for name, inst in config.instances.items() if inst.container}
 
     rcon_set = _RconSet(config, runtime, logger)
@@ -808,7 +811,6 @@ def _run_deployment(
             runtime=runtime,
             restart_set=plan.restart_set,
             preflight_states=plan.container_states,
-            logger=logger,
             container_of=container_of,
         )
     pre: PreHookResult | None = None
@@ -836,7 +838,6 @@ def _run_deployment(
             warned_and_running=warned_and_running,
             stop_timeouts=stop_timeouts,
             recovery_ctx=recovery_ctx,
-            logger=logger,
             container_of=container_of,
         )
         to_stop = list(pre.stopped)
@@ -863,7 +864,6 @@ def _run_deployment(
             stopped_by_deployment=to_stop,
             warned_and_running=warned_and_running,
             ctx=recovery_ctx,
-            logger=logger,
             container_of=container_of,
         )
         if pre is not None:
@@ -875,7 +875,6 @@ def _run_deployment(
         _print_cli_container_status(status)
         return 1
 
-    # Reload phase (§4.6.8, §4.8).
     reloaded: list[str] = []
     reload_failed: list[str] = []
     if plan.reload_set:
@@ -898,7 +897,6 @@ def _run_deployment(
                 stopped_by_deployment=to_stop,
                 warned_and_running=warned_and_running,
                 ctx=recovery_ctx,
-                logger=logger,
                 container_of=container_of,
             )
             if pre is not None:
@@ -910,11 +908,9 @@ def _run_deployment(
             _print_cli_container_status(status)
             return 1
 
-    # Live notification (§5.4) before the post-phase start/health cycle.
     if notify:
         _send_live(config, plan, scopes, client_result, rp_result, False, logger)
 
-    # Post phase: start stopped containers, wait for health (§4.13, §4.14).
     if plan.restart_set:
         post = execute_post_hook(
             runtime=runtime,
@@ -922,7 +918,6 @@ def _run_deployment(
             preflight_states=plan.container_states,
             health_timeout=config.docker.health_timeout_seconds,
             poll_interval=config.docker.health_poll_seconds,
-            logger=logger,
             container_of=container_of,
         )
         if post.start_failed or post.health_failed:
@@ -1004,8 +999,6 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
         logger.error(f"preflight failed: {exc}")
         return 3
 
-    # §4.6.9: warnings go to the CLI at WARN during normal runs; the
-    # dry-run plan body carries them under the DRY RUN header instead.
     if not args.dry_run:
         for w in plan.warnings:
             logger.warning(w)
@@ -1111,22 +1104,7 @@ def _run(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Process entrypoint. Maps exceptions to §2.4's exit codes.
-
-    Ordering of the ``except`` clauses matters: ``DockerUnavailableError``
-    and its siblings are caught before ``ConfigError`` because the docker
-    exception types may inherit from the config hierarchy (or share a base
-    with it), and a docker-availability failure is exit 1 regardless.
-
-    Docker failures are emitted through the stdlib logger so that
-    ``caplog`` sees them; the CLI also writes a short summary to stderr.
-    Config failures are stderr-only, matching the config-load path's
-    ``print`` style.
-
-    ``SystemExit`` is caught so argparse's ``--help`` path (``sys.exit(0)``)
-    does not propagate; an int payload becomes the return code, ``None``
-    and string payloads map to 0.
-    """
+    """Process entrypoint. Maps exceptions to §2.4's exit codes."""
     if argv is None:
         argv = sys.argv[1:]
     try:

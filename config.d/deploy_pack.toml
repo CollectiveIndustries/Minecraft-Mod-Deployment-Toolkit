@@ -130,11 +130,20 @@ player_roles = ["1553218245186691172"]
 operator_roles = ["766124262616465508"]
 
 [discord.messages.live]
-template = """**Deploy live**
-scopes: {requested_scopes}
-instances: {instance_list}
-{tool_version} @ {timestamp}
-{section_server}{section_client}{section_resource_pack}"""
+template = """
+{player_tags} **Minecraft Deployment**
+
+{section_server}
+
+{section_client}
+
+{section_resource_pack}
+
+{dry_run_marker}
+Completed {timestamp}
+
+Built by deploy_pack {tool_version}
+"""
 
 [discord.messages.online]
 template = """**Deploy online**
