@@ -97,10 +97,10 @@ resourcepacks = { resource_pack = "@www/resourcepacks", client = "resourcepacks"
 #
 [docker]
 compose_file = "docker-compose.yml"
-restart_wait_seconds = 30
-in_game_notice_required = false
-health_timeout_seconds = 120
-health_poll_seconds = 2
+restart_wait_seconds = 60
+in_game_notice_required = true
+health_timeout_seconds = 600
+health_poll_seconds = 5
 preflight_restarting_wait_seconds = 10
 cancel_notice_ready_timeout_seconds = 5
 restart_notice_template = "Server is restarting in {time} - please log out."
@@ -126,8 +126,8 @@ restart_cancel_notice_template = "Restart cancelled - stay logged in."
 # Role IDs are Discord role IDs; empty lists disable mentions.
 #
 [discord.tags]
-player_roles = []
-operator_roles = []
+player_roles = ["1553218245186691172"]
+operator_roles = ["766124262616465508"]
 
 [discord.messages.live]
 template = """**Deploy live**
