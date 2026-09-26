@@ -28,6 +28,21 @@ function here wraps its runtime calls so that a ``DockerUnavailableError``
 arising *after* preflight is converted to ``DockerRuntimeError`` (exit 1).
 Callers upstream of hooks can therefore rely on: any daemon loss that
 reaches them is exit 1.
+
+Instance names vs container names
+---------------------------------
+
+Deploy-state sets (``restart_set``, ``warned_and_running``,
+``stopped_by_deployment``, ``preflight_states``) are keyed by *instance
+name*. The Docker SDK is keyed by *container name*. The two are often
+the same in test fixtures but usually differ in production (instance
+``"survival"`` -> container ``"mc-survival"``).
+
+Every function that talks to the SDK accepts a ``container_of`` mapping
+and translates at the boundary. When ``container_of`` is None the two
+names are assumed identical; existing callers that use opaque
+identifiers see no behavior change. The return values are always keyed
+by instance name.
 """
 
 from __future__ import annotations
@@ -171,7 +186,25 @@ def _runtime_errors(context: str):
         raise DockerRuntimeError(f"{context}: {exc}") from exc
 
 
-def compute_warned_and_running(runtime: DockerRuntime, restart_set: list[str], preflight_states: dict[str, ContainerState], logger: Any = None) -> list[str]:
+def _container_name(instance_name: str, container_of: dict[str, str] | None) -> str:
+    """Translate an instance name to its container name.
+
+    Deploy-state sets are keyed by instance name; the Docker SDK is
+    keyed by container name. When ``container_of`` is None the two are
+    the same and the name is returned unchanged.
+    """
+    if container_of is None:
+        return instance_name
+    return container_of.get(instance_name, instance_name)
+
+
+def compute_warned_and_running(
+    runtime: DockerRuntime,
+    restart_set: list[str],
+    preflight_states: dict[str, ContainerState],
+    logger: Any = None,
+    container_of: dict[str, str] | None = None,
+) -> list[str]:
     """Return restart_set members running at preflight AND at re-inspection.
 
     The set is computed once, before notice dispatch (§4.5). Membership
@@ -180,6 +213,9 @@ def compute_warned_and_running(runtime: DockerRuntime, restart_set: list[str], p
 
     Preserves ``restart_set`` order so callers relying on partition
     ordering (lexicographic, §2.9) get the right notice dispatch order.
+
+    The returned list is keyed by instance name; the SDK is queried with
+    the corresponding container name when ``container_of`` is supplied.
     """
     result: list[str] = []
     for name in restart_set:
@@ -189,7 +225,7 @@ def compute_warned_and_running(runtime: DockerRuntime, restart_set: list[str], p
                 logger.debug(f"compute_warned_and_running: {name} not running at preflight capture")
             continue
         with _runtime_errors(f"compute_warned_and_running: inspect {name}"):
-            current = runtime.inspect(name)
+            current = runtime.inspect(_container_name(name, container_of))
         if current.is_running:
             result.append(name)
         elif logger is not None:
@@ -198,7 +234,12 @@ def compute_warned_and_running(runtime: DockerRuntime, restart_set: list[str], p
 
 
 def execute_pre_hook(
-    runtime: DockerRuntime, warned_and_running: list[str], stop_timeouts: dict[str, int], recovery_ctx: RecoveryContext, logger: Any = None
+    runtime: DockerRuntime,
+    warned_and_running: list[str],
+    stop_timeouts: dict[str, int],
+    recovery_ctx: RecoveryContext,
+    logger: Any = None,
+    container_of: dict[str, str] | None = None,
 ) -> PreHookResult:
     """Re-inspect, stop the to_stop set, and recover on failure.
 
@@ -222,7 +263,7 @@ def execute_pre_hook(
     to_stop: list[str] = []
     for name in warned_and_running:
         with _runtime_errors(f"pre-hook: inspect {name}"):
-            state = runtime.inspect(name)
+            state = runtime.inspect(_container_name(name, container_of))
         if state.is_running:
             to_stop.append(name)
         elif logger is not None:
@@ -232,7 +273,7 @@ def execute_pre_hook(
     for name in to_stop:
         timeout = stop_timeouts.get(name, 10)
         with _runtime_errors(f"pre-hook: stop {name}"):
-            result: StopResult = runtime.stop(name, timeout)
+            result: StopResult = runtime.stop(_container_name(name, container_of), timeout)
         if result.outcome == StopOutcome.STOPPED:
             stopped.append(name)
         elif result.outcome == StopOutcome.EXITED_BEFORE_STOP:
@@ -248,7 +289,12 @@ def execute_pre_hook(
         if logger is not None:
             logger.error(f"pre-hook: {len(failed)} stop failure(s); running §8.8 recovery")
         recovery = recover_stopped_containers(
-            runtime=runtime, stopped_by_deployment=stopped, warned_and_running=warned_and_running, ctx=recovery_ctx, logger=logger
+            runtime=runtime,
+            stopped_by_deployment=stopped,
+            warned_and_running=warned_and_running,
+            ctx=recovery_ctx,
+            logger=logger,
+            container_of=container_of,
         )
     return PreHookResult(stopped=stopped, exited_before_stop=exited_before_stop, failed=failed, recovery=recovery)
 
@@ -260,6 +306,7 @@ def execute_post_hook(
     health_timeout: int,
     poll_interval: float,
     logger: Any = None,
+    container_of: dict[str, str] | None = None,
 ) -> PostHookResult:
     """Start every container this deployment actually stopped; then health-check.
 
@@ -282,7 +329,7 @@ def execute_post_hook(
     errors: dict[str, str] = {}
     for name in stopped_by_deployment:
         with _runtime_errors(f"post-hook: start {name}"):
-            result: StartResult = runtime.start(name)
+            result: StartResult = runtime.start(_container_name(name, container_of))
         if result.success:
             started.append(name)
         else:
@@ -294,7 +341,12 @@ def execute_post_hook(
         pre = preflight_states.get(name)
         preexisting_unhealthy = pre is not None and pre.health == "unhealthy"
         with _runtime_errors(f"post-hook: health {name}"):
-            result: HealthResult = runtime.wait_healthy(name, timeout=health_timeout, poll_interval=poll_interval, preexisting_unhealthy=preexisting_unhealthy)
+            result: HealthResult = runtime.wait_healthy(
+                _container_name(name, container_of),
+                timeout=health_timeout,
+                poll_interval=poll_interval,
+                preexisting_unhealthy=preexisting_unhealthy,
+            )
         if result.healthy:
             healthy.append(name)
         else:
@@ -322,6 +374,9 @@ def _wait_for_reachability(names: list[str], ctx: RecoveryContext, logger: Any) 
     by ``ctx.cancel_ready_timeout``; a value of 0 disables the wait
     (single probe, then return). Returns (reachable, unreachable) in
     the original ``names`` order.
+
+    ``names`` are instance names; the probe callback is responsible for
+    translating to whatever the RCON transport needs.
     """
     if not names:
         return ([], [])
@@ -355,19 +410,29 @@ def _wait_for_reachability(names: list[str], ctx: RecoveryContext, logger: Any) 
     return (ordered_reachable, ordered_unreachable)
 
 
-def _select_cancel_recipients(runtime: DockerRuntime, warned_and_running: list[str], logger: Any) -> list[str]:
+def _select_cancel_recipients(
+    runtime: DockerRuntime,
+    warned_and_running: list[str],
+    logger: Any,
+    container_of: dict[str, str] | None = None,
+) -> list[str]:
     """warned_and_running members that are currently running (§8.7)."""
     result: list[str] = []
     for name in warned_and_running:
         with _runtime_errors(f"recovery: inspect {name}"):
-            state = runtime.inspect(name)
+            state = runtime.inspect(_container_name(name, container_of))
         if state.is_running:
             result.append(name)
     return result
 
 
 def recover_stopped_containers(
-    runtime: DockerRuntime, stopped_by_deployment: list[str], warned_and_running: list[str], ctx: RecoveryContext, logger: Any = None
+    runtime: DockerRuntime,
+    stopped_by_deployment: list[str],
+    warned_and_running: list[str],
+    ctx: RecoveryContext,
+    logger: Any = None,
+    container_of: dict[str, str] | None = None,
 ) -> RecoveryResult:
     """Restart containers we stopped and cancel any pending restart promise.
 
@@ -397,7 +462,7 @@ def recover_stopped_containers(
     errors: dict[str, str] = {}
     for name in stopped_by_deployment:
         with _runtime_errors(f"recovery: start {name}"):
-            result: StartResult = runtime.start(name)
+            result: StartResult = runtime.start(_container_name(name, container_of))
         if result.success:
             started.append(name)
         else:
@@ -408,7 +473,7 @@ def recover_stopped_containers(
     reachable, unreachable = _wait_for_reachability(started, ctx, logger)
     for name in unreachable:
         errors.setdefault(name, "recovery: not RCON-reachable within timeout")
-    recipients = _select_cancel_recipients(runtime, warned_and_running, logger)
+    recipients = _select_cancel_recipients(runtime, warned_and_running, logger, container_of)
     if recipients:
         try:
             ctx.cancel_notice_fn(recipients)
