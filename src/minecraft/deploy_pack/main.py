@@ -567,14 +567,25 @@ def _send_online(config: DeploymentConfig, container_status: dict[str, str], log
 
 
 def _build_recovery_ctx(config: DeploymentConfig, rcon_set: _RconSet, cancel_message: str, clock: Clock | None = None) -> RecoveryContext:
-    """Assemble a RecoveryContext around the given RCON set."""
-    probe: ReachabilityProbeFn = rcon_set.probe
+    """Assemble a RecoveryContext around the given RCON set.
 
-    def cancel(names: list[str]) -> None:
-        rcon_set.dispatch_cancel(names, cancel_message)
+    The hooks layer calls the probe and cancel callbacks with *instance
+    names*. The RCON set is keyed by *container name*. This wrapper
+    translates so the hooks layer sees a uniform instance-name
+    interface.
+    """
+    container_of = {name: inst.container for name, inst in config.instances.items() if inst.container}
 
+    def probe(instance_name: str) -> bool:
+        return rcon_set.probe(container_of.get(instance_name, instance_name))
+
+    def cancel(instance_names: list[str]) -> None:
+        containers = [container_of.get(m, m) for m in instance_names]
+        rcon_set.dispatch_cancel(containers, cancel_message)
+
+    probe_fn: ReachabilityProbeFn = probe
     return RecoveryContext(
-        reachability_probe=probe,
+        reachability_probe=probe_fn,
         cancel_notice_fn=cancel,
         cancel_ready_timeout=float(config.docker.cancel_notice_ready_timeout_seconds),
         poll_interval=float(config.docker.health_poll_seconds),
@@ -783,11 +794,23 @@ def _run_deployment(
         if notify:
             _send_live(config, plan, scopes, None, None, True, logger)
         return 0
+
+    # Instance name -> container name. Deploy-state sets and hook results
+    # are keyed by instance name; the Docker SDK is keyed by container
+    # name. Every hooks entry point translates at its boundary.
+    container_of = {name: inst.container for name, inst in config.instances.items() if inst.container}
+
     rcon_set = _RconSet(config, runtime, logger)
     recovery_ctx = _build_recovery_ctx(config, rcon_set, config.docker.restart_cancel_notice_template)
     warned_and_running: list[str] = []
     if plan.restart_set:
-        warned_and_running = compute_warned_and_running(runtime, plan.restart_set, plan.container_states, logger=logger)
+        warned_and_running = compute_warned_and_running(
+            runtime=runtime,
+            restart_set=plan.restart_set,
+            preflight_states=plan.container_states,
+            logger=logger,
+            container_of=container_of,
+        )
     pre: PreHookResult | None = None
     to_stop: list[str] = []
     if warned_and_running:
@@ -808,7 +831,14 @@ def _run_deployment(
             inst = config.instances.get(member)
             if inst is not None:
                 stop_timeouts[member] = inst.stop_grace_seconds
-        pre = execute_pre_hook(runtime, warned_and_running, stop_timeouts, recovery_ctx, logger=logger)
+        pre = execute_pre_hook(
+            runtime=runtime,
+            warned_and_running=warned_and_running,
+            stop_timeouts=stop_timeouts,
+            recovery_ctx=recovery_ctx,
+            logger=logger,
+            container_of=container_of,
+        )
         to_stop = list(pre.stopped)
         if pre.failed:
             logger.error(f"stop phase failed for: {', '.join(pre.failed)}")
@@ -829,11 +859,12 @@ def _run_deployment(
                 print(f"mid_scope_write: {write_msg}")
             return 1
         recovery = recover_stopped_containers(
-            runtime,
+            runtime=runtime,
             stopped_by_deployment=to_stop,
             warned_and_running=warned_and_running,
             ctx=recovery_ctx,
             logger=logger,
+            container_of=container_of,
         )
         if pre is not None:
             pre.recovery = recovery
@@ -863,11 +894,12 @@ def _run_deployment(
             msg = "RCON reload failed for: " + ", ".join(reload_failed)
             logger.error(msg)
             recovery = recover_stopped_containers(
-                runtime,
+                runtime=runtime,
                 stopped_by_deployment=to_stop,
                 warned_and_running=warned_and_running,
                 ctx=recovery_ctx,
                 logger=logger,
+                container_of=container_of,
             )
             if pre is not None:
                 pre.recovery = recovery
@@ -885,12 +917,13 @@ def _run_deployment(
     # Post phase: start stopped containers, wait for health (§4.13, §4.14).
     if plan.restart_set:
         post = execute_post_hook(
-            runtime,
-            to_stop,
-            config.docker.health_timeout_seconds,
-            plan.container_states,
+            runtime=runtime,
+            stopped_by_deployment=to_stop,
+            preflight_states=plan.container_states,
+            health_timeout=config.docker.health_timeout_seconds,
             poll_interval=config.docker.health_poll_seconds,
             logger=logger,
+            container_of=container_of,
         )
         if post.start_failed or post.health_failed:
             stage = getattr(post, "failure_stage", None)
