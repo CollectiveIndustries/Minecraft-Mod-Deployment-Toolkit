@@ -3,7 +3,7 @@ name = "minecraft"
 version = "0.1.0"
 description = "Minecraft Docker network"
 authors = [
-    {name = "Andrew Malone",email = "admmorketh@gmail.com"},
+    { name = "Andrew Malone", email = "admmorketh@gmail.com" },
 ]
 dependencies = [
     "mcstatus>=14.0.0",
@@ -12,12 +12,10 @@ dependencies = [
     "pillow>=12.3.0",
     "textual>=8.2.8",
     "docker>=7.2.0",
-    ]
-
-
+]
 requires-python = ">=3.11"
 readme = "README.md"
-license = {text = "MIT"}
+license = { text = "MIT" }
 
 [project.scripts]
 deploy-pack = "minecraft.deploy_pack.deploy_pack:cli"
@@ -28,17 +26,31 @@ dev = [
     "ruff>=0.16.0",
     "pytest-cov>=7.1.0",
     "pytest-asyncio>=1.4.0",
+    "pylint>=4.1.2",
+    "docformatter>=1.7.8",
 ]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
 
 [tool.pdm.scripts]
 format = "ruff format ."
+docstrings-diff = "docformatter --diff src/ tests/"
+docstrings-check = "docformatter --check src/ tests/"
+docstrings-format = "docformatter --in-place src/ tests/"
 lint = "ruff check ."
 lint-fix = "ruff check . --fix"
+pylint-duplicates = "pylint src/minecraft/"
 tests = "pytest"
 
 full.composite = [
     "pipeline",
     "docstring-fixer --workers 2 --retry 5 --mode opendeep --exclude 'tests/.*/fixtures/' src/ tests/",
+    "docstrings-check",
     "format",
     "lint-fix",
     "lint",
@@ -46,33 +58,23 @@ full.composite = [
     "risky-files --coverage coverage.json --quiet --filter \"risk > 2.0\" --sort complexity:desc",
 ]
 
-[build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
-
-
 [tool.pytest.ini_options]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 testpaths = ["tests"]
 addopts = [
-#    "-q",
-    "--cov=src",           # measure coverage for all packages
-    "--cov-report=term:skip-covered",        # terminal report
-    "--cov-report=html",        # HTML report (htmlcov/)
-    "--cov-report=json",         # json report (coverage.json)
-    "--cov-fail-under=90",      # fail if below 90%
+    "--cov=src",
+    "--cov-report=term:skip-covered",
+    "--cov-report=html",
+    "--cov-report=json",
+    "--cov-fail-under=90",
     "--no-cov-on-fail",
 ]
-log_cli_level = "ERROR"
-log_format = "%(asctime)s %(levelname)s %(message)s"
-log_date_format = "%Y-%m-%d %H:%M:%S"
 cache_dir = ".cache"
 asyncio_mode = "auto"
 
-filterwarnings = [
-]
+filterwarnings = []
 
 markers = [
     "e2e: marks tests as end-to-end (deselect with '-m \"not e2e\"')",
@@ -80,13 +82,11 @@ markers = [
 ]
 
 [tool.coverage]
-# Only include the package source, exclude tests
 source = ["src"]
-# Exclude any files you don't want to count (e.g., __init__.py, test helpers)
-omit = ["*/tests/*", "*/__pycache__/*"]
-
-[tool.pdm]
-distribution = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+]
 
 [tool.ruff]
 target-version = "py313"
@@ -106,35 +106,61 @@ exclude = [
 
 [tool.ruff.lint]
 select = [
-    "E", "F", "W",      # pycodestyle + pyflakes
-    "B",                # bugbear
-    "I",                # import sorting
-    "UP",               # pyupgrade
-    "SIM",              # simplification
-    "C4",               # comprehensions
-    "C90",              # complexity
-    "PLC", "PLE",       # pylint baseline checks
-    "RUF",              # ruff rules
-    "D",                # docstrings (MANDATORY POLICY)
-    "TID"               # Enable Banned API see section bellow
+    "E",       # pycodestyle
+    "F",       # pyflakes
+    "W",       # pycodestyle warnings
+    "B",       # flake8-bugbear
+    "I",       # import sorting
+    "UP",      # pyupgrade
+    "SIM",     # simplification
+    "C4",      # comprehensions
+    "C90",     # McCabe complexity
+    "PLC",     # pylint convention
+    "PLE",     # pylint errors
+    "RUF",     # Ruff-specific rules
+    "D",       # docstrings
+    "TID",     # tidy-imports / banned APIs
 ]
 
 ignore = [
-    "E501",      # handled by formatter
-    "B008",      # dependency injection patterns
-    "B904",      # exception chaining flexibility
-    "C901",      # allowed complexity in core services
-    "PLR0912",   # branches
-    "PLR0915",   # statements
-    "SIM108",    # readability preference
-
-    "D203", "D213",   # conflicting doc conventions
-    "D105",           # dunder methods optional
-    "D107",           # __init__ docstring optional
+    "B008",    # dependency injection patterns
+    "B904",    # exception chaining flexibility
+    "C901",    # allowed complexity in core services
+    "PLR0912", # allowed branches
+    "PLR0915", # allowed statements
+    "SIM108",  # readability preference
+    "D203",    # conflicts with D211 / project convention
+    "D213",    # conflicts with D212 / project convention
+    "D105",    # dunder methods optional
+    "D107",    # __init__ docstring optional
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.pylint.main]
+py-version = "3.13"
+
+[tool.pylint.messages_control]
+disable = ["all"]
+enable = [
+    "duplicate-code",
+]
+
+[tool.pylint.format]
+max-line-length = 160
+
+[tool.docformatter]
+recursive = true
+black = true
+wrap-summaries = 160
+wrap-descriptions = 160
+exclude = [
+    "fixtures",
+]
 
 [tool.pipeline]
 dirs = "src,tests"
@@ -148,14 +174,10 @@ workers = 4
 retry = 1
 api_timeout = 240
 
-# ----------------------------
-# Unicode Handling (ENSURE ALL FILES ARE UTF-8 AND FREE OF NON-ASCII)
-# ----------------------------
 [tool.fix-unicode-ascii]
-disable = ["0060"]           # backtick + en dash
-enable = []                  # optional: re-enable some
-normalize_accents = false    # keep false unless you want "café" -> "cafe"
-#line_endings = "lf"      # or "crlf" tool.ruff.format.line-ending already handles this
+disable = ["0060"]
+enable = []
+normalize_accents = false
 
 [tool.risky-files]
 max_complexity = 15
