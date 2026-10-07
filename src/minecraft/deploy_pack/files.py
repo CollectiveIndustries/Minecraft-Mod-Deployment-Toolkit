@@ -22,6 +22,29 @@ Non-responsibilities:
   * URL assembly for anything other than resource packs. Deploy
     notifications build their own URLs.
 
+Structure
+---------
+
+The module is organised into eight sections with explicit banner
+comments. Each section corresponds to one responsibility and its
+helpers are only called from within that section or from the public
+entry points declared in ``__all__``.
+
+    §1  Atomic publication          (§4.10)
+    §2  Hash helpers                (§4.4)
+    §3  Protect patterns            (§3.13)
+    §4  Tree copy                   (§7.2)
+    §5  Flat-file deployment        (§4.11)
+    §6  ZIP creation                (§7.1)
+    §7  Shared destinations         (§7.5)
+    §8  Resource-pack misc          (§3.9, §7.5)
+
+Aggressive decomposition: every public entry point is a thin
+orchestrator delegating to small single-purpose helpers. The
+copy/clean functions (``copy_tree``, ``deploy_flat_files``) use the
+same pattern: hash both sides, split into (new, updated, extras,
+unchanged), run deletions, run copies, log a summary.
+
 Logging
 -------
 
@@ -76,6 +99,52 @@ __all__ = [
 ]
 
 
+# ===========================================================================
+# §1  Atomic publication (§4.10)
+# ===========================================================================
+
+
+def _make_temp_path(dest: Path) -> Path:
+    """Return the same-directory temp path used by :func:`_publish_atomically`."""
+    return dest.with_name(f"{dest.name}.tmp.{os.getpid()}")
+
+
+def _fsync_path(p: Path) -> None:
+    """Open ``p`` and fsync it, closing the fd regardless of outcome."""
+    fd = os.open(p, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _copy_metadata_from_existing(tmp: Path, dest: Path, logger: Any) -> None:
+    """Copy mode and ownership from an existing ``dest`` onto ``tmp``, best-effort.
+
+    Failures log at WARN and continue (§4.10: metadata preservation is
+    not fatal). Called only when ``dest`` already exists.
+    """
+    try:
+        st = os.stat(dest)
+    except OSError as exc:
+        logger.warning(f"atomic write: stat({dest}) failed: {exc}")
+        return
+    try:
+        os.chmod(tmp, st.st_mode)
+    except (PermissionError, OSError) as exc:
+        logger.warning(f"atomic write: chmod({tmp}) failed: {exc}")
+    try:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except (PermissionError, OSError) as exc:
+        logger.warning(f"atomic write: chown({tmp}) failed: {exc}")
+
+
+def _cleanup_temp(tmp: Path) -> None:
+    """Remove a temp file, suppressing any OSError."""
+    with contextlib.suppress(OSError):
+        tmp.unlink()
+
+
 def _publish_atomically(dest: Path, writer: Callable[[Path], None], logger: Any = None) -> None:
     """Write ``dest`` atomically by staging in the same directory.
 
@@ -95,34 +164,17 @@ def _publish_atomically(dest: Path, writer: Callable[[Path], None], logger: Any 
     if logger is None:
         logger = _log
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(f"{dest.name}.tmp.{os.getpid()}")
+    tmp = _make_temp_path(dest)
     logger.debug(f"atomic publish: writing {dest} via temp {tmp.name}")
     try:
         writer(tmp)
-        fd = os.open(tmp, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        _fsync_path(tmp)
         if dest.exists():
-            try:
-                st = os.stat(dest)
-            except OSError as exc:
-                logger.warning(f"atomic write: stat({dest}) failed: {exc}")
-            else:
-                try:
-                    os.chmod(tmp, st.st_mode)
-                except (PermissionError, OSError) as exc:
-                    logger.warning(f"atomic write: chmod({tmp}) failed: {exc}")
-                try:
-                    os.chown(tmp, st.st_uid, st.st_gid)
-                except (PermissionError, OSError) as exc:
-                    logger.warning(f"atomic write: chown({tmp}) failed: {exc}")
+            _copy_metadata_from_existing(tmp, dest, logger)
         os.replace(tmp, dest)
         logger.debug(f"atomic publish: {dest} published")
     except Exception:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
+        _cleanup_temp(tmp)
         raise
 
 
@@ -149,43 +201,17 @@ def atomic_copy(src: Path, dest: Path, logger: Any = None) -> None:
         logger = _log
     if not src.is_file():
         raise FileNotFoundError(f"atomic_copy: source not found: {src}")
-
-    def writer(tmp: Path) -> None:
-        shutil.copyfile(src, tmp)
-
     logger.debug(f"atomic_copy: {src} -> {dest}")
-    _publish_atomically(dest, writer, logger)
+    _publish_atomically(dest, lambda tmp: shutil.copyfile(src, tmp), logger)
 
 
-def create_zip(source_dir: Path, output_zip: Path, logger: Any = None) -> None:
-    """Zip the contents of ``source_dir`` into ``output_zip``, atomically.
-
-    The archive contains paths relative to ``source_dir`` (no leading
-    directory component). Atomic publication via :func:`_publish_atomically`
-    means a partial ZIP can never appear at ``output_zip`` (§4.10).
-    """
-    if logger is None:
-        logger = _log
-    if not source_dir.is_dir():
-        raise NotADirectoryError(f"source directory not found: {source_dir}")
-
-    file_count = [0]
-
-    def writer(tmp: Path) -> None:
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-            for dirpath, _dirnames, filenames in os.walk(source_dir, followlinks=False):
-                for fname in sorted(filenames):
-                    full = Path(dirpath) / fname
-                    rel = full.relative_to(source_dir)
-                    zf.write(full, arcname=str(rel).replace(os.sep, "/"))
-                    file_count[0] += 1
-
-    logger.debug(f"create_zip: {source_dir} -> {output_zip}")
-    _publish_atomically(output_zip, writer, logger)
-    logger.info(f"create_zip: wrote {file_count[0]} file(s) to {output_zip}")
+# ===========================================================================
+# §2  Hash helpers (§4.4)
+# ===========================================================================
 
 
 def _hash_file(path: Path, algo: str) -> str:
+    """Return the lowercase-hex digest of ``path`` under ``algo``."""
     hasher = hashlib.new(algo)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -206,6 +232,66 @@ def compute_sha1(path: Path) -> str:
 def sha256_bytes(data: bytes) -> str:
     """SHA-256 of a byte string, lowercase hex."""
     return hashlib.sha256(data).hexdigest()
+
+
+def _hash_tree(root: Path) -> dict[str, str]:
+    """Return ``{rel_path: sha256}`` for every regular file under root.
+
+    ``rel_path`` uses forward slashes. Symlinks are not followed for
+    directory traversal; a symlink to a regular file is hashed as its
+    target contents (matching ``Path.is_file()`` semantics).
+    """
+    result: dict[str, str] = {}
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        for fname in filenames:
+            full = Path(dirpath) / fname
+            rel = full.relative_to(root)
+            rel_str = str(rel).replace(os.sep, "/")
+            try:
+                result[rel_str] = compute_sha256(full)
+            except OSError:
+                continue
+    return result
+
+
+def hash_tree(root: Path, logger: Any = None) -> dict[str, str]:
+    """Return ``{rel_path: sha256}`` for every regular file under ``root``.
+
+    Path keys use forward slashes. Symlink semantics match :func:`_hash_tree`.
+    """
+    if logger is None:
+        logger = _log
+    result = _hash_tree(root)
+    logger.debug(f"hash_tree({root}): {len(result)} file(s) hashed")
+    return result
+
+
+def hash_flat_dir(root: Path, logger: Any = None) -> dict[str, str]:
+    """Return ``{filename: sha256}`` for the ``.jar`` files directly in ``root``.
+
+    Non-``.jar`` files and subdirectories are ignored (§4.11: ``mods_dir``
+    is treated as flat).
+    """
+    if logger is None:
+        logger = _log
+    if not root.is_dir():
+        logger.debug(f"hash_flat_dir({root}): directory missing; returning empty")
+        return {}
+    out: dict[str, str] = {}
+    for entry in root.iterdir():
+        if not entry.is_file() or entry.suffix != ".jar":
+            continue
+        try:
+            out[entry.name] = compute_sha256(entry)
+        except OSError:
+            continue
+    logger.debug(f"hash_flat_dir({root}): {len(out)} jar(s) hashed")
+    return out
+
+
+# ===========================================================================
+# §3  Protect patterns (§3.13)
+# ===========================================================================
 
 
 def is_protected_path(rel_path: str | Path, protect_patterns: list[str] | None = None) -> bool:
@@ -240,6 +326,21 @@ def is_protected_path(rel_path: str | Path, protect_patterns: list[str] | None =
     return False
 
 
+def _strip_comment_and_blank(line: str) -> str | None:
+    """Return the stripped pattern on this line, or None for comments/blank lines."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    return line
+
+
+def _normalize_protect_pattern(line: str) -> str:
+    """Strip a single trailing ``/`` so ``world/`` behaves like ``world``."""
+    if line.endswith("/") and len(line) > 1:
+        return line.rstrip("/")
+    return line
+
+
 def load_protect_patterns(path: Path | None, logger: Any = None) -> list[str]:
     """Read ``.deploy_protect`` into a list of globs (§3.13).
 
@@ -262,17 +363,20 @@ def load_protect_patterns(path: Path | None, logger: Any = None) -> list[str]:
     patterns: list[str] = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
+            candidate = _strip_comment_and_blank(line)
+            if candidate is None:
                 continue
-            if line.endswith("/") and len(line) > 1:
-                line = line.rstrip("/")
-            patterns.append(line)
+            patterns.append(_normalize_protect_pattern(candidate))
     if not patterns:
         logger.warning(f"protect file is empty: {path}")
     else:
         logger.info(f"Loaded {len(patterns)} protect pattern(s) from {path}")
     return patterns
+
+
+# ===========================================================================
+# §4  Tree copy (§7.2)
+# ===========================================================================
 
 
 @dataclass
@@ -296,24 +400,22 @@ class CopyResult:
         return len(self.added) + len(self.updated) + len(self.removed)
 
 
-def _hash_tree(root: Path) -> dict[str, str]:
-    """Return ``{rel_path: sha256}`` for every regular file under root.
+def _split_tree_maps(src_map: dict[str, str], dst_map: dict[str, str]) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Return ``(new_files, updated, extras, unchanged)`` from the two hash maps.
 
-    ``rel_path`` uses forward slashes. Symlinks are not followed for
-    directory traversal; a symlink to a regular file is hashed as its
-    target contents (matching ``Path.is_file()`` semantics).
+    * ``new_files`` - present in src only
+    * ``extras``    - present in dst only
+    * ``updated``   - present in both, content differs
+    * ``unchanged`` - present in both, content matches
     """
-    result: dict[str, str] = {}
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
-        for fname in filenames:
-            full = Path(dirpath) / fname
-            rel = full.relative_to(root)
-            rel_str = str(rel).replace(os.sep, "/")
-            try:
-                result[rel_str] = compute_sha256(full)
-            except OSError:
-                continue
-    return result
+    src_set = set(src_map)
+    dst_set = set(dst_map)
+    new_files = src_set - dst_set
+    extras = dst_set - src_set
+    common = src_set & dst_set
+    updated = {rel for rel in common if src_map[rel] != dst_map[rel]}
+    unchanged = common - updated
+    return (new_files, updated, extras, unchanged)
 
 
 def _prune_empty_dirs(root: Path, protect_patterns: list[str], logger: Any) -> None:
@@ -328,6 +430,57 @@ def _prune_empty_dirs(root: Path, protect_patterns: list[str], logger: Any) -> N
             with contextlib.suppress(OSError):
                 full.rmdir()
                 logger.debug(f"prune: removed empty dir {rel}")
+
+
+def _copy_tree_deletions(dst: Path, extras: set[str], protect: list[str], result: CopyResult, logger: Any) -> None:
+    """Delete-mode step: remove unprotected extras, keep protected ones."""
+    for rel in sorted(extras):
+        if is_protected_path(rel, protect):
+            result.protected_kept.append(rel)
+            logger.debug(f"copy_tree: keeping protected extra {rel}")
+            continue
+        try:
+            (dst / rel).unlink()
+            result.removed.append(rel)
+        except OSError as exc:
+            logger.warning(f"copy_tree: unlink {rel} failed: {exc}")
+
+
+def _copy_tree_adds_and_updates(src: Path, dst: Path, new_files: set[str], updated: set[str], result: CopyResult, logger: Any) -> None:
+    """Copy new and updated files, appending outcomes to ``result``.
+
+    A file that exists as a directory at the destination raises
+    :class:`IsADirectoryError` - this is a hard stop, not a skip.
+    Individual copy failures are logged at WARN and skipped.
+    """
+    for rel in sorted(new_files | updated):
+        src_file = src / rel
+        dst_file = dst / rel
+        if dst_file.is_dir():
+            raise IsADirectoryError(f"copy_tree: dst path is a directory but src is a file: {dst_file}")
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src_file, dst_file)
+        except OSError as exc:
+            logger.warning(f"copy_tree: copy {rel} failed: {exc}")
+            continue
+        if rel in new_files:
+            result.added.append(rel)
+        else:
+            result.updated.append(rel)
+
+
+def _log_copy_tree_result(result: CopyResult, src: Path, dst: Path, mode: str, logger: Any) -> None:
+    """Emit the closing INFO/DEBUG line with the per-bucket counts."""
+    if result.any_change:
+        logger.info(
+            f"copy_tree({src} -> {dst}, mode={mode}): "
+            f"{len(result.added)} added, {len(result.updated)} updated, "
+            f"{len(result.removed)} removed, {len(result.protected_kept)} protected-kept, "
+            f"{len(result.unchanged)} unchanged"
+        )
+    else:
+        logger.debug(f"copy_tree({src} -> {dst}, mode={mode}): no changes ({len(result.unchanged)} unchanged, {len(result.protected_kept)} protected-kept)")
 
 
 def copy_tree(
@@ -367,56 +520,107 @@ def copy_tree(
     protect = protect_patterns or []
     dst.mkdir(parents=True, exist_ok=True)
     logger.debug(f"copy_tree: {src} -> {dst} (mode={mode}, {len(protect)} protect pattern(s))")
+
     src_map = _hash_tree(src)
     dst_map = _hash_tree(dst)
-    src_set = set(src_map)
-    dst_set = set(dst_map)
-    new_files = src_set - dst_set
-    extras = dst_set - src_set
-    common = src_set & dst_set
-    updated = {rel for rel in common if src_map[rel] != dst_map[rel]}
-    unchanged = common - updated
+    new_files, updated, extras, unchanged = _split_tree_maps(src_map, dst_map)
+
     result = CopyResult()
     if mode == "delete":
-        for rel in sorted(extras):
-            if is_protected_path(rel, protect):
-                result.protected_kept.append(rel)
-                logger.debug(f"copy_tree: keeping protected extra {rel}")
-            else:
-                try:
-                    (dst / rel).unlink()
-                    result.removed.append(rel)
-                except OSError as exc:
-                    logger.warning(f"copy_tree: unlink {rel} failed: {exc}")
-    for rel in sorted(new_files | updated):
-        src_file = src / rel
-        dst_file = dst / rel
-        if dst_file.is_dir():
-            raise IsADirectoryError(f"copy_tree: dst path is a directory but src is a file: {dst_file}")
-        dst_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy2(src_file, dst_file)
-        except OSError as exc:
-            logger.warning(f"copy_tree: copy {rel} failed: {exc}")
-            continue
-        if rel in new_files:
-            result.added.append(rel)
-        else:
-            result.updated.append(rel)
-    for rel in sorted(unchanged):
-        result.unchanged.append(rel)
+        _copy_tree_deletions(dst, extras, protect, result, logger)
+    _copy_tree_adds_and_updates(src, dst, new_files, updated, result, logger)
+    result.unchanged = sorted(unchanged)
     if result.removed:
         _prune_empty_dirs(dst, protect, logger)
+
+    _log_copy_tree_result(result, src, dst, mode, logger)
+    return result
+
+
+# ===========================================================================
+# §5  Flat-file deployment (§4.11)
+# ===========================================================================
+
+
+def _hash_source_files(src_files: dict[str, Path], logger: Any) -> dict[str, str]:
+    """Return ``{filename: sha256}`` for every readable source path.
+
+    Unreadable sources log at WARN and are dropped from the map.
+    """
+    out: dict[str, str] = {}
+    for name, path in src_files.items():
+        try:
+            out[name] = compute_sha256(path)
+        except OSError as exc:
+            logger.warning(f"deploy_flat_files: hash {name} failed: {exc}")
+    return out
+
+
+def _split_flat_sets(src_map: dict[str, str], dst_map: dict[str, str]) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Return ``(new_files, updated, extras, unchanged)`` as sorted lists.
+
+    Uses the same bucketing rule as :func:`_split_tree_maps`, but the
+    flat-file caller wants deterministic list order rather than sets.
+    """
+    src_set = set(src_map)
+    dst_set = set(dst_map)
+    new_files = sorted(src_set - dst_set)
+    extras = sorted(dst_set - src_set)
+    common = src_set & dst_set
+    updated = sorted(f for f in common if src_map[f] != dst_map[f])
+    unchanged = sorted(common - set(updated))
+    return (new_files, updated, extras, unchanged)
+
+
+def _remove_flat_extras(dst_dir: Path, extras: list[str], protect: list[str], result: CopyResult, logger: Any) -> None:
+    """Remove unprotected extras from ``dst_dir``, keeping protected ones."""
+    for name in extras:
+        if is_protected_path(name, protect):
+            result.protected_kept.append(name)
+            logger.debug(f"deploy_flat_files: keeping protected extra {name}")
+            continue
+        try:
+            (dst_dir / name).unlink()
+            result.removed.append(name)
+        except OSError as exc:
+            logger.warning(f"deploy_flat_files: unlink {name} failed: {exc}")
+
+
+def _copy_flat_new_and_updated(
+    src_files: dict[str, Path],
+    dst_dir: Path,
+    new_files: list[str],
+    updated: list[str],
+    result: CopyResult,
+    logger: Any,
+) -> None:
+    """Copy new and updated files into ``dst_dir``, appending to ``result``."""
+    for name in new_files + updated:
+        src_path = src_files.get(name)
+        if src_path is None:
+            continue
+        try:
+            shutil.copy2(src_path, dst_dir / name)
+        except OSError as exc:
+            logger.warning(f"deploy_flat_files: copy {name} failed: {exc}")
+            continue
+        if name in new_files:
+            result.added.append(name)
+        else:
+            result.updated.append(name)
+
+
+def _log_flat_deploy(result: CopyResult, dst_dir: Path, logger: Any) -> None:
+    """Emit the closing INFO/DEBUG line with the per-bucket counts."""
     if result.any_change:
         logger.info(
-            f"copy_tree({src} -> {dst}, mode={mode}): "
+            f"deploy_flat_files({dst_dir}): "
             f"{len(result.added)} added, {len(result.updated)} updated, "
             f"{len(result.removed)} removed, {len(result.protected_kept)} protected-kept, "
             f"{len(result.unchanged)} unchanged"
         )
     else:
-        logger.debug(f"copy_tree({src} -> {dst}, mode={mode}): no changes ({len(result.unchanged)} unchanged, {len(result.protected_kept)} protected-kept)")
-    return result
+        logger.debug(f"deploy_flat_files({dst_dir}): no changes ({len(result.unchanged)} unchanged, {len(result.protected_kept)} protected-kept)")
 
 
 def deploy_flat_files(
@@ -445,68 +649,85 @@ def deploy_flat_files(
     protect = protect_patterns or []
     dst_dir.mkdir(parents=True, exist_ok=True)
     logger.debug(f"deploy_flat_files: {len(src_files)} source(s) -> {dst_dir}")
-    src_map: dict[str, str] = {}
-    for name, path in src_files.items():
-        try:
-            src_map[name] = compute_sha256(path)
-        except OSError as exc:
-            logger.warning(f"deploy_flat_files: hash {name} failed: {exc}")
-            continue
-    dst_map: dict[str, str] = {}
-    for entry in dst_dir.iterdir():
-        if not entry.is_file() or entry.suffix != ".jar":
-            continue
-        try:
-            dst_map[entry.name] = compute_sha256(entry)
-        except OSError:
-            continue
-    src_set = set(src_map)
-    dst_set = set(dst_map)
-    new_files = sorted(src_set - dst_set)
-    extras = sorted(dst_set - src_set)
-    common = src_set & dst_set
-    updated = sorted(f for f in common if src_map[f] != dst_map[f])
-    unchanged = sorted(common - set(updated))
+
+    src_map = _hash_source_files(src_files, logger)
+    dst_map = hash_flat_dir(dst_dir)
+    new_files, updated, extras, unchanged = _split_flat_sets(src_map, dst_map)
+
     result = CopyResult()
-    for name in extras:
-        if is_protected_path(name, protect):
-            result.protected_kept.append(name)
-            logger.debug(f"deploy_flat_files: keeping protected extra {name}")
-        else:
-            try:
-                (dst_dir / name).unlink()
-                result.removed.append(name)
-            except OSError as exc:
-                logger.warning(f"deploy_flat_files: unlink {name} failed: {exc}")
-    for name in new_files + updated:
-        src_path = src_files.get(name)
-        if src_path is None:
-            continue
-        try:
-            shutil.copy2(src_path, dst_dir / name)
-        except OSError as exc:
-            logger.warning(f"deploy_flat_files: copy {name} failed: {exc}")
-            continue
-        if name in new_files:
-            result.added.append(name)
-        else:
-            result.updated.append(name)
+    _remove_flat_extras(dst_dir, extras, protect, result, logger)
+    _copy_flat_new_and_updated(src_files, dst_dir, new_files, updated, result, logger)
     result.unchanged = list(unchanged)
-    if result.any_change:
-        logger.info(
-            f"deploy_flat_files({dst_dir}): "
-            f"{len(result.added)} added, {len(result.updated)} updated, "
-            f"{len(result.removed)} removed, {len(result.protected_kept)} protected-kept, "
-            f"{len(result.unchanged)} unchanged"
-        )
-    else:
-        logger.debug(f"deploy_flat_files({dst_dir}): no changes ({len(result.unchanged)} unchanged, {len(result.protected_kept)} protected-kept)")
+
+    _log_flat_deploy(result, dst_dir, logger)
     return result
+
+
+# ===========================================================================
+# §6  ZIP creation (§7.1)
+# ===========================================================================
+
+
+def _write_zip_entries(zf: zipfile.ZipFile, source_dir: Path, file_count: list[int]) -> None:
+    """Write every regular file under ``source_dir`` into ``zf``.
+
+    Arcnames are relative to ``source_dir`` with forward slashes.
+    ``file_count`` is a one-element list so the caller can observe the
+    number of files written (closures cannot rebind integers).
+    """
+    for dirpath, _dirnames, filenames in os.walk(source_dir, followlinks=False):
+        for fname in sorted(filenames):
+            full = Path(dirpath) / fname
+            rel = full.relative_to(source_dir)
+            zf.write(full, arcname=str(rel).replace(os.sep, "/"))
+            file_count[0] += 1
+
+
+def _make_zip_writer(source_dir: Path, file_count: list[int]) -> Callable[[Path], None]:
+    """Return a writer callback suitable for :func:`_publish_atomically`."""
+
+    def writer(tmp: Path) -> None:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            _write_zip_entries(zf, source_dir, file_count)
+
+    return writer
+
+
+def create_zip(source_dir: Path, output_zip: Path, logger: Any = None) -> None:
+    """Zip the contents of ``source_dir`` into ``output_zip``, atomically.
+
+    The archive contains paths relative to ``source_dir`` (no leading
+    directory component). Atomic publication via :func:`_publish_atomically`
+    means a partial ZIP can never appear at ``output_zip`` (§4.10).
+    """
+    if logger is None:
+        logger = _log
+    if not source_dir.is_dir():
+        raise NotADirectoryError(f"source directory not found: {source_dir}")
+    file_count = [0]
+    logger.debug(f"create_zip: {source_dir} -> {output_zip}")
+    _publish_atomically(output_zip, _make_zip_writer(source_dir, file_count), logger)
+    logger.info(f"create_zip: wrote {file_count[0]} file(s) to {output_zip}")
+
+
+# ===========================================================================
+# §7  Shared destinations (§7.5)
+# ===========================================================================
 
 
 def is_shared_dest(value: str) -> bool:
     """Return True if ``value`` uses the ``@`` shared-destination prefix."""
     return isinstance(value, str) and value.startswith("@")
+
+
+def _validate_at_www_segment(segment: str, value: str) -> None:
+    """Raise ConfigError if ``segment`` is empty, dot, dot-dot, or contains NUL."""
+    if not segment:
+        raise ConfigError(f"empty segment in @www subpath: {value!r}")
+    if segment in (".", ".."):
+        raise ConfigError(f"dot or dot-dot segment in @www subpath: {value!r}")
+    if "\x00" in segment:
+        raise ConfigError(f"NUL byte in @www subpath: {value!r}")
 
 
 def parse_shared_dest(value: str, logger: Any = None) -> tuple[str, str]:
@@ -528,12 +749,7 @@ def parse_shared_dest(value: str, logger: Any = None) -> tuple[str, str]:
     if not sep or not rest:
         raise ConfigError(f"@www requires a non-empty subpath: {value!r}")
     for segment in rest.split("/"):
-        if not segment:
-            raise ConfigError(f"empty segment in @www subpath: {value!r}")
-        if segment in (".", ".."):
-            raise ConfigError(f"dot or dot-dot segment in @www subpath: {value!r}")
-        if "\x00" in segment:
-            raise ConfigError(f"NUL byte in @www subpath: {value!r}")
+        _validate_at_www_segment(segment, value)
     logger.debug(f"parse_shared_dest: {value!r} -> (www, {rest!r})")
     return ("www", rest)
 
@@ -550,6 +766,24 @@ def resolve_shared_dest(value: str, www_dir: Path, logger: Any = None) -> Path:
     resolved = www_dir / subpath
     logger.debug(f"resolve_shared_dest: {value!r} -> {resolved}")
     return resolved
+
+
+def resolve_resource_pack_dest(value: str, www_dir: Path, logger: Any = None) -> Path:
+    """Return the directory under ``www_dir`` where resource packs land.
+
+    ``value`` is the ``[sync_mapping].resourcepacks.resource_pack`` string,
+    which must be a valid ``@www/...`` destination (§7.5).
+    """
+    if logger is None:
+        logger = _log
+    dest = resolve_shared_dest(value, www_dir, logger)
+    logger.debug(f"resolve_resource_pack_dest: {value!r} -> {dest}")
+    return dest
+
+
+# ===========================================================================
+# §8  Resource-pack misc (§3.9, §7.5)
+# ===========================================================================
 
 
 def resolve_mapping_for_side(mapping_value: Any, side: str) -> str | None:
@@ -596,19 +830,6 @@ def validate_resource_pack_filename(name: str) -> None:
         raise ConfigError(f"resource-pack filename must end in '.zip': {name!r}")
 
 
-def resolve_resource_pack_dest(value: str, www_dir: Path, logger: Any = None) -> Path:
-    """Return the directory under ``www_dir`` where resource packs land.
-
-    ``value`` is the ``[sync_mapping].resourcepacks.resource_pack`` string,
-    which must be a valid ``@www/...`` destination (§7.5).
-    """
-    if logger is None:
-        logger = _log
-    dest = resolve_shared_dest(value, www_dir, logger)
-    logger.debug(f"resolve_resource_pack_dest: {value!r} -> {dest}")
-    return dest
-
-
 def build_resource_pack_url(
     download_base_url: str,
     mapping_value: str,
@@ -633,43 +854,3 @@ def build_resource_pack_url(
     url = f"{base}/{subpath}/{filename}"
     logger.debug(f"build_resource_pack_url: -> {url}")
     return url
-
-
-# ---------------------------------------------------------------------------
-# Public hash helpers (used by preflight/changes.py)
-# ---------------------------------------------------------------------------
-
-
-def hash_tree(root: Path, logger: Any = None) -> dict[str, str]:
-    """Return ``{rel_path: sha256}`` for every regular file under ``root``.
-
-    Path keys use forward slashes. Symlink semantics match :func:`_hash_tree`.
-    """
-    if logger is None:
-        logger = _log
-    result = _hash_tree(root)
-    logger.debug(f"hash_tree({root}): {len(result)} file(s) hashed")
-    return result
-
-
-def hash_flat_dir(root: Path, logger: Any = None) -> dict[str, str]:
-    """Return ``{filename: sha256}`` for the ``.jar`` files directly in ``root``.
-
-    Non-``.jar`` files and subdirectories are ignored (§4.11: ``mods_dir``
-    is treated as flat).
-    """
-    if logger is None:
-        logger = _log
-    if not root.is_dir():
-        logger.debug(f"hash_flat_dir({root}): directory missing; returning empty")
-        return {}
-    out: dict[str, str] = {}
-    for entry in root.iterdir():
-        if not entry.is_file() or entry.suffix != ".jar":
-            continue
-        try:
-            out[entry.name] = compute_sha256(entry)
-        except OSError:
-            continue
-    logger.debug(f"hash_flat_dir({root}): {len(out)} jar(s) hashed")
-    return out

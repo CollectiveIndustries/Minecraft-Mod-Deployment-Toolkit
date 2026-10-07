@@ -22,8 +22,8 @@ Exit codes (§2.4):
 
 Error precedence: exit-2 checks run before config load; config load
 before the interactive prompt; the prompt before preflight; preflight
-before runtime. See :func:`_validate_args`, :func:`_validate_passthrough_flags`,
-:func:`_run`, and the try/except hierarchy in :func:`main`.
+before runtime. See :func:`_validate_cli`, :func:`_run_with_scope`,
+and the try/except hierarchy in :func:`main`.
 
 Interactive prompt (§6.2, §6.3)
 -------------------------------
@@ -66,6 +66,33 @@ The entrypoint emits each at WARN before starting the runtime sequence,
 so the operator sees them in normal runs; ``--dry-run`` suppresses this
 emission (warnings are surfaced as part of the dry-run plan body instead).
 
+Structure
+---------
+
+The module is organised into twelve sections with explicit banner
+comments. Each section is self-contained: everything inside it belongs
+to the same concern, and the eventual module split will move whole
+sections without touching their contents.
+
+    §1  Imports
+    §2  CLI surface             (parser, args, validation, scopes)
+    §3  Config load
+    §4  Interactive prompt
+    §5  RCON transport set
+    §6  Diagnostics
+    §7  Notification composition
+    §8  Recovery / notice helpers
+    §9  Scope writes
+    §10 Runtime phases (§4.1)
+    §11 CLI dispatch
+    §12 Entry point
+
+The §4.1 runtime sequence threads its state through a small
+:class:`_RuntimeState` dataclass and calls one single-purpose phase
+function per step. Each phase returns ``None`` to continue or an
+``int`` exit code to abort, which makes the failure contract visible
+at :func:`_run_deployment`'s call site.
+
 Logging
 -------
 
@@ -85,7 +112,7 @@ import argparse
 import logging
 import sys
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +139,11 @@ from .preflight import PreflightError, PreflightPlan, ScopeSet, run_preflight, s
 from .scope_client import ClientScopeResult, deploy_client_scope
 from .scope_resource_pack import ResourcePackScopeResult, deploy_resource_pack_scope
 from .scope_server import ServerScopeResult, deploy_server_scope
+
+# ===========================================================================
+# §2  CLI surface
+# ===========================================================================
+
 
 _KNOWN_OVERRIDE_FLAGS = frozenset(
     {
@@ -272,7 +304,25 @@ def _resolve_scopes(args: _Args) -> _Scopes:
     """Resolve the _Scopes bundle from the parsed CLI surface (§2.1)."""
     if args.full:
         return _Scopes(ScopeSet(server=True, client=True, resource_pack=True), with_resources=True)
-    return _Scopes(ScopeSet(server=args.server, client=args.client, resource_pack=args.resource_pack), with_resources=args.with_resources)
+    return _Scopes(
+        ScopeSet(server=args.server, client=args.client, resource_pack=args.resource_pack),
+        with_resources=args.with_resources,
+    )
+
+
+def _resolve_config_dir(raw: str | None) -> Path:
+    """Return the config directory as a filesystem path."""
+    if raw:
+        p = Path(raw)
+        if p.is_file():
+            p = p.parent
+        return p
+    return Path("config.d")
+
+
+# ===========================================================================
+# §3  Config load
+# ===========================================================================
 
 
 def _setup_logging(debug: bool) -> Any:
@@ -287,21 +337,6 @@ def _setup_logging(debug: bool) -> Any:
     logging.getLogger().setLevel(level)
     _configure_logging(debug=debug)
     return _get_loggingcore_logger(__name__)
-
-
-def _sticky_max(actions: list[str]) -> str:
-    """Return the §4.6.2 sticky-max over ``actions``."""
-    return sticky_max(actions)
-
-
-def _resolve_config_dir(raw: str | None) -> Path:
-    """Return the config directory as a filesystem path."""
-    if raw:
-        p = Path(raw)
-        if p.is_file():
-            p = p.parent
-        return p
-    return Path("config.d")
 
 
 def _load_config(config_dir: Path, overrides: list[str]) -> DeploymentConfig:
@@ -321,6 +356,59 @@ def _load_config(config_dir: Path, overrides: list[str]) -> DeploymentConfig:
     return load_deployment_config(config_dir=config_dir, **parsed)
 
 
+def _sticky_max(actions: list[str]) -> str:
+    """Return the §4.6.2 sticky-max over ``actions``."""
+    return sticky_max(actions)
+
+
+# ===========================================================================
+# §4  Interactive prompt (§6.2, §6.3)
+# ===========================================================================
+
+
+def _classify_unmarked(unmarked: list, entries: list[dict]) -> tuple[list, list]:
+    """Split unmarked jars into (fixable, unfixable) by whether an index entry exists.
+
+    A jar with no ``.pw.toml`` cannot be fixed by writing a review entry;
+    the index has nothing to key against.
+    """
+    indexed_files = {str(e.get("file", "")) for e in entries if e.get("file")}
+    fixable = [u for u in unmarked if u.filename in indexed_files]
+    unfixable = [u for u in unmarked if u.filename not in indexed_files]
+    return fixable, unfixable
+
+
+def _warn_unfixable(unfixable: list, logger: Any) -> None:
+    """Log the unfixable-unmarked warning when there is anything to warn about."""
+    if not unfixable:
+        return
+    names = ", ".join(u.filename for u in unfixable)
+    logger.warning(f"{len(unfixable)} unmarked jar(s) have no .pw.toml and cannot be fixed here; they will not be deployed. Files: {names}")
+
+
+def _prompt_one_jar(jar: Any) -> str | None:
+    """Prompt for one jar; returns the review value or None to defer."""
+    print(f"Unmarked: {jar.filename}")
+    print(f"  reason: {jar.reason}")
+    while True:
+        try:
+            answer = input("  side? [s]erver / [c]lient / [b]oth / [k]skip / [d]efer: ")
+        except EOFError:
+            answer = "d"
+        answer = answer.strip().lower()
+        if answer == "s":
+            return "server"
+        if answer == "c":
+            return "client"
+        if answer == "b":
+            return "both"
+        if answer == "k":
+            return "skipped"
+        if answer in ("d", ""):
+            return None
+        print("  Invalid answer. Try again.")
+
+
 def _prompt_for_unmarked(config: DeploymentConfig, logger: Any) -> None:
     """Walk unmarked jars, prompt for a side, write review entries."""
     index_dir = Path(config.modpack_dir) / ".index"
@@ -330,50 +418,36 @@ def _prompt_for_unmarked(config: DeploymentConfig, logger: Any) -> None:
     unmarked = deps.find_unmarked(config.modpack_dir, entries)
     if not unmarked:
         return
-    indexed_files = {str(e.get("file", "")) for e in entries if e.get("file")}
-    fixable = [u for u in unmarked if u.filename in indexed_files]
-    unfixable = [u for u in unmarked if u.filename not in indexed_files]
-    if unfixable:
-        names = ", ".join(u.filename for u in unfixable)
-        logger.warning(f"{len(unfixable)} unmarked jar(s) have no .pw.toml and cannot be fixed here; they will not be deployed. Files: {names}")
+
+    fixable, unfixable = _classify_unmarked(unmarked, entries)
+    _warn_unfixable(unfixable, logger)
     if not fixable:
         return
+
     if not sys.stdin.isatty():
         logger.warning(
-            f"{len(fixable)} unmarked jar(s) need review but stdin is not a TTY; skipping the interactive prompt. Pass --non-interactive to acknowledge, or run in a terminal."
+            f"{len(fixable)} unmarked jar(s) need review but stdin is not a TTY; "
+            f"skipping the interactive prompt. Pass --non-interactive to acknowledge, "
+            f"or run in a terminal."
         )
         return
+
     overrides_path = Path(config.config_dir) / "side_overrides.toml"
     existing = load_side_overrides(overrides_path)
     review = dict(existing.deployment_tool_review)
     logger.info(f"Prompting for {len(fixable)} unmarked jar(s). Answers are written to {overrides_path}.")
     print()
     for jar in fixable:
-        print(f"Unmarked: {jar.filename}")
-        print(f"  reason: {jar.reason}")
-        while True:
-            try:
-                answer = input("  side? [s]erver / [c]lient / [b]oth / [k]skip / [d]efer: ")
-            except EOFError:
-                answer = "d"
-            answer = answer.strip().lower()
-            if answer == "s":
-                review[jar.filename] = "server"
-                break
-            if answer == "c":
-                review[jar.filename] = "client"
-                break
-            if answer == "b":
-                review[jar.filename] = "both"
-                break
-            if answer == "k":
-                review[jar.filename] = "skipped"
-                break
-            if answer in ("d", ""):
-                break
-            print("  Invalid answer. Try again.")
+        answer = _prompt_one_jar(jar)
+        if answer is not None:
+            review[jar.filename] = answer
     save_side_overrides(overrides_path, review, logger=logger)
     logger.info(f"Wrote {len(review)} review entr(ies) to {overrides_path}")
+
+
+# ===========================================================================
+# §5  RCON transport set
+# ===========================================================================
 
 
 class _RconSet:
@@ -424,6 +498,11 @@ class _RconSet:
             self.send(name, f"say {message}")
 
 
+# ===========================================================================
+# §6  Diagnostics (§2.5)
+# ===========================================================================
+
+
 def _run_debug_deps(config: DeploymentConfig, logger: Any) -> None:
     """Print dependency closure for both sides (§2.5)."""
     index_dir = Path(config.modpack_dir) / ".index"
@@ -449,6 +528,11 @@ def _run_diagnostic_notify(config: DeploymentConfig, logger: Any) -> None:
     notifications.notify_diagnostic(config.discord.diagnostic_template, ctx, config.webhook_url, all_roles, logger=logger)
 
 
+# ===========================================================================
+# §7  Notification composition (§4.6.9, §4.6.10, §5.4-§5.6)
+# ===========================================================================
+
+
 def _aggregate_reasons(plan: PreflightPlan) -> list[tuple[str, int]]:
     """Group the plan's reason entries by pattern, counting changed paths."""
     counts: dict[str, int] = {}
@@ -467,22 +551,28 @@ def _server_effective_action(plan: PreflightPlan) -> str:
     return _sticky_max(actions) if actions else "none"
 
 
-def _build_server_section(plan: PreflightPlan) -> str:
-    """Render the live notification's server section (§4.6.10)."""
-    targeted = plan.targeted
-    mods_deployed = None
-    if plan.mods_change is not None and (not targeted):
-        mods_deployed = len(plan.mods_change.added) + len(plan.mods_change.updated)
-    config_members: list[str] = []
-    config_changed_count = 0
+def _collect_config_members(plan: PreflightPlan) -> tuple[list[str], int]:
+    """Return (members_with_config_changes, total_non_mods_changed_paths)."""
+    members: list[str] = []
+    changed = 0
     for member in plan.partition:
         mp = plan.member_plans.get(member)
         if mp is None:
             continue
         ck = [p for p in mp.changed_paths if not p.startswith("mods/")]
         if ck:
-            config_members.append(member)
-            config_changed_count += len(ck)
+            members.append(member)
+            changed += len(ck)
+    return members, changed
+
+
+def _build_server_section(plan: PreflightPlan) -> str:
+    """Render the live notification's server section (§4.6.10)."""
+    targeted = plan.targeted
+    mods_deployed = None
+    if plan.mods_change is not None and (not targeted):
+        mods_deployed = len(plan.mods_change.added) + len(plan.mods_change.updated)
+    config_members, config_changed_count = _collect_config_members(plan)
     return notifications.build_server_section(
         targeted=targeted,
         targeted_members=plan.partition if targeted else None,
@@ -504,7 +594,10 @@ def _build_client_section(client_result: ClientScopeResult | None, dry_run: bool
     if dry_run or client_result is None:
         return notifications.build_client_section(zip_filename=None, sha256=None, changelog_url=None, dry_run=True)
     return notifications.build_client_section(
-        zip_filename=client_result.resolved_output_filename, sha256=client_result.zip_sha256, changelog_url=client_result.changelog_url, dry_run=False
+        zip_filename=client_result.resolved_output_filename,
+        sha256=client_result.zip_sha256,
+        changelog_url=client_result.changelog_url,
+        dry_run=False,
     )
 
 
@@ -547,7 +640,13 @@ def _send_live(
     return notifications.notify_live(config.discord.live_template, ctx, config.webhook_url, all_roles, logger=logger)
 
 
-def _send_failure(config: DeploymentConfig, failure_stage: str, error: str, container_status: dict[str, str], logger: Any) -> notifications.NotifyResult:
+def _send_failure(
+    config: DeploymentConfig,
+    failure_stage: str,
+    error: str,
+    container_status: dict[str, str],
+    logger: Any,
+) -> notifications.NotifyResult:
     """Render and post the failure notification (§5.6)."""
     ctx = notifications.FailureContext(
         tool_version=tool_version(),
@@ -564,10 +663,30 @@ def _send_failure(config: DeploymentConfig, failure_stage: str, error: str, cont
 def _send_online(config: DeploymentConfig, container_status: dict[str, str], logger: Any) -> notifications.NotifyResult:
     """Render and post the online notification (§5.5)."""
     ctx = notifications.OnlineContext(
-        tool_version=tool_version(), timestamp=notifications.render_timestamp_now(), player_roles=config.discord.player_roles, container_status=container_status
+        tool_version=tool_version(),
+        timestamp=notifications.render_timestamp_now(),
+        player_roles=config.discord.player_roles,
+        container_status=container_status,
     )
     all_roles = config.discord.player_roles + config.discord.operator_roles
     return notifications.notify_online(config.discord.online_template, ctx, config.webhook_url, all_roles, logger=logger)
+
+
+# ===========================================================================
+# §8  Recovery / notice helpers (§4.5, §5.8, §8.7, §8.8)
+# ===========================================================================
+
+
+@dataclass
+class _NoticeOutcome:
+    attempted: list[str]
+    delivered: list[str]
+    failed: list[str]
+
+    @property
+    def any_delivered(self) -> bool:
+        """Return True if at least one notice was delivered."""
+        return bool(self.delivered)
 
 
 def _build_recovery_ctx(config: DeploymentConfig, rcon_set: _RconSet, cancel_message: str, clock: Clock | None = None) -> RecoveryContext:
@@ -591,18 +710,6 @@ def _build_recovery_ctx(config: DeploymentConfig, rcon_set: _RconSet, cancel_mes
         poll_interval=float(config.docker.health_poll_seconds),
         clock=clock if clock is not None else Clock(),
     )
-
-
-@dataclass
-class _NoticeOutcome:
-    attempted: list[str]
-    delivered: list[str]
-    failed: list[str]
-
-    @property
-    def any_delivered(self) -> bool:
-        """Return True if at least one notice was delivered."""
-        return bool(self.delivered)
 
 
 def _dispatch_restart_notices(config: DeploymentConfig, warned_and_running: list[str], rcon_set: _RconSet, logger: Any) -> _NoticeOutcome:
@@ -644,7 +751,11 @@ def _online_container_status(plan: PreflightPlan, to_stop: list[str], post: Post
 
 
 def _failure_container_status(
-    plan: PreflightPlan, pre: PreHookResult | None, post: PostHookResult | None, reloaded: list[str], reload_failed: list[str]
+    plan: PreflightPlan,
+    pre: PreHookResult | None,
+    post: PostHookResult | None,
+    reloaded: list[str],
+    reload_failed: list[str],
 ) -> dict[str, str]:
     """§5.8 failure: all lifecycle-touched containers, plus internal states."""
     out: dict[str, str] = {}
@@ -682,32 +793,6 @@ def _print_cli_container_status(status: dict[str, str]) -> None:
     """Print per-container status to CLI, format per §5.8."""
     for member in sorted(status):
         print(f"{member}: {status[member]}")
-
-
-def _run_writes(
-    config: DeploymentConfig, plan: PreflightPlan, scopes: _Scopes, protect_patterns: list[str], logger: Any
-) -> tuple[bool, ServerScopeResult | None, ClientScopeResult | None, ResourcePackScopeResult | None, str | None]:
-    """Perform scopes in §4.2's order, halting on first failure.
-
-    Each scope receives no logger; it uses its own module logger so
-    events are tagged with the module that produced them.
-    """
-    server_result: ServerScopeResult | None = None
-    client_result: ClientScopeResult | None = None
-    rp_result: ResourcePackScopeResult | None = None
-    if scopes.scope_set.server:
-        server_result = deploy_server_scope(config, plan, protect_patterns)
-        if not server_result.success:
-            return (False, server_result, None, None, server_result.failure_message or "server scope failed")
-    if scopes.scope_set.client:
-        client_result = deploy_client_scope(config, scopes.with_resources, protect_patterns)
-        if not client_result.success:
-            return (False, server_result, client_result, None, client_result.failure_message or "client scope failed")
-    if scopes.scope_set.resource_pack:
-        rp_result = deploy_resource_pack_scope(config, plan, protect_patterns)
-        if not rp_result.success:
-            return (False, server_result, client_result, rp_result, rp_result.failure_message or "resource-pack scope failed")
-    return (True, server_result, client_result, rp_result, None)
 
 
 def _print_server_write_failure_recovery(config: DeploymentConfig, to_stop: list[str], failure_summary: str) -> None:
@@ -766,6 +851,332 @@ def _print_recovery_block(config: DeploymentConfig, recovery: RecoveryResult, co
     print("       docker start " + " ".join(containers))
 
 
+# ===========================================================================
+# §9  Scope writes (§4.2)
+# ===========================================================================
+
+
+def _run_writes(
+    config: DeploymentConfig,
+    plan: PreflightPlan,
+    scopes: _Scopes,
+    protect_patterns: list[str],
+    logger: Any,
+) -> tuple[bool, ServerScopeResult | None, ClientScopeResult | None, ResourcePackScopeResult | None, str | None]:
+    """Perform scopes in §4.2's order, halting on first failure.
+
+    Each scope receives no logger; it uses its own module logger so
+    events are tagged with the module that produced them.
+    """
+    server_result: ServerScopeResult | None = None
+    client_result: ClientScopeResult | None = None
+    rp_result: ResourcePackScopeResult | None = None
+    if scopes.scope_set.server:
+        server_result = deploy_server_scope(config, plan, protect_patterns)
+        if not server_result.success:
+            return (False, server_result, None, None, server_result.failure_message or "server scope failed")
+    if scopes.scope_set.client:
+        client_result = deploy_client_scope(config, scopes.with_resources, protect_patterns)
+        if not client_result.success:
+            return (False, server_result, client_result, None, client_result.failure_message or "client scope failed")
+    if scopes.scope_set.resource_pack:
+        rp_result = deploy_resource_pack_scope(config, plan, protect_patterns)
+        if not rp_result.success:
+            return (False, server_result, client_result, rp_result, rp_result.failure_message or "resource-pack scope failed")
+    return (True, server_result, client_result, rp_result, None)
+
+
+# ===========================================================================
+# §10  Runtime phases (§4.1)
+# ===========================================================================
+
+
+@dataclass
+class _RuntimeState:
+    """Mutable state threaded through the §4.1 runtime phases.
+
+    Populated by :func:`_make_runtime_state` for non-dry-run invocations
+    only, because constructing the RCON set performs Docker port
+    inspection (``select_rcon_transport`` → ``runtime.published_ports``)
+    and §2.6 forbids Docker operations during dry-run.
+
+    The phase helpers read inputs from the top half and write their
+    outputs to the bottom half. ``pre``, ``to_stop``, ``reloaded``,
+    ``reload_failed``, and the three scope results are only meaningful
+    once the corresponding phase has run.
+    """
+
+    # Inputs
+    config: DeploymentConfig
+    plan: PreflightPlan
+    scopes: _Scopes
+    runtime: DockerRuntime
+    notify: bool
+    protect_patterns: list[str]
+    logger: Any
+    # Derived before the first phase
+    container_of: dict[str, str]
+    rcon_set: _RconSet
+    recovery_ctx: RecoveryContext
+    # Phase outputs
+    warned_and_running: list[str] = field(default_factory=list)
+    to_stop: list[str] = field(default_factory=list)
+    pre: PreHookResult | None = None
+    reloaded: list[str] = field(default_factory=list)
+    reload_failed: list[str] = field(default_factory=list)
+    server_result: ServerScopeResult | None = None
+    client_result: ClientScopeResult | None = None
+    rp_result: ResourcePackScopeResult | None = None
+
+
+def _make_runtime_state(
+    config: DeploymentConfig,
+    plan: PreflightPlan,
+    scopes: _Scopes,
+    runtime: DockerRuntime,
+    notify: bool,
+    protect_patterns: list[str],
+    logger: Any,
+) -> _RuntimeState:
+    """Build the state bundle the runtime phases operate on."""
+    container_of = {name: inst.container for name, inst in config.instances.items() if inst.container}
+    rcon_set = _RconSet(config, runtime, logger)
+    recovery_ctx = _build_recovery_ctx(config, rcon_set, config.docker.restart_cancel_notice_template)
+    return _RuntimeState(
+        config=config,
+        plan=plan,
+        scopes=scopes,
+        runtime=runtime,
+        notify=notify,
+        protect_patterns=protect_patterns,
+        logger=logger,
+        container_of=container_of,
+        rcon_set=rcon_set,
+        recovery_ctx=recovery_ctx,
+    )
+
+
+def _run_dry_run_phase(config: DeploymentConfig, plan: PreflightPlan, scopes: _Scopes, notify: bool, logger: Any) -> int:
+    """§2.6: report the plan and return without any write or lifecycle op."""
+    logger.info("=" * 72)
+    logger.info("DRY RUN - plan")
+    logger.info(f"  partition:    {', '.join(plan.partition) or '(none)'}")
+    logger.info(f"  none_set:     {', '.join(plan.none_set) or '(none)'}")
+    logger.info(f"  reload_set:   {', '.join(plan.reload_set) or '(none)'}")
+    logger.info(f"  restart_set:  {', '.join(plan.restart_set) or '(none)'}")
+    logger.info(f"  pack_required: {plan.pack_required}")
+    for member in plan.partition:
+        mp = plan.member_plans.get(member)
+        if mp is None:
+            continue
+        logger.info(f"  [{member}] action={mp.effective_action} changed={len(mp.changed_paths)} paths")
+        for path in sorted(mp.changed_paths):
+            logger.debug(f"    [{member}] {path}")
+    for w in plan.warnings:
+        logger.warning(f"  {w}")
+    logger.info("=" * 72)
+    if notify:
+        _send_live(config, plan, scopes, None, None, True, logger)
+    return 0
+
+
+def _run_notice_phase(state: _RuntimeState) -> int | None:
+    """§4.14 steps 3-5: compute warned_and_running, dispatch notices, wait.
+
+    Returns 1 when a required notice failed (aborts before any writes),
+    or None to continue.
+    """
+    if state.plan.restart_set:
+        state.warned_and_running = compute_warned_and_running(
+            runtime=state.runtime,
+            restart_set=state.plan.restart_set,
+            preflight_states=state.plan.container_states,
+            container_of=state.container_of,
+        )
+    if not state.warned_and_running:
+        return None
+
+    outcome = _dispatch_restart_notices(state.config, state.warned_and_running, state.rcon_set, state.logger)
+    if outcome.failed and state.config.docker.in_game_notice_required:
+        _dispatch_cancel_notice(state.config, outcome.attempted, state.rcon_set, state.logger)
+        print("in_game_notice: RCON notice failed for: " + ", ".join(outcome.failed))
+        state.logger.error("restart notice dispatch failed; aborting before any writes")
+        return 1
+    if outcome.any_delivered:
+        wait_s = state.config.docker.restart_wait_seconds
+        if wait_s > 0:
+            state.logger.info(f"waiting {wait_s}s for in-game restart window")
+            Clock().sleep(float(wait_s))
+    return None
+
+
+def _run_stop_phase(state: _RuntimeState) -> int | None:
+    """§4.14 step 6: execute the pre-hook stop, or abort on failure.
+
+    Returns 1 on stop failure (recovery already attempted by
+    ``execute_pre_hook``), or None to continue.
+    """
+    if not state.plan.restart_set:
+        return None
+    stop_timeouts: dict[str, int] = {}
+    for member in state.plan.restart_set:
+        inst = state.config.instances.get(member)
+        if inst is not None:
+            stop_timeouts[member] = inst.stop_grace_seconds
+    state.pre = execute_pre_hook(
+        runtime=state.runtime,
+        warned_and_running=state.warned_and_running,
+        stop_timeouts=stop_timeouts,
+        recovery_ctx=state.recovery_ctx,
+        container_of=state.container_of,
+    )
+    state.to_stop = list(state.pre.stopped)
+    if state.pre.failed:
+        state.logger.error(f"stop phase failed for: {', '.join(state.pre.failed)}")
+        print("pre_hook: docker stop failed for: " + ", ".join(state.pre.failed))
+        if state.pre.recovery is not None and state.pre.recovery.any_failure:
+            _print_recovery_block(state.config, state.pre.recovery, state.plan.container_states, "stop phase failure")
+        return 1
+    return None
+
+
+def _run_write_phase(state: _RuntimeState) -> int | None:
+    """§4.2: run the scopes; handle write failure per §4.7.
+
+    Returns 1 on failure, or None to continue.
+    """
+    write_ok, server_result, client_result, rp_result, write_msg = _run_writes(state.config, state.plan, state.scopes, state.protect_patterns, state.logger)
+    state.server_result = server_result
+    state.client_result = client_result
+    state.rp_result = rp_result
+    if write_ok:
+        return None
+
+    state.logger.error(f"write failed: {write_msg}")
+    if state.scopes.scope_set.server:
+        if state.notify:
+            status = _failure_container_status(state.plan, state.pre, None, [], [])
+            _send_failure(state.config, "mid_scope_write", write_msg, status, state.logger)
+        if state.to_stop:
+            _print_server_write_failure_recovery(state.config, state.to_stop, write_msg)
+        else:
+            print(f"mid_scope_write: {write_msg}")
+        return 1
+
+    recovery = recover_stopped_containers(
+        runtime=state.runtime,
+        stopped_by_deployment=state.to_stop,
+        warned_and_running=state.warned_and_running,
+        ctx=state.recovery_ctx,
+        container_of=state.container_of,
+    )
+    if state.pre is not None:
+        state.pre.recovery = recovery
+    status = _failure_container_status(state.plan, state.pre, None, [], [])
+    if state.notify:
+        _send_failure(state.config, "mid_scope_write", write_msg, status, state.logger)
+    print(f"mid_scope_write: {write_msg}")
+    _print_cli_container_status(status)
+    return 1
+
+
+def _run_reload_phase(state: _RuntimeState) -> int | None:
+    """§4.6.8: RCON reload running reload_set members.
+
+    Returns 1 on reload failure (recovery + notify already handled), or
+    None to continue.
+    """
+    if not state.plan.reload_set:
+        return None
+    for member in sorted(state.plan.reload_set):
+        inst = state.config.instances.get(member)
+        if inst is None:
+            continue
+        cs = state.plan.container_states.get(member)
+        if cs is not None and not cs.is_running:
+            continue
+        if state.rcon_set.send(inst.container, "reload"):
+            state.reloaded.append(member)
+        else:
+            state.reload_failed.append(member)
+    if not state.reload_failed:
+        return None
+
+    msg = "RCON reload failed for: " + ", ".join(state.reload_failed)
+    state.logger.error(msg)
+    recovery = recover_stopped_containers(
+        runtime=state.runtime,
+        stopped_by_deployment=state.to_stop,
+        warned_and_running=state.warned_and_running,
+        ctx=state.recovery_ctx,
+        container_of=state.container_of,
+    )
+    if state.pre is not None:
+        state.pre.recovery = recovery
+    status = _failure_container_status(state.plan, state.pre, None, state.reloaded, state.reload_failed)
+    if state.notify:
+        _send_failure(state.config, "reload", msg, status, state.logger)
+    print(f"reload: {msg}")
+    _print_cli_container_status(status)
+    return 1
+
+
+def _send_live_if_notify(state: _RuntimeState) -> None:
+    """Post the live notification when --notify is active."""
+    if state.notify:
+        _send_live(state.config, state.plan, state.scopes, state.client_result, state.rp_result, False, state.logger)
+
+
+def _handle_post_failure(state: _RuntimeState, post: PostHookResult) -> int:
+    """Report a post-phase failure and return exit 1."""
+    stage = getattr(post, "failure_stage", None)
+    if stage is None:
+        stage = "post_hook" if post.start_failed else "health_timeout"
+    summary_attr = getattr(post, "error_summary", None)
+    if callable(summary_attr):
+        err = summary_attr()
+    elif summary_attr is not None:
+        err = str(summary_attr)
+    else:
+        parts: list[str] = []
+        if post.start_failed:
+            parts.append("docker start failed for: " + ", ".join(sorted(post.start_failed)))
+        if post.health_failed:
+            parts.append("health timeout for: " + ", ".join(sorted(post.health_failed)))
+        err = "; ".join(parts) if parts else "post-start phase failed"
+    state.logger.error(err)
+    status = _failure_container_status(state.plan, state.pre, post, state.reloaded, state.reload_failed)
+    if state.notify:
+        _send_failure(state.config, stage, err, status, state.logger)
+    print(f"{stage}: {err}")
+    _print_cli_container_status(status)
+    return 1
+
+
+def _run_post_phase(state: _RuntimeState) -> int:
+    """§4.13: start every container this deployment stopped; wait for health.
+
+    Returns 0 on success (sending the online notification if warranted),
+    or 1 on any start / health failure.
+    """
+    if not state.plan.restart_set:
+        return 0
+    post = execute_post_hook(
+        runtime=state.runtime,
+        stopped_by_deployment=state.to_stop,
+        preflight_states=state.plan.container_states,
+        health_timeout=state.config.docker.health_timeout_seconds,
+        poll_interval=state.config.docker.health_poll_seconds,
+        container_of=state.container_of,
+    )
+    if post.start_failed or post.health_failed:
+        return _handle_post_failure(state, post)
+    online_status = _online_container_status(state.plan, state.to_stop, post)
+    if state.notify and online_status:
+        _send_online(state.config, online_status, state.logger)
+    return 0
+
+
 def _run_deployment(
     config: DeploymentConfig,
     plan: PreflightPlan,
@@ -776,218 +1187,103 @@ def _run_deployment(
     protect_patterns: list[str],
     logger: Any,
 ) -> int:
-    """Execute the §4.1 runtime sequence. Returns the exit code."""
+    """Execute the §4.1 runtime sequence. Returns the exit code.
+
+    Walks the phases in order; each phase returns an exit code to abort
+    or None to continue. Dry-run short-circuits before any state that
+    would touch Docker beyond the read-only preflight inspections.
+    """
     if not scopes.scope_set.any():
         return 0
     if dry_run:
-        logger.info("=" * 72)
-        logger.info("DRY RUN - plan")
-        logger.info(f"  partition:    {', '.join(plan.partition) or '(none)'}")
-        logger.info(f"  none_set:     {', '.join(plan.none_set) or '(none)'}")
-        logger.info(f"  reload_set:   {', '.join(plan.reload_set) or '(none)'}")
-        logger.info(f"  restart_set:  {', '.join(plan.restart_set) or '(none)'}")
-        logger.info(f"  pack_required: {plan.pack_required}")
-        for member in plan.partition:
-            mp = plan.member_plans.get(member)
-            if mp is None:
-                continue
-            logger.info(f"  [{member}] action={mp.effective_action} changed={len(mp.changed_paths)} paths")
-            for path in sorted(mp.changed_paths):
-                logger.debug(f"    [{member}] {path}")
-        for w in plan.warnings:
-            logger.warning(f"  {w}")
-        logger.info("=" * 72)
-        if notify:
-            _send_live(config, plan, scopes, None, None, True, logger)
-        return 0
+        return _run_dry_run_phase(config, plan, scopes, notify, logger)
 
-    container_of = {name: inst.container for name, inst in config.instances.items() if inst.container}
+    state = _make_runtime_state(config, plan, scopes, runtime, notify, protect_patterns, logger)
 
-    rcon_set = _RconSet(config, runtime, logger)
-    recovery_ctx = _build_recovery_ctx(config, rcon_set, config.docker.restart_cancel_notice_template)
-    warned_and_running: list[str] = []
-    if plan.restart_set:
-        warned_and_running = compute_warned_and_running(
-            runtime=runtime,
-            restart_set=plan.restart_set,
-            preflight_states=plan.container_states,
-            container_of=container_of,
-        )
-    pre: PreHookResult | None = None
-    to_stop: list[str] = []
-    if warned_and_running:
-        outcome = _dispatch_restart_notices(config, warned_and_running, rcon_set, logger)
-        if outcome.failed and config.docker.in_game_notice_required:
-            _dispatch_cancel_notice(config, outcome.attempted, rcon_set, logger)
-            print("in_game_notice: RCON notice failed for: " + ", ".join(outcome.failed))
-            logger.error("restart notice dispatch failed; aborting before any writes")
-            return 1
-        if outcome.any_delivered:
-            wait_s = config.docker.restart_wait_seconds
-            if wait_s > 0:
-                logger.info(f"waiting {wait_s}s for in-game restart window")
-                Clock().sleep(float(wait_s))
-    if plan.restart_set:
-        stop_timeouts: dict[str, int] = {}
-        for member in plan.restart_set:
-            inst = config.instances.get(member)
-            if inst is not None:
-                stop_timeouts[member] = inst.stop_grace_seconds
-        pre = execute_pre_hook(
-            runtime=runtime,
-            warned_and_running=warned_and_running,
-            stop_timeouts=stop_timeouts,
-            recovery_ctx=recovery_ctx,
-            container_of=container_of,
-        )
-        to_stop = list(pre.stopped)
-        if pre.failed:
-            logger.error(f"stop phase failed for: {', '.join(pre.failed)}")
-            print("pre_hook: docker stop failed for: " + ", ".join(pre.failed))
-            if pre.recovery is not None and pre.recovery.any_failure:
-                _print_recovery_block(config, pre.recovery, plan.container_states, "stop phase failure")
-            return 1
-    write_ok, _server_result, client_result, rp_result, write_msg = _run_writes(config, plan, scopes, protect_patterns, logger)
-    if not write_ok:
-        logger.error(f"write failed: {write_msg}")
-        if scopes.scope_set.server:
-            if notify:
-                status = _failure_container_status(plan, pre, None, [], [])
-                _send_failure(config, "mid_scope_write", write_msg, status, logger)
-            if to_stop:
-                _print_server_write_failure_recovery(config, to_stop, write_msg)
-            else:
-                print(f"mid_scope_write: {write_msg}")
-            return 1
-        recovery = recover_stopped_containers(
-            runtime=runtime,
-            stopped_by_deployment=to_stop,
-            warned_and_running=warned_and_running,
-            ctx=recovery_ctx,
-            container_of=container_of,
-        )
-        if pre is not None:
-            pre.recovery = recovery
-        status = _failure_container_status(plan, pre, None, [], [])
-        if notify:
-            _send_failure(config, "mid_scope_write", write_msg, status, logger)
-        print(f"mid_scope_write: {write_msg}")
-        _print_cli_container_status(status)
-        return 1
-
-    reloaded: list[str] = []
-    reload_failed: list[str] = []
-    if plan.reload_set:
-        for member in sorted(plan.reload_set):
-            inst = config.instances.get(member)
-            if inst is None:
-                continue
-            state = plan.container_states.get(member)
-            if state is not None and not state.is_running:
-                continue
-            if rcon_set.send(inst.container, "reload"):
-                reloaded.append(member)
-            else:
-                reload_failed.append(member)
-        if reload_failed:
-            msg = "RCON reload failed for: " + ", ".join(reload_failed)
-            logger.error(msg)
-            recovery = recover_stopped_containers(
-                runtime=runtime,
-                stopped_by_deployment=to_stop,
-                warned_and_running=warned_and_running,
-                ctx=recovery_ctx,
-                container_of=container_of,
-            )
-            if pre is not None:
-                pre.recovery = recovery
-            status = _failure_container_status(plan, pre, None, reloaded, reload_failed)
-            if notify:
-                _send_failure(config, "reload", msg, status, logger)
-            print(f"reload: {msg}")
-            _print_cli_container_status(status)
-            return 1
-
-    if notify:
-        _send_live(config, plan, scopes, client_result, rp_result, False, logger)
-
-    if plan.restart_set:
-        post = execute_post_hook(
-            runtime=runtime,
-            stopped_by_deployment=to_stop,
-            preflight_states=plan.container_states,
-            health_timeout=config.docker.health_timeout_seconds,
-            poll_interval=config.docker.health_poll_seconds,
-            container_of=container_of,
-        )
-        if post.start_failed or post.health_failed:
-            stage = getattr(post, "failure_stage", None)
-            if stage is None:
-                stage = "post_hook" if post.start_failed else "health_timeout"
-            summary_attr = getattr(post, "error_summary", None)
-            if callable(summary_attr):
-                err = summary_attr()
-            elif summary_attr is not None:
-                err = str(summary_attr)
-            else:
-                parts: list[str] = []
-                if post.start_failed:
-                    parts.append("docker start failed for: " + ", ".join(sorted(post.start_failed)))
-                if post.health_failed:
-                    parts.append("health timeout for: " + ", ".join(sorted(post.health_failed)))
-                err = "; ".join(parts) if parts else "post-start phase failed"
-            logger.error(err)
-            status = _failure_container_status(plan, pre, post, reloaded, reload_failed)
-            if notify:
-                _send_failure(config, stage, err, status, logger)
-            print(f"{stage}: {err}")
-            _print_cli_container_status(status)
-            return 1
-        online_status = _online_container_status(plan, to_stop, post)
-        if notify and online_status:
-            _send_online(config, online_status, logger)
-        return 0
-    return 0
+    code = _run_notice_phase(state)
+    if code is not None:
+        return code
+    code = _run_stop_phase(state)
+    if code is not None:
+        return code
+    code = _run_write_phase(state)
+    if code is not None:
+        return code
+    code = _run_reload_phase(state)
+    if code is not None:
+        return code
+    _send_live_if_notify(state)
+    return _run_post_phase(state)
 
 
-def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
-    """Config load -> prompt -> preflight -> runtime, in spec order (§2.4)."""
-    config_dir = _resolve_config_dir(args.config_dir)
+# ===========================================================================
+# §11  CLI dispatch (§2.4, §2.5, §2.7)
+# ===========================================================================
+
+
+def _load_config_or_exit(config_dir: Path, remaining: list[str], logger: Any) -> DeploymentConfig | None:
+    """Load config, logging and swallowing any exception. Returns None on failure."""
     try:
-        config = _load_config(config_dir, remaining)
+        return _load_config(config_dir, remaining)
+    except Exception as exc:
+        logger.error(f"config error: {exc}")
+        return None
+
+
+def _run_debug_deps_safe(config: DeploymentConfig, logger: Any) -> None:
+    """Run --debug-deps alongside a scoped run; log failures, never raise."""
+    try:
+        _run_debug_deps(config, logger)
+    except Exception as exc:
+        logger.error(f"debug-deps failed: {exc}")
+
+
+def _prompt_if_needed(config: DeploymentConfig, scopes: _Scopes, args: _Args, logger: Any) -> int | None:
+    """§6.2: prompt for unmarked jars on live server/client runs.
+
+    Skipped under ``--dry-run`` (no writes per §2.6) and under
+    ``--non-interactive``. Returns 3 on prompt failure, else None.
+    """
+    if not (scopes.scope_set.server or scopes.scope_set.client):
+        return None
+    if args.non_interactive or args.dry_run:
+        return None
+    try:
+        _prompt_for_unmarked(config, logger)
     except Exception as exc:
         logger.error(f"config error: {exc}")
         return 3
+    return None
 
-    scopes = _resolve_scopes(args)
 
-    if args.debug_deps:
-        try:
-            _run_debug_deps(config, logger)
-        except Exception as exc:
-            logger.error(f"debug-deps failed: {exc}")
-
-    if (scopes.scope_set.server or scopes.scope_set.client) and not args.non_interactive and not args.dry_run:
-        try:
-            _prompt_for_unmarked(config, logger)
-        except Exception as exc:
-            logger.error(f"config error: {exc}")
-            return 3
-
+def _build_runtime_or_exit(logger: Any) -> DockerRuntime | None:
+    """Construct a DockerRuntime; return None on connection failure."""
     try:
-        runtime = DockerRuntime()
+        return DockerRuntime()
     except Exception as exc:
         logger.error(f"docker unavailable: {exc}")
-        return 3
+        return None
 
+
+def _load_protect_or_exit(config: DeploymentConfig, logger: Any) -> list[str] | None:
+    """Load protect patterns; return None on failure (empty list is valid)."""
     try:
-        protect_patterns = load_protect_patterns(config.protect_file)
+        return load_protect_patterns(config.protect_file)
     except Exception as exc:
         logger.error(f"config error: {exc}")
-        return 3
+        return None
 
+
+def _run_preflight_or_exit(
+    config: DeploymentConfig,
+    scopes: _Scopes,
+    args: _Args,
+    runtime: DockerRuntime,
+    logger: Any,
+) -> PreflightPlan | None:
+    """Run preflight; return None on any exception."""
     try:
-        plan = run_preflight(
+        return run_preflight(
             config=config,
             scopes=scopes.scope_set,
             with_resources=scopes.with_resources,
@@ -997,11 +1293,46 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
         )
     except Exception as exc:
         logger.error(f"preflight failed: {exc}")
+        return None
+
+
+def _emit_plan_warnings(plan: PreflightPlan, args: _Args, logger: Any) -> None:
+    """Emit plan warnings at WARN, except under --dry-run (reported in the plan body)."""
+    if args.dry_run:
+        return
+    for w in plan.warnings:
+        logger.warning(w)
+
+
+def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
+    """Config load -> prompt -> preflight -> runtime, in spec order (§2.4)."""
+    config_dir = _resolve_config_dir(args.config_dir)
+    config = _load_config_or_exit(config_dir, remaining, logger)
+    if config is None:
         return 3
 
-    if not args.dry_run:
-        for w in plan.warnings:
-            logger.warning(w)
+    scopes = _resolve_scopes(args)
+
+    if args.debug_deps:
+        _run_debug_deps_safe(config, logger)
+
+    code = _prompt_if_needed(config, scopes, args, logger)
+    if code is not None:
+        return code
+
+    runtime = _build_runtime_or_exit(logger)
+    if runtime is None:
+        return 3
+
+    protect_patterns = _load_protect_or_exit(config, logger)
+    if protect_patterns is None:
+        return 3
+
+    plan = _run_preflight_or_exit(config, scopes, args, runtime, logger)
+    if plan is None:
+        return 3
+
+    _emit_plan_warnings(plan, args, logger)
 
     return _run_deployment(
         config=config,
@@ -1015,13 +1346,12 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
     )
 
 
-def _run(argv: list[str]) -> int:
-    """Top-level entrypoint. Returns the process exit code."""
-    parser = _build_parser()
-    if not argv:
-        parser.print_help()
-        return 0
+def _parse_cli(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[_Args | None, list[str]]:
+    """Parse argv into (_Args, remaining).
 
+    Returns ``(None, remaining)`` when ``--non-interactive`` alone was
+    passed, which is the §2.5 "print help, exit 0" case.
+    """
     ns, remaining = parser.parse_known_args(argv)
     args = _Args(
         server=ns.server,
@@ -1038,11 +1368,14 @@ def _run(argv: list[str]) -> int:
         non_interactive=ns.non_interactive,
         config_dir=ns.config_dir,
     )
+    non_interactive_alone = args.non_interactive and not (args.server or args.client or args.resource_pack or args.full or args.audit_mods or args.debug_deps)
+    if non_interactive_alone:
+        return (None, remaining)
+    return (args, remaining)
 
-    if args.non_interactive and not (args.server or args.client or args.resource_pack or args.full or args.audit_mods or args.debug_deps):
-        parser.print_help()
-        return 0
 
+def _validate_cli(args: _Args, parser: argparse.ArgumentParser, remaining: list[str]) -> int | None:
+    """Run the §2.5 exit-2 checks. Returns 2 on failure, None on success."""
     try:
         _validate_args(args, parser)
         _validate_passthrough_flags(remaining)
@@ -1050,57 +1383,96 @@ def _run(argv: list[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         parser.print_usage(sys.stderr)
         return 2
+    return None
+
+
+def _dispatch_audit_mods(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
+    """§2.7: standalone Textual audit UI."""
+    if not getattr(prompt_ui, "HAS_TEXTUAL", False):
+        print("error: --audit-mods requires the textual package", file=sys.stderr)
+        return 1
+    try:
+        config = _load_config(config_dir, remaining)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    return prompt_ui.run_audit(config, logger)
+
+
+def _dispatch_debug_deps_only(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
+    """§2.5: --debug-deps without a scope. Optional --notify fires diagnostic."""
+    config = _load_config_or_exit(config_dir, remaining, logger)
+    if config is None:
+        return 3
+    _run_debug_deps_safe(config, logger)
+    if args.notify:
+        try:
+            _run_diagnostic_notify(config, logger)
+        except Exception as exc:
+            logger.error(f"diagnostic notify failed: {exc}")
+    return 0
+
+
+def _dispatch_diagnostic_only(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
+    """§2.5: --notify without a scope attempts the diagnostic message."""
+    config = _load_config_or_exit(config_dir, remaining, logger)
+    if config is None:
+        return 3
+    try:
+        _run_diagnostic_notify(config, logger)
+    except Exception as exc:
+        logger.error(f"diagnostic notify failed: {exc}")
+    return 0
+
+
+def _dispatch_no_scope(
+    args: _Args,
+    config_dir: Path,
+    remaining: list[str],
+    logger: Any,
+    parser: argparse.ArgumentParser,
+) -> int:
+    """Handle the three no-scope cases: debug-deps, notify, or plain help."""
+    if args.debug_deps:
+        return _dispatch_debug_deps_only(args, config_dir, remaining, logger)
+    if args.notify:
+        return _dispatch_diagnostic_only(args, config_dir, remaining, logger)
+    parser.print_help()
+    return 0
+
+
+def _run(argv: list[str]) -> int:
+    """Top-level entrypoint. Returns the process exit code."""
+    parser = _build_parser()
+    if not argv:
+        parser.print_help()
+        return 0
+
+    args, remaining = _parse_cli(parser, argv)
+    if args is None:
+        parser.print_help()
+        return 0
+
+    usage_code = _validate_cli(args, parser, remaining)
+    if usage_code is not None:
+        return usage_code
 
     logger = _setup_logging(args.debug)
     config_dir = _resolve_config_dir(args.config_dir)
 
     if args.audit_mods:
-        if not getattr(prompt_ui, "HAS_TEXTUAL", False):
-            print("error: --audit-mods requires the textual package", file=sys.stderr)
-            return 1
-        try:
-            config = _load_config(config_dir, remaining)
-        except Exception as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 3
-        return prompt_ui.run_audit(config, logger)
+        return _dispatch_audit_mods(args, config_dir, remaining, logger)
 
     has_scope = args.server or args.client or args.resource_pack or args.full
-
-    if args.debug_deps and not has_scope:
-        try:
-            config = _load_config(config_dir, remaining)
-        except Exception as exc:
-            logger.error(f"config error: {exc}")
-            return 3
-        try:
-            _run_debug_deps(config, logger)
-        except Exception as exc:
-            logger.error(f"debug-deps failed: {exc}")
-        if args.notify:
-            try:
-                _run_diagnostic_notify(config, logger)
-            except Exception as exc:
-                logger.error(f"diagnostic notify failed: {exc}")
-        return 0
-
-    if args.notify and not has_scope:
-        try:
-            config = _load_config(config_dir, remaining)
-        except Exception as exc:
-            logger.error(f"config error: {exc}")
-            return 3
-        try:
-            _run_diagnostic_notify(config, logger)
-        except Exception as exc:
-            logger.error(f"diagnostic notify failed: {exc}")
-        return 0
-
     if not has_scope:
-        parser.print_help()
-        return 0
+        return _dispatch_no_scope(args, config_dir, remaining, logger, parser)
 
     return _run_with_scope(args, remaining, logger)
+
+
+# ===========================================================================
+# §12  Entry point
+# ===========================================================================
 
 
 def main(argv: list[str] | None = None) -> int:

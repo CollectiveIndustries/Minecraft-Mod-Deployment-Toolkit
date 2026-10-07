@@ -2,6 +2,13 @@
 
 """Container-state classification and RCON availability checks (§4.12, §8.4).
 
+Structure
+---------
+
+    §1  Imports
+    §2  State classification        (§4.12)
+    §3  RCON availability check     (§8.4)
+
 Logging
 -------
 
@@ -22,6 +29,7 @@ the ERROR lines themselves.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from minecraft.deploy_pack.config_model import DeploymentConfig
@@ -32,6 +40,11 @@ from minecraft.deploy_pack.logging_setup import get_logger
 from .types import PreflightFailure
 
 _log = get_logger(__name__)
+
+
+# ===========================================================================
+# §2  State classification (§4.12)
+# ===========================================================================
 
 
 def classify_state(state: ContainerState, container: str) -> str | None:
@@ -59,6 +72,103 @@ def classify_state(state: ContainerState, container: str) -> str | None:
     return f"container {container!r} has unexpected status {status!r}"
 
 
+# ===========================================================================
+# §3  RCON availability check (§8.4)
+# ===========================================================================
+
+
+@dataclass
+class _RconCheckTally:
+    """Running counters for the per-member RCON probe.
+
+    Counts the three outcomes that matter for the closing summary:
+    members whose transport was selected (``checked``), members skipped
+    because they were not running, and members skipped because they had
+    no instance / service to inspect.
+    """
+
+    checked: int = 0
+    skipped_not_running: int = 0
+    skipped_no_service: int = 0
+
+
+def _is_running_or_none(state: ContainerState | None) -> bool:
+    """Return True when the state is present and the container is running.
+
+    No logging: pure predicate used by the per-member loop's first gate.
+    """
+    return state is not None and state.is_running
+
+
+def _check_one_member_rcon(
+    config: DeploymentConfig,
+    runtime: DockerRuntime,
+    compose: Any,
+    member: str,
+    container_states: dict[str, ContainerState],
+    tally: _RconCheckTally,
+    failures: list[PreflightFailure],
+    logger: Any,
+) -> None:
+    """Probe one restart_set member; record a skip, a success, or a failure.
+
+    Three mutually exclusive outcomes:
+
+      * Not running at preflight -> ``tally.skipped_not_running++``, return.
+      * No instance / service    -> ``tally.skipped_no_service++``, return.
+      * ``select_rcon_transport`` raises ``ConfigError`` -> append a
+        ``PreflightFailure`` to ``failures``, return.
+      * Transport selected       -> ``tally.checked++``, return.
+
+    A ``DockerUnavailableError`` from ``select_rcon_transport`` is not
+    caught here: preflight lets it propagate per §2.4.
+    """
+    state = container_states.get(member)
+    if not _is_running_or_none(state):
+        tally.skipped_not_running += 1
+        logger.debug(f"check_rcon_available: [{member}] not running at preflight; RCON not required")
+        return
+
+    inst = config.instances.get(member)
+    if inst is None or inst.service is None:
+        tally.skipped_no_service += 1
+        logger.debug(f"check_rcon_available: [{member}] no instance or service; cannot check RCON")
+        return
+
+    try:
+        transport = select_rcon_transport(runtime, inst.service, compose, inst.container, config.docker.rcon_host, logger)
+    except ConfigError as exc:
+        logger.debug(f"check_rcon_available: [{member}] transport selection failed: {exc}")
+        failures.append(
+            PreflightFailure(
+                f"§8.4 [{member}]",
+                f"RCON required for restart notice but unavailable: {exc}",
+            )
+        )
+        return
+
+    tally.checked += 1
+    logger.debug(f"check_rcon_available: [{member}] -> {transport.describe()}")
+
+
+def _log_rcon_summary(tally: _RconCheckTally, failures: list[PreflightFailure], logger: Any) -> None:
+    """Emit the closing INFO/WARN line for the RCON check.
+
+    WARN when at least one member lacked RCON; INFO otherwise. The
+    checked denominator counts only members that cleared the two skip
+    gates (running + has service), so it matches the set of members a
+    transport was actually attempted for.
+    """
+    if failures:
+        affected = [f.source for f in failures]
+        logger.warning(f"check_rcon_available: {len(failures)} of {tally.checked + len(failures)} running restart_set member(s) lack RCON: {affected}")
+        return
+    logger.info(
+        f"check_rcon_available: {tally.checked} running restart_set member(s) have RCON "
+        f"(skipped: {tally.skipped_not_running} not running, {tally.skipped_no_service} no service)"
+    )
+
+
 def check_rcon_available(
     config: DeploymentConfig,
     runtime: DockerRuntime,
@@ -80,40 +190,11 @@ def check_rcon_available(
     if compose is None:
         logger.debug("check_rcon_available: compose not loaded; skipping (per §8.4 scope)")
         return []
-    out: list[PreflightFailure] = []
-    skipped_not_running = 0
-    skipped_no_service = 0
-    checked = 0
+
+    tally = _RconCheckTally()
+    failures: list[PreflightFailure] = []
     for member in restart_set:
-        state = container_states.get(member)
-        if state is None or not state.is_running:
-            skipped_not_running += 1
-            logger.debug(f"check_rcon_available: [{member}] not running at preflight; RCON not required")
-            continue
-        inst = config.instances.get(member)
-        if inst is None or inst.service is None:
-            skipped_no_service += 1
-            logger.debug(f"check_rcon_available: [{member}] no instance or service; cannot check RCON")
-            continue
-        try:
-            transport = select_rcon_transport(runtime, inst.service, compose, inst.container, config.docker.rcon_host, logger)
-        except ConfigError as exc:
-            logger.debug(f"check_rcon_available: [{member}] transport selection failed: {exc}")
-            out.append(
-                PreflightFailure(
-                    f"§8.4 [{member}]",
-                    f"RCON required for restart notice but unavailable: {exc}",
-                )
-            )
-            continue
-        checked += 1
-        logger.debug(f"check_rcon_available: [{member}] -> {transport.describe()}")
-    if out:
-        affected = [f.source for f in out]
-        logger.warning(f"check_rcon_available: {len(out)} of {checked + len(out)} running restart_set member(s) lack RCON: {affected}")
-    else:
-        logger.info(
-            f"check_rcon_available: {checked} running restart_set member(s) have RCON "
-            f"(skipped: {skipped_not_running} not running, {skipped_no_service} no service)"
-        )
-    return out
+        _check_one_member_rcon(config, runtime, compose, member, container_states, tally, failures, logger)
+
+    _log_rcon_summary(tally, failures, logger)
+    return failures

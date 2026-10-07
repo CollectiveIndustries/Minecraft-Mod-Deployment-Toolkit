@@ -34,6 +34,32 @@ The daemon is not pinged automatically. Preflight calls ``ping()``
 explicitly; runtime code does not, and instead relies on the connection
 error being raised by whatever operation hits it first.
 
+Structure
+---------
+
+The module is organised into twelve sections with explicit banner
+comments. Each section is self-contained.
+
+    §1   Imports, dataclasses, Clock
+    §2   Error classification            (§2.4)
+    §3   State extraction                (§4.12)
+    §4   DockerRuntime                   (§8.1-§8.3, §8.10)
+    §5   Mount drift                     (§3.17)
+    §6   env_file helper                 (§8.4)
+    §7   RCON port resolution            (§8.4)
+    §8   RCON password                   (§8.4)
+    §9   RconTransport ABC + Option A
+    §10  TcpRconTransport (Option B)     (§8.4)
+    §11  Transport selection             (§8.4)
+    §12  _RconConnection wire protocol
+
+Aggressive decomposition: every public method is a thin orchestrator
+delegating to small single-purpose helpers. Where the SDK exposes
+multiple exception shapes for one operation (``stop`` has NotFound,
+DockerException, not-running, and the 304 sentinel), each shape's
+interpretation lives in its own helper so the error contract is
+visible at a glance.
+
 Logging
 -------
 
@@ -95,6 +121,11 @@ __all__ = [
     "resolve_rcon_port",
     "select_rcon_transport",
 ]
+
+
+# ===========================================================================
+# §1  Imports, dataclasses, Clock
+# ===========================================================================
 
 
 class StopOutcome(Enum):
@@ -195,27 +226,47 @@ class Clock:
             time.sleep(seconds)
 
 
+# ===========================================================================
+# §2  Error classification (§2.4)
+# ===========================================================================
+
+
+_CONNECTION_NEEDLES = (
+    "connection refused",
+    "cannot connect to the docker daemon",
+    "connection error",
+    "connection aborted",
+    "error while fetching server api version",
+    "socket",
+    "unix socket",
+)
+
+
+def _cause_indicates_connection_loss(cause: BaseException | None) -> bool:
+    """Return True when the exception's ``__cause__`` is a requests-level connection error.
+
+    The docker SDK wraps the underlying ``requests`` exception as
+    ``__cause__`` when the transport cannot reach the daemon; the
+    exception type alone (``DockerException``) is not enough to tell a
+    connection failure from a 404 or a permission error.
+    """
+    if cause is None:
+        return False
+    mod = type(cause).__module__ or ""
+    name = type(cause).__name__
+    return mod.startswith("requests") and name in ("ConnectionError", "ConnectTimeout")
+
+
+def _text_indicates_connection_loss(text: str) -> bool:
+    """Return True if the lowercased text contains any connection-loss needle."""
+    return any(needle in text for needle in _CONNECTION_NEEDLES)
+
+
 def _is_connection_error(exc: BaseException) -> bool:
     """Best-effort detection of "daemon unreachable" from a docker error."""
-    cause = exc.__cause__
-    if cause is not None:
-        mod = type(cause).__module__ or ""
-        name = type(cause).__name__
-        if mod.startswith("requests") and name in ("ConnectionError", "ConnectTimeout"):
-            return True
-    text = str(exc).lower()
-    for needle in (
-        "connection refused",
-        "cannot connect to the docker daemon",
-        "connection error",
-        "connection aborted",
-        "error while fetching server api version",
-        "socket",
-        "unix socket",
-    ):
-        if needle in text:
-            return True
-    return False
+    if _cause_indicates_connection_loss(exc.__cause__):
+        return True
+    return _text_indicates_connection_loss(str(exc).lower())
 
 
 def _is_not_running_error(exc: BaseException) -> bool:
@@ -241,7 +292,13 @@ def _raise_if_connection(exc: BaseException) -> None:
         raise DockerUnavailableError(f"Cannot connect to Docker daemon: {exc}") from exc
 
 
+# ===========================================================================
+# §3  State extraction (§4.12)
+# ===========================================================================
+
+
 def _state_from_attrs(name: str, attrs: dict) -> ContainerState:
+    """Project a docker SDK attrs dict into a ContainerState."""
     state_block = attrs.get("State") or {}
     status = str(state_block.get("Status") or "unknown")
     running = bool(state_block.get("Running") or False)
@@ -251,7 +308,23 @@ def _state_from_attrs(name: str, attrs: dict) -> ContainerState:
 
 
 def _missing_state(name: str) -> ContainerState:
+    """Return the ContainerState used when a container does not exist."""
     return ContainerState(name=name, exists=False, status="missing", running=False, health=None, raw=None)
+
+
+# ===========================================================================
+# §4  DockerRuntime (§8.1-§8.3, §8.10)
+# ===========================================================================
+
+
+def _build_default_client() -> Any:
+    """Build a docker SDK client from the environment; raise DockerUnavailableError on failure."""
+    _log.debug("DockerRuntime: building client from environment")
+    try:
+        return docker.from_env()
+    except DockerException as exc:
+        _log.error(f"DockerRuntime: docker.from_env failed: {exc}")
+        raise DockerUnavailableError(f"Cannot connect to Docker daemon: {exc}") from exc
 
 
 class DockerRuntime:
@@ -266,16 +339,15 @@ class DockerRuntime:
 
     def __init__(self, client: Any = None, clock: Clock | None = None) -> None:
         if client is None:
-            _log.debug("DockerRuntime: building client from environment")
-            try:
-                client = docker.from_env()
-            except DockerException as exc:
-                _log.error(f"DockerRuntime: docker.from_env failed: {exc}")
-                raise DockerUnavailableError(f"Cannot connect to Docker daemon: {exc}") from exc
+            client = _build_default_client()
         else:
             _log.debug("DockerRuntime: using injected client")
         self._client = client
         self._clock = clock if clock is not None else Clock()
+
+    # ------------------------------------------------------------------
+    # Ping
+    # ------------------------------------------------------------------
 
     def ping(self) -> None:
         """Ping the daemon. Raises DockerUnavailableError on failure."""
@@ -288,20 +360,33 @@ class DockerRuntime:
             raise DockerUnavailableError(f"Docker daemon ping failed: {exc}") from exc
         _log.debug("docker ping: OK")
 
+    # ------------------------------------------------------------------
+    # Inspect
+    # ------------------------------------------------------------------
+
+    def _inspect_get_container(self, name: str) -> Any | None:
+        """Return the SDK container object, or None when it does not exist.
+
+        Raises DockerUnavailableError on daemon loss.
+        """
+        try:
+            return self._client.containers.get(name)
+        except NotFound:
+            _log.debug(f"docker inspect: {name} not found")
+            return None
+        except DockerException as exc:
+            _raise_if_connection(exc)
+            raise
+
     def inspect(self, name: str) -> ContainerState:
         """Return the current state of a container, or a "missing" snapshot.
 
         Raises DockerUnavailableError if the daemon cannot be reached.
         """
         _log.debug(f"docker inspect: {name}")
-        try:
-            container = self._client.containers.get(name)
-        except NotFound:
-            _log.debug(f"docker inspect: {name} not found")
+        container = self._inspect_get_container(name)
+        if container is None:
             return _missing_state(name)
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            raise
         try:
             attrs = container.attrs
         except NotFound:
@@ -333,6 +418,10 @@ class DockerRuntime:
         _log.debug(f"docker list_mounts: {name} has {len(out)} bind mount(s)")
         return out
 
+    # ------------------------------------------------------------------
+    # Published ports
+    # ------------------------------------------------------------------
+
     def published_ports(self, name: str) -> dict[str, list[tuple[str, int]]]:
         """Return {container_port_proto: [(host_ip, host_port), ...]}.
 
@@ -346,22 +435,15 @@ class DockerRuntime:
         ports = net.get("Ports") or {}
         out: dict[str, list[tuple[str, int]]] = {}
         for key, mappings in ports.items():
-            if not mappings:
-                continue
-            entries: list[tuple[str, int]] = []
-            for m in mappings:
-                if not isinstance(m, dict):
-                    continue
-                host_ip = str(m.get("HostIp") or "")
-                try:
-                    host_port = int(m.get("HostPort") or 0)
-                except (TypeError, ValueError):
-                    continue
-                entries.append((host_ip, host_port))
+            entries = _published_port_entries(mappings)
             if entries:
                 out[str(key)] = entries
         _log.debug(f"docker published_ports: {name} has {len(out)} published port key(s)")
         return out
+
+    # ------------------------------------------------------------------
+    # Exec
+    # ------------------------------------------------------------------
 
     def exec_run(self, name: str, args: list[str]) -> tuple[int, str]:
         """Run ``args`` in a container. Returns (exit_code, decoded output).
@@ -369,31 +451,18 @@ class DockerRuntime:
         Raises DockerUnavailableError if the daemon cannot be reached.
         """
         _log.debug(f"docker exec_run: {name} args={args}")
-        try:
-            container = self._client.containers.get(name)
-        except NotFound:
-            _log.error(f"docker exec_run: container {name!r} not found")
-            raise DockerUnavailableError(f"container {name!r} not found") from None
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            raise
-        try:
-            result = container.exec_run(args)
-        except NotFound:
-            _log.error(f"docker exec_run: container {name!r} not found mid-exec")
-            raise DockerUnavailableError(f"container {name!r} not found") from None
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            raise
+        container = _exec_get_container(self._client, name)
+        result = _exec_invoke(container, args, name)
         exit_code = getattr(result, "exit_code", None)
         output = getattr(result, "output", b"")
-        if isinstance(output, (bytes, bytearray)):
-            text = bytes(output).decode("utf-8", "replace")
-        else:
-            text = str(output)
+        text = _decode_exec_output(output)
         code = int(exit_code) if exit_code is not None else -1
         _log.debug(f"docker exec_run: {name} exit={code} output_len={len(text)}")
         return (code, text)
+
+    # ------------------------------------------------------------------
+    # Start
+    # ------------------------------------------------------------------
 
     def start(self, name: str) -> StartResult:
         """Start a container. Never raises on a start failure.
@@ -402,25 +471,18 @@ class DockerRuntime:
         caller collects them all (§4.13).
         """
         _log.debug(f"docker start: {name}")
-        try:
-            container = self._client.containers.get(name)
-        except NotFound:
-            _log.debug(f"docker start: container {name!r} not found")
-            return StartResult(name, False, f"container {name!r} not found")
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            return StartResult(name, False, str(exc))
-        try:
-            container.start()
-        except NotFound:
-            _log.debug(f"docker start: container {name!r} disappeared before start")
-            return StartResult(name, False, f"container {name!r} not found")
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            _log.debug(f"docker start: container {name!r} start raised: {exc}")
-            return StartResult(name, False, str(exc))
+        container, err = _start_get_container(self._client, name)
+        if err is not None:
+            return err
+        err = _start_invoke(container, name)
+        if err is not None:
+            return err
         _log.debug(f"docker start: {name} started")
         return StartResult(name, True)
+
+    # ------------------------------------------------------------------
+    # Stop
+    # ------------------------------------------------------------------
 
     def stop(self, name: str, timeout: int) -> StopResult:
         """Stop a container. Distinguishes real stop from no-op (§8.10).
@@ -429,43 +491,21 @@ class DockerRuntime:
         failure and the caller decides (hooks converts to exit 1).
         """
         _log.debug(f"docker stop: {name} timeout={timeout}s")
-        try:
-            container = self._client.containers.get(name)
-        except NotFound:
-            _log.debug(f"docker stop: container {name!r} not found")
-            return StopResult(name, StopOutcome.FAILED, error=f"container {name!r} not found")
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            return StopResult(name, StopOutcome.FAILED, error=str(exc))
-        try:
-            attrs = container.attrs
-        except NotFound:
-            _log.debug(f"docker stop: container {name!r} disappeared before state read")
-            return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            return StopResult(name, StopOutcome.FAILED, error=str(exc))
+        container, err = _stop_get_container(self._client, name)
+        if err is not None:
+            return err
+        attrs, err = _stop_read_state(container, name)
+        if err is not None:
+            return err
         state_block = attrs.get("State") or {}
         if not state_block.get("Running", False):
             _log.debug(f"docker stop: {name} already exited; no-op")
             return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
-        try:
-            result = container.stop(timeout=timeout)
-        except NotFound:
-            _log.debug(f"docker stop: {name} disappeared during stop; treating as exited")
-            return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
-        except DockerException as exc:
-            _raise_if_connection(exc)
-            if _is_not_running_error(exc):
-                _log.debug(f"docker stop: {name} already stopped (SDK reported not-running): {exc}")
-                return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
-            _log.debug(f"docker stop: {name} stop raised: {exc}")
-            return StopResult(name, StopOutcome.FAILED, error=str(exc))
-        if result == 304:
-            _log.debug(f"docker stop: {name} returned 304 (not modified); treating as exited")
-            return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
-        _log.debug(f"docker stop: {name} stopped")
-        return StopResult(name, StopOutcome.STOPPED)
+        return _stop_invoke(container, name, timeout)
+
+    # ------------------------------------------------------------------
+    # Restarting settle
+    # ------------------------------------------------------------------
 
     def wait_for_restarting_settle(self, names: list[str], total_timeout: float, poll_interval: float) -> dict[str, ContainerState]:
         """Bounded wait on a set of ``restarting`` containers (§4.12).
@@ -479,13 +519,13 @@ class DockerRuntime:
             return {}
         _log.debug(f"wait_for_restarting_settle: names={names} total_timeout={total_timeout}s poll_interval={poll_interval}s")
         if total_timeout <= 0:
-            states = {n: self.inspect(n) for n in names}
+            states = _snapshot_restarting(self, names)
             _log.debug(f"wait_for_restarting_settle: wait disabled; captured once: {[s.status for s in states.values()]}")
             return states
         deadline = self._clock.now() + total_timeout
         while True:
-            states = {n: self.inspect(n) for n in names}
-            still_restarting = [n for n, s in states.items() if s.status == "restarting"]
+            states = _snapshot_restarting(self, names)
+            still_restarting = _still_restarting(states)
             if not still_restarting:
                 _log.debug(f"wait_for_restarting_settle: settled with statuses {[s.status for s in states.values()]}")
                 return states
@@ -494,6 +534,10 @@ class DockerRuntime:
                 _log.debug(f"wait_for_restarting_settle: timeout reached; still restarting: {still_restarting}")
                 return states
             self._clock.sleep(min(poll_interval, deadline - now))
+
+    # ------------------------------------------------------------------
+    # Health poll
+    # ------------------------------------------------------------------
 
     def wait_healthy(self, name: str, timeout: float, poll_interval: float, preexisting_unhealthy: bool = False) -> HealthResult:
         """Poll ``.State.Health.Status`` until ``healthy`` or timeout (§8.3).
@@ -508,32 +552,215 @@ class DockerRuntime:
         deadline = self._clock.now() + timeout
         while True:
             state = self.inspect(name)
-            if not state.exists:
-                _log.debug(f"wait_healthy: {name} is missing")
-                return HealthResult(name, False, None, error=f"{name}: container is missing")
-            if not state.running:
-                _log.debug(f"wait_healthy: {name} is not running (status={state.status!r})")
-                return HealthResult(name, False, state.health, error=f"{name}: container is not running")
-            if state.health is None:
-                _log.debug(f"wait_healthy: {name} is running without .State.Health")
-                return HealthResult(
-                    name,
-                    False,
-                    None,
-                    error=f"{name}: running container does not expose .State.Health; the healthcheck may not have been created with the container",
-                )
+            early = _wait_healthy_early_failure(name, state)
+            if early is not None:
+                return early
             if state.health == "healthy":
                 _log.debug(f"wait_healthy: {name} is healthy")
                 return HealthResult(name, True, "healthy")
             now = self._clock.now()
             if now >= deadline:
                 _log.debug(f"wait_healthy: {name} timed out (last status: {state.health!r})")
-                msg = f"{name}: health poll timed out after {timeout:g}s (last status: {state.health!r})"
-                if preexisting_unhealthy:
-                    msg = f"{name}: container was unhealthy before the deployment; {msg}"
-                return HealthResult(name, False, state.health, error=msg)
+                return _wait_healthy_timeout_result(name, state, timeout, preexisting_unhealthy)
             _log.debug(f"wait_healthy: {name} poll status={state.health!r}; sleeping {min(poll_interval, deadline - now):g}s")
             self._clock.sleep(min(poll_interval, deadline - now))
+
+
+# ---------------------------------------------------------------------------
+# §4 helpers (module-level so they can be unit-tested without a runtime)
+# ---------------------------------------------------------------------------
+
+
+def _published_port_host_port(value: Any) -> int | None:
+    """Coerce a ``HostPort`` value to int; return None on failure."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _published_port_entries(mappings: Any) -> list[tuple[str, int]]:
+    """Convert one port's mappings list into ``[(host_ip, host_port), ...]``."""
+    if not mappings:
+        return []
+    entries: list[tuple[str, int]] = []
+    for m in mappings:
+        if not isinstance(m, dict):
+            continue
+        host_ip = str(m.get("HostIp") or "")
+        host_port = _published_port_host_port(m.get("HostPort"))
+        if host_port is None:
+            continue
+        entries.append((host_ip, host_port))
+    return entries
+
+
+def _exec_get_container(client: Any, name: str) -> Any:
+    """Fetch a container for exec_run; translate not-found / daemon-loss."""
+    try:
+        return client.containers.get(name)
+    except NotFound:
+        _log.error(f"docker exec_run: container {name!r} not found")
+        raise DockerUnavailableError(f"container {name!r} not found") from None
+    except DockerException as exc:
+        _raise_if_connection(exc)
+        raise
+
+
+def _exec_invoke(container: Any, args: list[str], name: str) -> Any:
+    """Invoke ``container.exec_run``; translate not-found / daemon-loss."""
+    try:
+        return container.exec_run(args)
+    except NotFound:
+        _log.error(f"docker exec_run: container {name!r} not found mid-exec")
+        raise DockerUnavailableError(f"container {name!r} not found") from None
+    except DockerException as exc:
+        _raise_if_connection(exc)
+        raise
+
+
+def _decode_exec_output(output: Any) -> str:
+    """Decode exec output bytes to UTF-8; pass non-bytes through as str."""
+    if isinstance(output, (bytes, bytearray)):
+        return bytes(output).decode("utf-8", "replace")
+    return str(output)
+
+
+def _start_get_container(client: Any, name: str) -> tuple[Any | None, StartResult | None]:
+    """Fetch a container for start; return (container, None) or (None, error_result)."""
+    try:
+        return client.containers.get(name), None
+    except NotFound:
+        _log.debug(f"docker start: container {name!r} not found")
+        return None, StartResult(name, False, f"container {name!r} not found")
+    except DockerException as exc:
+        _raise_if_connection(exc)
+        return None, StartResult(name, False, str(exc))
+
+
+def _start_invoke(container: Any, name: str) -> StartResult | None:
+    """Invoke ``container.start``; return None on success, error result on failure."""
+    try:
+        container.start()
+        return None
+    except NotFound:
+        _log.debug(f"docker start: container {name!r} disappeared before start")
+        return StartResult(name, False, f"container {name!r} not found")
+    except DockerException as exc:
+        _raise_if_connection(exc)
+        _log.debug(f"docker start: container {name!r} start raised: {exc}")
+        return StartResult(name, False, str(exc))
+
+
+def _stop_get_container(client: Any, name: str) -> tuple[Any | None, StopResult | None]:
+    """Fetch a container for stop; return (container, None) or (None, error_result)."""
+    try:
+        return client.containers.get(name), None
+    except NotFound:
+        _log.debug(f"docker stop: container {name!r} not found")
+        return None, StopResult(name, StopOutcome.FAILED, error=f"container {name!r} not found")
+    except DockerException as exc:
+        _raise_if_connection(exc)
+        return None, StopResult(name, StopOutcome.FAILED, error=str(exc))
+
+
+def _stop_read_state(container: Any, name: str) -> tuple[dict | None, StopResult | None]:
+    """Read container attrs for stop; return (attrs, None) or (None, error_result)."""
+    try:
+        return container.attrs, None
+    except NotFound:
+        _log.debug(f"docker stop: container {name!r} disappeared before state read")
+        return None, StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
+    except DockerException as exc:
+        _raise_if_connection(exc)
+        return None, StopResult(name, StopOutcome.FAILED, error=str(exc))
+
+
+def _stop_invoke(container: Any, name: str, timeout: int) -> StopResult:
+    """Invoke ``container.stop``; classify success, no-op, and real failure."""
+    try:
+        result = container.stop(timeout=timeout)
+    except NotFound:
+        _log.debug(f"docker stop: {name} disappeared during stop; treating as exited")
+        return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
+    except DockerException as exc:
+        _raise_if_connection(exc)
+        if _is_not_running_error(exc):
+            _log.debug(f"docker stop: {name} already stopped (SDK reported not-running): {exc}")
+            return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
+        _log.debug(f"docker stop: {name} stop raised: {exc}")
+        return StopResult(name, StopOutcome.FAILED, error=str(exc))
+    if result == 304:
+        _log.debug(f"docker stop: {name} returned 304 (not modified); treating as exited")
+        return StopResult(name, StopOutcome.EXITED_BEFORE_STOP)
+    _log.debug(f"docker stop: {name} stopped")
+    return StopResult(name, StopOutcome.STOPPED)
+
+
+def _snapshot_restarting(runtime: DockerRuntime, names: list[str]) -> dict[str, ContainerState]:
+    """Inspect each name and return {name: state}."""
+    return {n: runtime.inspect(n) for n in names}
+
+
+def _still_restarting(states: dict[str, ContainerState]) -> list[str]:
+    """Return the names whose status is ``restarting``."""
+    return [n for n, s in states.items() if s.status == "restarting"]
+
+
+def _wait_healthy_early_failure(name: str, state: ContainerState) -> HealthResult | None:
+    """Return a HealthResult for a definitively-failed state, else None.
+
+    Covers the three "this will never become healthy" cases: container
+    is missing, is not running, or is running without ``.State.Health``.
+    """
+    if not state.exists:
+        _log.debug(f"wait_healthy: {name} is missing")
+        return HealthResult(name, False, None, error=f"{name}: container is missing")
+    if not state.running:
+        _log.debug(f"wait_healthy: {name} is not running (status={state.status!r})")
+        return HealthResult(name, False, state.health, error=f"{name}: container is not running")
+    if state.health is None:
+        _log.debug(f"wait_healthy: {name} is running without .State.Health")
+        return HealthResult(
+            name,
+            False,
+            None,
+            error=f"{name}: running container does not expose .State.Health; the healthcheck may not have been created with the container",
+        )
+    return None
+
+
+def _wait_healthy_timeout_result(
+    name: str,
+    state: ContainerState,
+    timeout: float,
+    preexisting_unhealthy: bool,
+) -> HealthResult:
+    """Build the HealthResult for a timed-out poll, with the pre-existing note."""
+    msg = f"{name}: health poll timed out after {timeout:g}s (last status: {state.health!r})"
+    if preexisting_unhealthy:
+        msg = f"{name}: container was unhealthy before the deployment; {msg}"
+    return HealthResult(name, False, state.health, error=msg)
+
+
+# ===========================================================================
+# §5  Mount drift (§3.17)
+# ===========================================================================
+
+
+def _realpath_pair(a: Path | str, b: Path | str, container_name: str, target: str, logger: Any) -> tuple[str, str]:
+    """Return the pair of realpath'd, trailing-slash-stripped paths.
+
+    Raises ConfigError when realpath fails on either side (broken
+    symlink, permission denied) per §3.17.
+    """
+    try:
+        ra = os.path.realpath(str(a), strict=True).rstrip("/")
+        rb = os.path.realpath(str(b), strict=True).rstrip("/")
+    except OSError as exc:
+        logger.error(f"check_mount_drift: {container_name!r}: realpath failed for {target!r}: {exc}")
+        raise ConfigError(f"container {container_name!r}: realpath failed for {target!r}: {exc}") from exc
+    return ra, rb
 
 
 def check_mount_drift(
@@ -564,16 +791,16 @@ def check_mount_drift(
         if actual is None:
             logger.error(f"check_mount_drift: {container_name!r}: no bind mount at {target!r}")
             raise ConfigError(f"container {container_name!r}: no bind mount at {target!r} (compose declares it, the running container does not)")
-        try:
-            a = os.path.realpath(str(host_source), strict=True).rstrip("/")
-            b = os.path.realpath(str(actual), strict=True).rstrip("/")
-        except OSError as exc:
-            logger.error(f"check_mount_drift: {container_name!r}: realpath failed for {target!r}: {exc}")
-            raise ConfigError(f"container {container_name!r}: realpath failed for {target!r}: {exc}") from exc
-        if a != b:
-            logger.error(f"check_mount_drift: {container_name!r}: mount drift at {target!r}: compose={a} container={b}")
-            raise ConfigError(f"container {container_name!r}: mount drift at {target!r}: compose={a} container={b}")
+        ra, rb = _realpath_pair(host_source, actual, container_name, target, logger)
+        if ra != rb:
+            logger.error(f"check_mount_drift: {container_name!r}: mount drift at {target!r}: compose={ra} container={rb}")
+            raise ConfigError(f"container {container_name!r}: mount drift at {target!r}: compose={ra} container={rb}")
     logger.debug(f"check_mount_drift: {container_name} OK")
+
+
+# ===========================================================================
+# §6  env_file helper (§8.4)
+# ===========================================================================
 
 
 def _read_env_file_value(path: Path, key: str) -> str | None:
@@ -595,6 +822,58 @@ def _read_env_file_value(path: Path, key: str) -> str | None:
     return value
 
 
+# ===========================================================================
+# §7  RCON port resolution (§8.4)
+# ===========================================================================
+
+
+def _resolve_port_from_environment(service: ComposeService, logger: Any) -> int | None:
+    """Return ``RCON_PORT`` from ``services.<svc>.environment``, or None.
+
+    Raises ConfigError on a non-integer value.
+    """
+    env_value = service.environment.get("RCON_PORT")
+    if env_value is None:
+        return None
+    try:
+        port = int(env_value)
+    except (TypeError, ValueError) as exc:
+        logger.error(f"resolve_rcon_port: [{service.name}] environment.RCON_PORT={env_value!r} is not an integer")
+        raise ConfigError(f"services.{service.name}.environment.RCON_PORT={env_value!r} is not an integer") from exc
+    logger.debug(f"resolve_rcon_port: [{service.name}] from environment -> {port}")
+    return port
+
+
+def _find_port_in_env_files(service: ComposeService, logger: Any) -> str | None:
+    """Scan ``env_file`` entries left-to-right for ``RCON_PORT``; last wins.
+
+    A missing env_file is an error only when ``RCON_PORT`` has not yet
+    been found (per §8.4).
+    """
+    found: str | None = None
+    for env_file in service.env_files:
+        if not env_file.is_file():
+            if found is None:
+                logger.error(f"resolve_rcon_port: [{service.name}] env_file is missing: {env_file}")
+                raise ConfigError(f"services.{service.name}.env_file is missing: {env_file}")
+            continue
+        value = _read_env_file_value(env_file, "RCON_PORT")
+        if value is not None:
+            found = value
+    return found
+
+
+def _resolve_port_from_env_files_result(service: ComposeService, found: str, logger: Any) -> int:
+    """Coerce a string env_file value to int, raising ConfigError on failure."""
+    try:
+        port = int(found)
+    except (TypeError, ValueError) as exc:
+        logger.error(f"resolve_rcon_port: [{service.name}] RCON_PORT={found!r} in env_file is not an integer")
+        raise ConfigError(f"RCON_PORT={found!r} in env_file is not an integer") from exc
+    logger.debug(f"resolve_rcon_port: [{service.name}] from env_file -> {port}")
+    return port
+
+
 def resolve_rcon_port(service: ComposeService, compose: ComposeFile, logger: Any = None) -> int:
     """Resolve ``RCON_PORT`` for a service (§8.4).
 
@@ -606,35 +885,51 @@ def resolve_rcon_port(service: ComposeService, compose: ComposeFile, logger: Any
     """
     if logger is None:
         logger = _log
-    env_value = service.environment.get("RCON_PORT")
-    if env_value is not None:
-        try:
-            port = int(env_value)
-        except (TypeError, ValueError) as exc:
-            logger.error(f"resolve_rcon_port: [{service.name}] environment.RCON_PORT={env_value!r} is not an integer")
-            raise ConfigError(f"services.{service.name}.environment.RCON_PORT={env_value!r} is not an integer") from exc
-        logger.debug(f"resolve_rcon_port: [{service.name}] from environment -> {port}")
-        return port
-    found: str | None = None
-    for env_file in service.env_files:
-        if not env_file.is_file():
-            if found is None:
-                logger.error(f"resolve_rcon_port: [{service.name}] env_file is missing: {env_file}")
-                raise ConfigError(f"services.{service.name}.env_file is missing: {env_file}")
-            continue
-        value = _read_env_file_value(env_file, "RCON_PORT")
-        if value is not None:
-            found = value
+    from_environment = _resolve_port_from_environment(service, logger)
+    if from_environment is not None:
+        return from_environment
+    found = _find_port_in_env_files(service, logger)
     if found is not None:
-        try:
-            port = int(found)
-        except (TypeError, ValueError) as exc:
-            logger.error(f"resolve_rcon_port: [{service.name}] RCON_PORT={found!r} in env_file is not an integer")
-            raise ConfigError(f"RCON_PORT={found!r} in env_file is not an integer") from exc
-        logger.debug(f"resolve_rcon_port: [{service.name}] from env_file -> {port}")
-        return port
+        return _resolve_port_from_env_files_result(service, found, logger)
     logger.debug(f"resolve_rcon_port: [{service.name}] default -> 25575")
     return 25575
+
+
+# ===========================================================================
+# §8  RCON password (§8.4)
+# ===========================================================================
+
+
+def _require_rcon_secret_declared(service: ComposeService, logger: Any) -> None:
+    """Raise ConfigError if the service does not reference ``rcon_password``."""
+    if "rcon_password" not in service.secrets:
+        logger.error(f"load_rcon_password: service {service.name!r} does not declare the rcon_password secret")
+        raise ConfigError(f"services.{service.name}: RCON is required but the service does not declare the rcon_password secret")
+
+
+def _require_secret_file_entry(compose: ComposeFile, service: ComposeService, logger: Any) -> Path:
+    """Return the ``secrets.rcon_password.file`` path or raise ConfigError."""
+    path = compose.secret_files.get("rcon_password")
+    if path is None:
+        logger.error(f"load_rcon_password: service {service.name!r} references rcon_password but secrets.rcon_password.file is not declared")
+        raise ConfigError(f"services.{service.name}: rcon_password is referenced but secrets.rcon_password.file is not declared")
+    return path
+
+
+def _require_secret_file_exists(path: Path, logger: Any) -> None:
+    """Raise ConfigError if the password file is not on disk."""
+    if not path.is_file():
+        logger.error(f"load_rcon_password: rcon_password secret file not found: {path}")
+        raise ConfigError(f"rcon_password secret file not found: {path}")
+
+
+def _read_secret_file(path: Path, logger: Any) -> str:
+    """Read and rstrip the password file; raise ConfigError on OSError."""
+    try:
+        return path.read_text(encoding="utf-8").rstrip()
+    except OSError as exc:
+        logger.error(f"load_rcon_password: could not read {path}: {exc}")
+        raise ConfigError(f"Could not read {path}: {exc}") from exc
 
 
 def load_rcon_password(compose: ComposeFile, service: ComposeService, logger: Any = None) -> str:
@@ -649,23 +944,17 @@ def load_rcon_password(compose: ComposeFile, service: ComposeService, logger: An
     """
     if logger is None:
         logger = _log
-    if "rcon_password" not in service.secrets:
-        logger.error(f"load_rcon_password: service {service.name!r} does not declare the rcon_password secret")
-        raise ConfigError(f"services.{service.name}: RCON is required but the service does not declare the rcon_password secret")
-    path = compose.secret_files.get("rcon_password")
-    if path is None:
-        logger.error(f"load_rcon_password: service {service.name!r} references rcon_password but secrets.rcon_password.file is not declared")
-        raise ConfigError(f"services.{service.name}: rcon_password is referenced but secrets.rcon_password.file is not declared")
-    if not path.is_file():
-        logger.error(f"load_rcon_password: rcon_password secret file not found: {path}")
-        raise ConfigError(f"rcon_password secret file not found: {path}")
-    try:
-        password = path.read_text(encoding="utf-8").rstrip()
-    except OSError as exc:
-        logger.error(f"load_rcon_password: could not read {path}: {exc}")
-        raise ConfigError(f"Could not read {path}: {exc}") from exc
+    _require_rcon_secret_declared(service, logger)
+    path = _require_secret_file_entry(compose, service, logger)
+    _require_secret_file_exists(path, logger)
+    password = _read_secret_file(path, logger)
     logger.debug(f"load_rcon_password: read {len(password)}-char password from {path}")
     return password
+
+
+# ===========================================================================
+# §9  RconTransport ABC + ExecRconTransport (Option A)
+# ===========================================================================
 
 
 class RconTransport(ABC):
@@ -726,8 +1015,46 @@ class ExecRconTransport(RconTransport):
         return (ok, output.strip())
 
 
+# ===========================================================================
+# §10  TcpRconTransport (Option B)
+# ===========================================================================
+
+
 def _default_sock_factory(host: str, port: int, timeout: float) -> socket.socket:
     return socket.create_connection((host, port), timeout=timeout)
+
+
+def _tcp_connect(
+    sock_factory: Callable[[str, int, float], Any],
+    host: str,
+    port: int,
+    timeout: float,
+) -> tuple[Any | None, str | None]:
+    """Open a TCP connection; return (sock, None) or (None, error_message)."""
+    try:
+        return sock_factory(host, port, timeout), None
+    except OSError as exc:
+        _log.debug(f"TcpRconTransport: {host}:{port} connect failed: {exc}")
+        return None, f"connect failed: {exc}"
+
+
+def _tcp_login(conn: _RconConnection, password: str, host: str, port: int) -> str | None:
+    """Perform the RCON login handshake; return None on success, error message on failure."""
+    try:
+        conn.login(password)
+        return None
+    except (OSError, ValueError) as exc:
+        _log.debug(f"TcpRconTransport: {host}:{port} login failed: {exc}")
+        return f"RCON login failed: {exc}"
+
+
+def _tcp_command(conn: _RconConnection, command: str, host: str, port: int) -> tuple[str | None, str | None]:
+    """Send a command; return (payload, None) or (None, error_message)."""
+    try:
+        return conn.command(command), None
+    except (OSError, ValueError) as exc:
+        _log.debug(f"TcpRconTransport: {host}:{port} command failed: {exc}")
+        return None, f"RCON command failed: {exc}"
 
 
 class TcpRconTransport(RconTransport):
@@ -746,30 +1073,77 @@ class TcpRconTransport(RconTransport):
     def execute(self, command: str, timeout: float = 2.0) -> tuple[bool, str]:
         """Executes a command."""
         _log.debug(f"TcpRconTransport: {self.host}:{self.port} <- {command!r}")
-        try:
-            sock = self._sock_factory(self.host, self.port, timeout)
-        except OSError as exc:
-            _log.debug(f"TcpRconTransport: {self.host}:{self.port} connect failed: {exc}")
-            return (False, f"connect failed: {exc}")
+        sock, err = _tcp_connect(self._sock_factory, self.host, self.port, timeout)
+        if err is not None:
+            return (False, err)
         try:
             with contextlib.suppress(OSError):
                 sock.settimeout(timeout)
             conn = _RconConnection(sock, timeout)
-            try:
-                conn.login(self._password)
-            except (OSError, ValueError) as exc:
-                _log.debug(f"TcpRconTransport: {self.host}:{self.port} login failed: {exc}")
-                return (False, f"RCON login failed: {exc}")
-            try:
-                payload = conn.command(command)
-            except (OSError, ValueError) as exc:
-                _log.debug(f"TcpRconTransport: {self.host}:{self.port} command failed: {exc}")
-                return (False, f"RCON command failed: {exc}")
+            err = _tcp_login(conn, self._password, self.host, self.port)
+            if err is not None:
+                return (False, err)
+            payload, err = _tcp_command(conn, command, self.host, self.port)
+            if err is not None:
+                return (False, err)
             _log.debug(f"TcpRconTransport: {self.host}:{self.port} reply_len={len(payload)}")
             return (True, payload)
         finally:
             with contextlib.suppress(OSError):
                 sock.close()
+
+
+# ===========================================================================
+# §11  Transport selection (§8.4)
+# ===========================================================================
+
+
+def _select_remote_transport(
+    runtime: DockerRuntime,
+    service: ComposeService,
+    compose: ComposeFile,
+    container_name: str,
+    rcon_host: str,
+    rcon_port: int,
+    mappings: list[tuple[str, int]],
+    logger: Any,
+) -> RconTransport:
+    """Remote rcon_host path: exactly one published mapping required."""
+    if not mappings:
+        logger.error(f"select_rcon_transport: {container_name}: rcon_host is set but port {rcon_port}/tcp is not published")
+        raise ConfigError(f"container {container_name!r}: [docker].rcon_host is set but RCON port {rcon_port}/tcp is not published")
+    if len(mappings) > 1:
+        logger.error(f"select_rcon_transport: {container_name}: port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
+        raise ConfigError(f"container {container_name!r}: RCON port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
+    _ip, host_port = mappings[0]
+    password = load_rcon_password(compose, service, logger)
+    transport = TcpRconTransport(host=rcon_host, port=host_port, password=password)
+    logger.info(f"select_rcon_transport: [{container_name}] chose {transport.describe()} (remote rcon_host)")
+    return transport
+
+
+def _select_local_transport(
+    runtime: DockerRuntime,
+    service: ComposeService,
+    compose: ComposeFile,
+    container_name: str,
+    rcon_port: int,
+    mappings: list[tuple[str, int]],
+    logger: Any,
+) -> RconTransport:
+    """Same-host path: one published mapping → TCP; zero → exec; >1 → error."""
+    if len(mappings) == 1:
+        _ip, host_port = mappings[0]
+        password = load_rcon_password(compose, service, logger)
+        transport = TcpRconTransport(host="127.0.0.1", port=host_port, password=password)
+        logger.info(f"select_rcon_transport: [{container_name}] chose {transport.describe()} (published port)")
+        return transport
+    if not mappings:
+        transport = ExecRconTransport(runtime, container_name)
+        logger.info(f"select_rcon_transport: [{container_name}] chose {transport.describe()} (no published port)")
+        return transport
+    logger.error(f"select_rcon_transport: {container_name}: port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
+    raise ConfigError(f"container {container_name!r}: RCON port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
 
 
 def select_rcon_transport(
@@ -794,29 +1168,13 @@ def select_rcon_transport(
     mappings = published.get(f"{rcon_port}/tcp") or []
     logger.debug(f"select_rcon_transport: {container_name} port={rcon_port}/tcp mappings={len(mappings)}")
     if rcon_host:
-        if not mappings:
-            logger.error(f"select_rcon_transport: {container_name}: rcon_host is set but port {rcon_port}/tcp is not published")
-            raise ConfigError(f"container {container_name!r}: [docker].rcon_host is set but RCON port {rcon_port}/tcp is not published")
-        if len(mappings) > 1:
-            logger.error(f"select_rcon_transport: {container_name}: port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
-            raise ConfigError(f"container {container_name!r}: RCON port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
-        _ip, host_port = mappings[0]
-        password = load_rcon_password(compose, service, logger)
-        transport = TcpRconTransport(host=rcon_host, port=host_port, password=password)
-        logger.info(f"select_rcon_transport: [{container_name}] chose {transport.describe()} (remote rcon_host)")
-        return transport
-    if len(mappings) == 1:
-        _ip, host_port = mappings[0]
-        password = load_rcon_password(compose, service, logger)
-        transport = TcpRconTransport(host="127.0.0.1", port=host_port, password=password)
-        logger.info(f"select_rcon_transport: [{container_name}] chose {transport.describe()} (published port)")
-        return transport
-    if not mappings:
-        transport = ExecRconTransport(runtime, container_name)
-        logger.info(f"select_rcon_transport: [{container_name}] chose {transport.describe()} (no published port)")
-        return transport
-    logger.error(f"select_rcon_transport: {container_name}: port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
-    raise ConfigError(f"container {container_name!r}: RCON port {rcon_port}/tcp is published {len(mappings)} times; expected exactly one")
+        return _select_remote_transport(runtime, service, compose, container_name, rcon_host, rcon_port, mappings, logger)
+    return _select_local_transport(runtime, service, compose, container_name, rcon_port, mappings, logger)
+
+
+# ===========================================================================
+# §12  _RconConnection wire protocol
+# ===========================================================================
 
 
 _AUTH_TYPE = 3
