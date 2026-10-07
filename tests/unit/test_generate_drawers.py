@@ -625,8 +625,7 @@ class TestValidationMetrics:
     def test_partial_exact(self) -> None:
         """Tests that a single differing pixel is counted as 255 exact pixels.
 
-        Creates a 16x16 RGBA image, copies it, modifies one pixel, and verifies
-        that validation_metrics reports 255 exact matching pixels.
+        Creates a 16x16 RGBA image, copies it, modifies one pixel, and verifies that validation_metrics reports 255 exact matching pixels.
         """
         a = Image.new("RGBA", (16, 16), (100, 100, 100, 255))
         b = a.copy()
@@ -637,8 +636,7 @@ class TestValidationMetrics:
     def test_size_mismatch_raises(self) -> None:
         """Tests that validation_metrics raises ValueError for mismatched image sizes.
 
-        Creates a 16x16 RGBA image and an 8x8 RGBA image, then asserts that
-        calling validation_metrics with them raises ValueError.
+        Creates a 16x16 RGBA image and an 8x8 RGBA image, then asserts that calling validation_metrics with them raises ValueError.
         """
         a = Image.new("RGBA", (16, 16))
         b = Image.new("RGBA", (8, 8))
@@ -652,8 +650,7 @@ class TestLeaveOneOutValidation:
     def test_all_six_woods_present(self) -> None:
         """Tests that leave_one_out_template_validation returns all six vanilla woods.
 
-        Builds a vanilla source/target pair and verifies that the result keys
-        match the expected set of VANILLA_WOODS.
+        Builds a vanilla source/target pair and verifies that the result keys match the expected set of VANILLA_WOODS.
         """
         sources, targets = _vanilla_pair()
         results = leave_one_out_template_validation(sources, targets)
@@ -662,8 +659,7 @@ class TestLeaveOneOutValidation:
     def test_perfect_reconstruction(self) -> None:
         """Tests that leave_one_out_template_validation perfectly reconstructs each wood.
 
-        Builds a vanilla source/target pair and asserts that every wood's metrics
-        report exactly 256 exact pixels.
+        Builds a vanilla source/target pair and asserts that every wood's metrics report exactly 256 exact pixels.
         """
         sources, targets = _vanilla_pair()
         results = leave_one_out_template_validation(sources, targets)
@@ -677,8 +673,7 @@ class TestBandOf:
     def test_border_is_outer_ring(self) -> None:
         """Tests that band_of identifies the outer ring as "border" at threshold 1.0.
 
-        Checks all pixels along the four edges of a 16x16 grid to ensure
-        they are classified as "border".
+        Checks all pixels along the four edges of a 16x16 grid to ensure they are classified as "border".
         """
         for x in (0, 15):
             for y in range(16):

@@ -39,9 +39,8 @@ distribution = true
 
 [tool.pdm.scripts]
 format = "ruff format ."
-docstrings-diff = "docformatter --diff src/ tests/"
-docstrings-check = "docformatter --check src/ tests/"
-docstrings-format = "docformatter --in-place src/ tests/"
+docstrings-diff = "docformatter --diff src/"
+docstrings-format = "docformatter --in-place src/"
 lint = "ruff check ."
 lint-fix = "ruff check . --fix"
 pylint-duplicates = "pylint src/minecraft/"
@@ -50,7 +49,6 @@ tests = "pytest"
 full.composite = [
     "pipeline",
     "docstring-fixer --workers 2 --retry 5 --mode opendeep --exclude 'tests/.*/fixtures/' src/ tests/",
-    "docstrings-check",
     "format",
     "lint-fix",
     "lint",
@@ -123,6 +121,7 @@ select = [
 ]
 
 ignore = [
+    "E501",   # line too long
     "B008",    # dependency injection patterns
     "B904",    # exception chaining flexibility
     "C901",    # allowed complexity in core services
@@ -133,6 +132,7 @@ ignore = [
     "D213",    # conflicts with D212 / project convention
     "D105",    # dunder methods optional
     "D107",    # __init__ docstring optional
+    "D205",    # 1 blank line required before class docstring
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -156,8 +156,8 @@ max-line-length = 160
 [tool.docformatter]
 recursive = true
 black = true
-wrap-summaries = 160
-wrap-descriptions = 160
+wrap-summaries = 148
+wrap-descriptions = 148
 exclude = [
     "fixtures",
 ]

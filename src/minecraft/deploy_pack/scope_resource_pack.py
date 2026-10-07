@@ -1,24 +1,24 @@
 # src/minecraft/deploy_pack/scope_resource_pack.py
 
-"""Resource-pack scope: ZIP publication and server.properties updates (Project_Specs.md §4.6.6, §4.9, §4.15, §7.5, §7.7, §7.8, §9.2).
+"""Resource-pack scope: ZIP publication and server.properties updates (Project_Specs.md Section 4.6.6, Section 4.9, Section 4.15, Section 7.5, Section 7.7, Section 7.8, Section 9.2).
 
 Responsibilities:
-  * validate source ZIPs (§4.9 step 1, §7.8)
-  * compute each source's SHA-1 (§4.9 step 2, §4.4)
-  * resolve destination paths and public URLs (§4.9 step 3, §7.5)
-  * publish each ZIP atomically when the destination differs (§4.9
-    step 4, §4.10)
-  * update ``server.properties`` atomically (§4.9 step 5, §7.4, §4.10)
+  * validate source ZIPs (Section 4.9 step 1, Section 7.8)
+  * compute each source's SHA-1 (Section 4.9 step 2, Section 4.4)
+  * resolve destination paths and public URLs (Section 4.9 step 3, Section 7.5)
+  * publish each ZIP atomically when the destination differs (Section 4.9
+    step 4, Section 4.10)
+  * update ``server.properties`` atomically (Section 4.9 step 5, Section 7.4, Section 4.10)
 
 Non-responsibilities:
-  * Deciding the per-member effective action. §4.6.6's merge is done by
+  * Deciding the per-member effective action. Section 4.6.6's merge is done by
     preflight; this scope reads ``MemberPlan.resource_pack_target``.
-  * Restart policy. A prompt-only change writes and defers (§4.15); the
+  * Restart policy. A prompt-only change writes and defers (Section 4.15); the
     deferral itself is preflight's classification of the member into
     ``none_set``.
   * Notifications. notifications.py.
 
-Zero-pack path (§7.7)
+Zero-pack path (Section 7.7)
 ---------------------
 
 A partition member with no ``[resource_pack.X]`` section has nothing to
@@ -30,15 +30,15 @@ source validation, no properties write.
 Structure
 ---------
 
-The scope walks §4.9's five steps in order. Each step is one function:
+The scope walks Section 4.9's five steps in order. Each step is one function:
 
-    §1  Result dataclasses (public)
-    §2  Source / destination helpers (pure)
-    §3  Pending plan model (internal)
-    §4  Phases 1-3: validate + plan all publishes
-    §5  Phase 4: publish each ZIP whose destination differs
-    §6  Phase 5: update each member's server.properties
-    §7  Summary + public entry point
+    Section 1  Result dataclasses (public)
+    Section 2  Source / destination helpers (pure)
+    Section 3  Pending plan model (internal)
+    Section 4  Phases 1-3: validate + plan all publishes
+    Section 5  Phase 4: publish each ZIP whose destination differs
+    Section 6  Phase 5: update each member's server.properties
+    Section 7  Summary + public entry point
 
 :func:`deploy_resource_pack_scope` is the only public symbol that
 performs work; every helper is reachable through it and is exercised
@@ -90,7 +90,7 @@ __all__ = [
 
 
 # ===========================================================================
-# §1  Result dataclasses
+# Section 1  Result dataclasses
 # ===========================================================================
 
 
@@ -146,17 +146,15 @@ class ResourcePackScopeResult:
 
 
 # ===========================================================================
-# §2  Source / destination helpers
+# Section 2  Source / destination helpers
 # ===========================================================================
 
 
 def _client_source_dir(config: DeploymentConfig, logger: Any) -> Path | None:
     """Return ``sync_root / resourcepacks.client`` or None if unset.
 
-    §7.6: the source path resolves from ``[sync_mapping].resourcepacks.client``
-    under sync_root. A missing or non-string value means RP publication
-    cannot happen; preflight (§7.7 / §7.8) validates this when a pack is
-    configured for the partition.
+    Section 7.6: the source path resolves from ``[sync_mapping].resourcepacks.client`` under sync_root. A missing or non-string value means RP publication
+    cannot happen; preflight (Section 7.7 / Section 7.8) validates this when a pack is configured for the partition.
     """
     rp_mapping = config.sync_mapping.get("resourcepacks")
     if not isinstance(rp_mapping, dict):
@@ -194,10 +192,9 @@ def _instance_server_properties(inst: InstanceConfig) -> Path | None:
 
 
 def _needs_publish(destination: Path, source_sha1: str, logger: Any = None) -> bool:
-    """§4.4: publish when destination missing OR SHA-1 differs.
+    """Section 4.4: publish when destination missing OR SHA-1 differs.
 
-    SHA-1 comparison is case-insensitive. This guard is for a
-    destination that was written by something else.
+    SHA-1 comparison is case-insensitive. This guard is for a destination that was written by something else.
     """
     if logger is None:
         logger = _log
@@ -218,13 +215,13 @@ def _needs_publish(destination: Path, source_sha1: str, logger: Any = None) -> b
 
 
 # ===========================================================================
-# §3  Pending plan model
+# Section 3  Pending plan model
 # ===========================================================================
 
 
 @dataclass
 class _PendingPublish:
-    """One member's validated publish plan (§4.9 phases 1-3 output)."""
+    """One member's validated publish plan (Section 4.9 phases 1-3 output)."""
 
     member: str
     rp: ResourcePackConfig
@@ -236,7 +233,7 @@ class _PendingPublish:
 
 
 # ===========================================================================
-# §4  Phases 1-3: validate + plan
+# Section 4  Phases 1-3: validate + plan
 # ===========================================================================
 
 
@@ -262,8 +259,7 @@ def _resolve_mapping_paths(
 ) -> tuple[Path | None, str | None, str | None]:
     """Resolve the source dir and mapping value for RP publication.
 
-    Returns ``(source_dir, dest_value, error)``. When both are populated
-    ``error`` is None; when ``error`` is set, both paths are None.
+    Returns ``(source_dir, dest_value, error)``. When both are populated ``error`` is None; when ``error`` is set, both paths are None.
     """
     source_dir = _client_source_dir(config, logger)
     if source_dir is None:
@@ -285,9 +281,8 @@ def _plan_one_publish(
 ) -> tuple[_PendingPublish | None, str | None]:
     """Validate one member's pack and build its pending plan.
 
-    Returns ``(pending, None)`` on success or ``(None, error_message)``
-    on the first validation failure. Check order mirrors §4.9 phase 1:
-    filename → source exists → sha1 → dest dir → url.
+    Returns ``(pending, None)`` on success or ``(None, error_message)`` on the first validation failure. Check order mirrors Section 4.9 phase 1: filename
+    -> source exists -> sha1 -> dest dir -> url.
     """
     logger.debug(f"[{member}] validating resource pack {rp.filename!r}")
 
@@ -342,11 +337,10 @@ def _validate_and_plan_publishes(
     partition: list[str],
     logger: Any,
 ) -> tuple[list[_PendingPublish], list[str], str | None, str | None]:
-    """Phases 1 + 2 + 3 of §4.9.
+    """Phases 1 + 2 + 3 of Section 4.9.
 
-    Returns ``(pending, no_pack_members, error_message, error_member)``.
-    On error, ``pending`` is empty (the caller discards partial plans
-    when it takes the failure path) and ``error_message`` is set.
+    Returns ``(pending, no_pack_members, error_message, error_member)``. On error, ``pending`` is empty (the caller discards partial plans when it
+    takes the failure path) and ``error_message`` is set.
     """
     members_with_pack, no_pack = _partition_by_pack(config, partition)
     logger.debug(f"_validate_and_plan_publishes: partition={partition} with_pack={[m for m, _ in members_with_pack]} no_pack={no_pack}")
@@ -382,7 +376,7 @@ def _validate_and_plan_publishes(
 
 
 # ===========================================================================
-# §5  Phase 4: publish
+# Section 5  Phase 4: publish
 # ===========================================================================
 
 
@@ -390,10 +384,9 @@ def _publish_one(
     p: _PendingPublish,
     logger: Any,
 ) -> tuple[PublishResult | None, tuple[str, str] | None]:
-    """Attempt a single publish (§4.9 phase 4).
+    """Attempt a single publish (Section 4.9 phase 4).
 
-    Returns ``(PublishResult, None)`` on success or
-    ``(None, (error_message, failure_member))`` on failure.
+    Returns ``(PublishResult, None)`` on success or ``(None, (error_message, failure_member))`` on failure.
     """
     try:
         needed = _needs_publish(p.destination, p.sha1, logger)
@@ -436,11 +429,10 @@ def _run_publish_phase(
     pending: list[_PendingPublish],
     logger: Any,
 ) -> tuple[list[PublishResult], str | None, str | None]:
-    """§4.9 phase 4: publish every pending ZIP.
+    """Section 4.9 phase 4: publish every pending ZIP.
 
-    Returns ``(publish_results, error_message, failure_member)``.
-    Halts on the first failure; ``publish_results`` holds what was
-    completed before the abort.
+    Returns ``(publish_results, error_message, failure_member)``. Halts on the first failure; ``publish_results`` holds what was completed before
+    the abort.
     """
     results: list[PublishResult] = []
     for p in pending:
@@ -454,7 +446,7 @@ def _run_publish_phase(
 
 
 # ===========================================================================
-# §6  Phase 5: server.properties
+# Section 6  Phase 5: server.properties
 # ===========================================================================
 
 
@@ -463,7 +455,7 @@ def _write_properties_one(
     config: DeploymentConfig,
     logger: Any,
 ) -> tuple[PropertiesWriteResult | None, str | None]:
-    """Update one member's server.properties (§4.9 phase 5).
+    """Update one member's server.properties (Section 4.9 phase 5).
 
     Returns:
       * ``(result, None)`` on a write attempt (with ``wrote`` reflecting
@@ -495,7 +487,7 @@ def _write_properties_one(
 
     if diff.any:
         if write_result.prompt_only:
-            logger.warning(f"[{p.member}] {props_path}: only resource-pack-prompt changed; write deferred (no restart, §4.15)")
+            logger.warning(f"[{p.member}] {props_path}: only resource-pack-prompt changed; write deferred (no restart, Section 4.15)")
         else:
             logger.info(f"[{p.member}] updated {props_path} ({len(changes)} key(s))")
     else:
@@ -509,11 +501,10 @@ def _run_properties_phase(
     config: DeploymentConfig,
     logger: Any,
 ) -> tuple[list[PropertiesWriteResult], str | None, str | None]:
-    """§4.9 phase 5: update every pending member's server.properties.
+    """Section 4.9 phase 5: update every pending member's server.properties.
 
-    Returns ``(write_results, error_message, failure_member)``. Halts on
-    the first failure; skipped members (no instance or no path) are
-    logged by :func:`_write_properties_one` and not appended.
+    Returns ``(write_results, error_message, failure_member)``. Halts on the first failure; skipped members (no instance or no path) are logged by
+    :func:`_write_properties_one` and not appended.
     """
     results: list[PropertiesWriteResult] = []
     for p in pending:
@@ -526,7 +517,7 @@ def _run_properties_phase(
 
 
 # ===========================================================================
-# §7  Summary + public entry point
+# Section 7  Summary + public entry point
 # ===========================================================================
 
 
@@ -548,9 +539,9 @@ def deploy_resource_pack_scope(
     protect_patterns: list[str],
     logger: Any = None,
 ) -> ResourcePackScopeResult:
-    """Execute the resource-pack scope write phase (§4.9).
+    """Execute the resource-pack scope write phase (Section 4.9).
 
-    Order (mandatory per §4.9):
+    Order (mandatory per Section 4.9):
 
       1. Validate all source ZIPs, compute all SHA-1s, resolve all
          destinations and URLs.
@@ -558,8 +549,8 @@ def deploy_resource_pack_scope(
       3. Update every partition member's server.properties.
 
     Halts on the first failure inside any phase. Completed phases are
-    not rolled back (§4.2). Returns a structured result; the caller
-    applies §4.7's failure handling.
+    not rolled back (Section 4.2). Returns a structured result; the caller
+    applies Section 4.7's failure handling.
 
     Read-only with respect to Docker.
     """

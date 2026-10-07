@@ -88,8 +88,7 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 def _load_asset(name: str) -> str:
     """Read a UTF-8 template or CSS asset from the templates directory.
 
-    Pure I/O; a missing or unreadable file raises OSError to the caller
-    (``scope_client`` wraps it at ERROR), so nothing is caught here.
+    Pure I/O; a missing or unreadable file raises OSError to the caller (``scope_client`` wraps it at ERROR), so nothing is caught here.
     """
     return (_TEMPLATE_DIR / name).read_text(encoding="utf-8")
 
@@ -108,8 +107,7 @@ def _load_template(name: str) -> string.Template:
 class DiffReport:
     """What changed in the client pack since the previous build.
 
-    Pure data class; emits no events. The aggregate counts are logged
-    by :func:`build_client_diff_report`.
+    Pure data class; emits no events. The aggregate counts are logged by :func:`build_client_diff_report`.
     """
 
     added_mods: list[str] = field(default_factory=list)
@@ -121,7 +119,10 @@ class DiffReport:
     total_mods: int = 0
 
     def is_empty(self) -> bool:
-        """True when there is nothing to report. Initial builds are never empty."""
+        """True when there is nothing to report.
+
+        Initial builds are never empty.
+        """
         if self.initial_build:
             return False
         return not (self.added_mods or self.removed_mods or self.added_kubejs or self.modified_kubejs or self.removed_kubejs)
@@ -159,16 +160,18 @@ class DiffReport:
 
 
 def _hash_bytes(b: bytes) -> str:
-    """SHA-256 of a byte string. Pure; no logging."""
+    """SHA-256 of a byte string.
+
+    Pure; no logging.
+    """
     return hashlib.sha256(b).hexdigest()
 
 
 def _zip_names(zip_path: Path, prefix: str, logger: Any = None) -> set[str]:
-    """Relative paths of files under prefix in the zip. Directories excluded.
+    """Relative paths of files under prefix in the zip.
 
-    Raises zipfile.BadZipFile or OSError on an unreadable ZIP; the
-    caller (``scope_client``) wraps the raise at ERROR, so this helper
-    does not catch.
+    Directories excluded.     Raises zipfile.BadZipFile or OSError on an unreadable ZIP; the     caller (``scope_client``) wraps the raise at ERROR,
+    so this helper     does not catch.
     """
     if logger is None:
         logger = _log
@@ -189,8 +192,7 @@ def _zip_names(zip_path: Path, prefix: str, logger: Any = None) -> set[str]:
 def _zip_hashes(zip_path: Path, prefix: str, logger: Any = None) -> dict[str, str]:
     """{relative_path: sha256} for files under prefix in the zip.
 
-    Raises zipfile.BadZipFile or OSError on an unreadable ZIP; the
-    caller wraps the raise at ERROR, so this helper does not catch.
+    Raises zipfile.BadZipFile or OSError on an unreadable ZIP; the caller wraps the raise at ERROR, so this helper does not catch.
     """
     if logger is None:
         logger = _log
@@ -237,9 +239,7 @@ def compute_mod_diff(
 ) -> tuple[list[str], list[str]]:
     """Return (added, removed) mod filenames.
 
-    Comparison is by filename only. A version bump shows up as one
-    addition and one removal, which is what changed in the pack for
-    the user.
+    Comparison is by filename only. A version bump shows up as one addition and one removal, which is what changed in the pack for the user.
     """
     if logger is None:
         logger = _log
@@ -260,9 +260,8 @@ def compute_kubejs_diff(
 ) -> tuple[list[str], list[str], list[str]]:
     """Return (added, modified, removed) KubeJS paths.
 
-    Paths are relative to the kubejs directory and use forward slashes.
-    Comparison is by content hash, so whitespace-only changes register
-    as modifications.
+    Paths are relative to the kubejs directory and use forward slashes. Comparison is by content hash, so whitespace-only changes register as
+    modifications.
     """
     if logger is None:
         logger = _log
@@ -336,7 +335,10 @@ def build_client_diff_report(
 
 
 def _esc(text: str) -> str:
-    """HTML-escape a string. Pure; no logging."""
+    """HTML-escape a string.
+
+    Pure; no logging.
+    """
     return html.escape(text, quote=True)
 
 
@@ -361,8 +363,7 @@ def _render_section(
 def _render_changelog_body(report: DiffReport) -> str:
     """Fill ``changelog_body.html`` with the report's sections.
 
-    Empty section placeholders are replaced with the empty string so
-    the template file can list every slot unconditionally.
+    Empty section placeholders are replaced with the empty string so the template file can list every slot unconditionally.
     """
     if report.initial_build:
         n = report.total_mods
@@ -406,8 +407,7 @@ def render_changelog_html(
 ) -> str:
     """Render the changelog page as a self-contained HTML document.
 
-    Loads the page template and the two stylesheets from ``templates/``;
-    logs its inputs and the rendered length at DEBUG, no WARN/ERROR.
+    Loads the page template and the two stylesheets from ``templates/``; logs its inputs and the rendered length at DEBUG, no WARN/ERROR.
     """
     if logger is None:
         logger = _log
@@ -446,8 +446,7 @@ def write_changelog(
 ) -> None:
     """Write the changelog HTML page to output_path.
 
-    OSError from ``mkdir`` or ``write_text`` propagates to the caller;
-    the scope layer wraps it at ERROR, so this function does not catch.
+    OSError from ``mkdir`` or ``write_text`` propagates to the caller; the scope layer wraps it at ERROR, so this function does not catch.
     """
     if logger is None:
         logger = _log

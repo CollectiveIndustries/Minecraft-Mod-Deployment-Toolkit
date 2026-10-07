@@ -1,22 +1,22 @@
 # tests/deploy_pack/test_scope_resource_pack.py
 
-"""Tests for deploy_pack.scope_resource_pack, Project_Specs.md §4.4, §4.6.6, §4.9, §4.15, §7.5, §7.7, §7.8.
+"""Tests for deploy_pack.scope_resource_pack, Project_Specs.md Section 4.4, Section 4.6.6, Section 4.9, Section 4.15, Section 7.5, Section 7.7, Section 7.8.
 
 Coverage:
 
-  * §7.7   - zero-pack no-op: a partition member with no [resource_pack.X]
+  * Section 7.7   - zero-pack no-op: a partition member with no [resource_pack.X]
              has nothing to publish and nothing to write
-  * §7.8   - source validation happens before any write
-  * §4.9   - the five-step ordering: validate, hash, resolve, publish,
+  * Section 7.8   - source validation happens before any write
+  * Section 4.9   - the five-step ordering: validate, hash, resolve, publish,
              update server.properties; a publish failure stops the
              properties write
-  * §4.4   - SHA-1 comparison is case-insensitive; a destination that
+  * Section 4.4   - SHA-1 comparison is case-insensitive; a destination that
              already matches is not republished
-  * §4.6.6 - the resource-pack action merge: prompt-only changes write
+  * Section 4.6.6 - the resource-pack action merge: prompt-only changes write
              and defer; require-resource-pack, resource-pack, and
              resource-pack-sha1 changes trigger a restart
-  * §4.15  - empty prompt written as `resource-pack-prompt=`
-  * §4.10  - atomic publication of the ZIP and of server.properties
+  * Section 4.15  - empty prompt written as `resource-pack-prompt=`
+  * Section 4.10  - atomic publication of the ZIP and of server.properties
 
 Every test drives :func:`deploy_resource_pack_scope` against a real
 DeploymentConfig and a real PreflightPlan.
@@ -140,12 +140,12 @@ def _write_props(inst: InstanceConfig, content: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7.7: zero-pack no-op
+# Section 7.7: zero-pack no-op
 # ---------------------------------------------------------------------------
 
 
 def test_zero_packs_for_partition_is_a_successful_noop(tmp_path: Path) -> None:
-    """§7.7: a member with no [resource_pack.X] is reported and skipped."""
+    """Section 7.7: a member with no [resource_pack.X] is reported and skipped."""
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
     result = deploy_resource_pack_scope(cfg, _plan(["survival"]), [], None)
@@ -157,7 +157,7 @@ def test_zero_packs_for_partition_is_a_successful_noop(tmp_path: Path) -> None:
 
 
 def test_zero_packs_with_no_client_mapping_is_a_noop(tmp_path: Path) -> None:
-    """§7.7: with no pack configured, a missing resourcepacks.client is not an error."""
+    """Section 7.7: with no pack configured, a missing resourcepacks.client is not an error."""
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(
         tmp_path,
@@ -171,12 +171,12 @@ def test_zero_packs_with_no_client_mapping_is_a_noop(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7.8: source validation happens before any write
+# Section 7.8: source validation happens before any write
 # ---------------------------------------------------------------------------
 
 
 def test_missing_source_zip_is_a_validate_stage_failure(tmp_path: Path) -> None:
-    """§7.8: a missing source is exit 3 before any file is touched."""
+    """Section 7.8: a missing source is exit 3 before any file is touched."""
     inst = _instance("survival", tmp_path / "survival")
     _write_props(inst, "motd=hi\n")
     cfg = _config(
@@ -196,7 +196,7 @@ def test_missing_source_zip_is_a_validate_stage_failure(tmp_path: Path) -> None:
 
 
 def test_missing_client_mapping_is_a_validate_stage_failure(tmp_path: Path) -> None:
-    """§7.7: a configured pack without sync_mapping.resourcepacks.client is exit 3."""
+    """Section 7.7: a configured pack without sync_mapping.resourcepacks.client is exit 3."""
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(
         tmp_path,
@@ -213,7 +213,7 @@ def test_missing_client_mapping_is_a_validate_stage_failure(tmp_path: Path) -> N
 
 
 def test_missing_resource_pack_mapping_is_a_validate_stage_failure(tmp_path: Path) -> None:
-    """§7.5: a configured pack without sync_mapping.resourcepacks.resource_pack is exit 3."""
+    """Section 7.5: a configured pack without sync_mapping.resourcepacks.resource_pack is exit 3."""
     _write_source_rp(tmp_path)
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(
@@ -231,7 +231,7 @@ def test_missing_resource_pack_mapping_is_a_validate_stage_failure(tmp_path: Pat
 
 
 def test_invalid_filename_is_a_validate_stage_failure(tmp_path: Path) -> None:
-    """§7.5: a filename that fails the grammar is exit 3."""
+    """Section 7.5: a filename that fails the grammar is exit 3."""
     _write_source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
     cfg = _config(
@@ -246,12 +246,12 @@ def test_invalid_filename_is_a_validate_stage_failure(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.4: SHA-1 comparison drives publication
+# Section 4.4: SHA-1 comparison drives publication
 # ---------------------------------------------------------------------------
 
 
 def test_publishes_when_destination_missing(tmp_path: Path) -> None:
-    """§4.4: a missing destination is a change."""
+    """Section 4.4: a missing destination is a change."""
     _write_source_rp(tmp_path, "pack.zip", b"CONTENT")
     inst = _instance("survival", tmp_path / "survival")
     _write_props(inst)
@@ -273,7 +273,7 @@ def test_publishes_when_destination_missing(tmp_path: Path) -> None:
 
 
 def test_skips_publication_when_destination_matches(tmp_path: Path) -> None:
-    """§4.4: matching SHA-1 means no effective change for publication."""
+    """Section 4.4: matching SHA-1 means no effective change for publication."""
     _write_source_rp(tmp_path, "pack.zip", b"CONTENT")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
@@ -294,7 +294,7 @@ def test_skips_publication_when_destination_matches(tmp_path: Path) -> None:
 
 
 def test_sha1_comparison_is_case_insensitive(tmp_path: Path) -> None:
-    """§4.4: comparison normalizes to lowercase."""
+    """Section 4.4: comparison normalizes to lowercase."""
     _write_source_rp(tmp_path, "pack.zip", b"CONTENT")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
@@ -314,7 +314,7 @@ def test_sha1_comparison_is_case_insensitive(tmp_path: Path) -> None:
 
 
 def test_republishes_when_source_content_changes(tmp_path: Path) -> None:
-    """§4.4: differing SHA-1 triggers a republish."""
+    """Section 4.4: differing SHA-1 triggers a republish."""
     _write_source_rp(tmp_path, "pack.zip", b"NEW")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
@@ -333,12 +333,12 @@ def test_republishes_when_source_content_changes(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.9: server.properties is updated after all publishes
+# Section 4.9: server.properties is updated after all publishes
 # ---------------------------------------------------------------------------
 
 
 def test_writes_all_four_keys_after_publish(tmp_path: Path) -> None:
-    """§4.9: every managed key is written after the ZIP lands."""
+    """Section 4.9: every managed key is written after the ZIP lands."""
     _write_source_rp(tmp_path, "pack.zip", b"ZIPDATA")
     inst = _instance("survival", tmp_path / "survival")
     _write_props(inst, "motd=hi\n")
@@ -361,7 +361,7 @@ def test_writes_all_four_keys_after_publish(tmp_path: Path) -> None:
 
 
 def test_required_false_is_written_lowercase(tmp_path: Path) -> None:
-    """§7.4: booleans are lowercase."""
+    """Section 7.4: booleans are lowercase."""
     _write_source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
     _write_props(inst)
@@ -377,7 +377,7 @@ def test_required_false_is_written_lowercase(tmp_path: Path) -> None:
 
 
 def test_empty_prompt_is_written_as_empty_value(tmp_path: Path) -> None:
-    """§4.15: an empty prompt is written as `resource-pack-prompt=`."""
+    """Section 4.15: an empty prompt is written as `resource-pack-prompt=`."""
     _write_source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
     _write_props(inst)
@@ -393,12 +393,12 @@ def test_empty_prompt_is_written_as_empty_value(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.6.6 / §4.15: prompt-only changes write and defer
+# Section 4.6.6 / Section 4.15: prompt-only changes write and defer
 # ---------------------------------------------------------------------------
 
 
 def test_prompt_only_change_does_not_republish(tmp_path: Path) -> None:
-    """§4.15: only the prompt differs -> properties write, no publish."""
+    """Section 4.15: only the prompt differs -> properties write, no publish."""
     src = _write_source_rp(tmp_path, "pack.zip", b"ZIPDATA")
     dest_dir = tmp_path / "www" / "resourcepacks"
     dest_dir.mkdir(parents=True)
@@ -425,12 +425,12 @@ def test_prompt_only_change_does_not_republish(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.9 / §4.2: publish failure stops the properties write
+# Section 4.9 / Section 4.2: publish failure stops the properties write
 # ---------------------------------------------------------------------------
 
 
 def test_publish_failure_leaves_server_properties_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """§4.9 / §4.2: a publish failure halts before the properties write."""
+    """Section 4.9 / Section 4.2: a publish failure halts before the properties write."""
     _write_source_rp(tmp_path, "pack.zip")
     inst = _instance("survival", tmp_path / "survival")
     original = "motd=hi\n"
@@ -460,7 +460,7 @@ def test_publish_failure_leaves_server_properties_untouched(tmp_path: Path, monk
 
 
 def test_members_without_packs_are_reported_and_not_touched(tmp_path: Path) -> None:
-    """§7.7: a member with no pack is listed in no_pack_members and left alone."""
+    """Section 7.7: a member with no pack is listed in no_pack_members and left alone."""
     _write_source_rp(tmp_path, "pack.zip")
     a = _instance("a", tmp_path / "a")
     _write_props(a)

@@ -1,21 +1,21 @@
 # src/minecraft/deploy_pack/files.py
 
-r"""File manipulation: direct copy, clean semantics, protect, atomic publication (Project_Specs.md §3.13, §4.10, §4.11, §7.1, §7.2, §7.5).
+r"""File manipulation: direct copy, clean semantics, protect, atomic publication (Project_Specs.md Section 3.13, Section 4.10, Section 4.11, Section 7.1, Section 7.2, Section 7.5).
 
-Responsibilities (§9.2):
-  * atomic write-then-rename for individual artifacts (§4.10)
-  * copy-with-clean implementing the §7.2 semantics for both
+Responsibilities (Section 9.2):
+  * atomic write-then-rename for individual artifacts (Section 4.10)
+  * copy-with-clean implementing the Section 7.2 semantics for both
     ``config_mode = "delete"`` and ``config_mode = "merge"``
-  * protect-pattern matching (§3.13)
-  * hash helpers (SHA-256 for change detection per §4.4, SHA-1 for
-    resource-pack publication per §4.4)
-  * ``@www/...`` destination parsing and resolution (§7.5)
-  * per-side mapping resolution for sync items (§3.9)
-  * ZIP creation for the client pack (§7.1)
-  * flat-file deployment for the mods directory (§4.11)
+  * protect-pattern matching (Section 3.13)
+  * hash helpers (SHA-256 for change detection per Section 4.4, SHA-1 for
+    resource-pack publication per Section 4.4)
+  * ``@www/...`` destination parsing and resolution (Section 7.5)
+  * per-side mapping resolution for sync items (Section 3.9)
+  * ZIP creation for the client pack (Section 7.1)
+  * flat-file deployment for the mods directory (Section 4.11)
 
 Non-responsibilities:
-  * Deciding which mode to use. §7.2 specifies merge vs. delete per
+  * Deciding which mode to use. Section 7.2 specifies merge vs. delete per
     content type; the scope code passes the mode in.
   * Deciding what goes in the client ZIP. scope_client assembles the
     staging directory; this module just zips it.
@@ -30,14 +30,14 @@ comments. Each section corresponds to one responsibility and its
 helpers are only called from within that section or from the public
 entry points declared in ``__all__``.
 
-    §1  Atomic publication          (§4.10)
-    §2  Hash helpers                (§4.4)
-    §3  Protect patterns            (§3.13)
-    §4  Tree copy                   (§7.2)
-    §5  Flat-file deployment        (§4.11)
-    §6  ZIP creation                (§7.1)
-    §7  Shared destinations         (§7.5)
-    §8  Resource-pack misc          (§3.9, §7.5)
+    Section 1  Atomic publication          (Section 4.10)
+    Section 2  Hash helpers                (Section 4.4)
+    Section 3  Protect patterns            (Section 3.13)
+    Section 4  Tree copy                   (Section 7.2)
+    Section 5  Flat-file deployment        (Section 4.11)
+    Section 6  ZIP creation                (Section 7.1)
+    Section 7  Shared destinations         (Section 7.5)
+    Section 8  Resource-pack misc          (Section 3.9, Section 7.5)
 
 Aggressive decomposition: every public entry point is a thin
 orchestrator delegating to small single-purpose helpers. The
@@ -50,7 +50,7 @@ Logging
 
 Atomic publication logs at DEBUG with destination paths, at INFO when
 a file lands, and at WARN when metadata preservation fails on an
-existing destination (permission errors are non-fatal per §4.10).
+existing destination (permission errors are non-fatal per Section 4.10).
 Copy-with-clean logs at DEBUG with the full result breakdown and at
 WARN when an individual unlink or copy fails. Protect patterns log at
 INFO on load and WARN when the protect file is empty. Hash helpers and
@@ -100,7 +100,7 @@ __all__ = [
 
 
 # ===========================================================================
-# §1  Atomic publication (§4.10)
+# Section 1  Atomic publication (Section 4.10)
 # ===========================================================================
 
 
@@ -121,8 +121,7 @@ def _fsync_path(p: Path) -> None:
 def _copy_metadata_from_existing(tmp: Path, dest: Path, logger: Any) -> None:
     """Copy mode and ownership from an existing ``dest`` onto ``tmp``, best-effort.
 
-    Failures log at WARN and continue (§4.10: metadata preservation is
-    not fatal). Called only when ``dest`` already exists.
+    Failures log at WARN and continue (Section 4.10: metadata preservation is not fatal). Called only when ``dest`` already exists.
     """
     try:
         st = os.stat(dest)
@@ -159,7 +158,7 @@ def _publish_atomically(dest: Path, writer: Callable[[Path], None], logger: Any 
 
     Same-directory placement guarantees same-filesystem replace. Any
     failure unlinks the temp file and re-raises. Directory-level fsync
-    after replace is not performed (§4.10 durability note).
+    after replace is not performed (Section 4.10 durability note).
     """
     if logger is None:
         logger = _log
@@ -179,7 +178,7 @@ def _publish_atomically(dest: Path, writer: Callable[[Path], None], logger: Any 
 
 
 def atomic_write(path: Path, data: bytes, logger: Any = None) -> None:
-    """Write ``data`` to ``path`` atomically (§4.10)."""
+    """Write ``data`` to ``path`` atomically (Section 4.10)."""
     if logger is None:
         logger = _log
     logger.debug(f"atomic_write: {path} ({len(data)} byte(s))")
@@ -187,15 +186,12 @@ def atomic_write(path: Path, data: bytes, logger: Any = None) -> None:
 
 
 def atomic_copy(src: Path, dest: Path, logger: Any = None) -> None:
-    """Copy ``src`` onto ``dest`` atomically (§4.10).
+    """Copy ``src`` onto ``dest`` atomically (Section 4.10).
 
-    Same temp-fsync-metadata-replace sequence as :func:`atomic_write`,
-    but the content is streamed from ``src`` via ``shutil.copyfile``
-    rather than materialised in memory. Used for resource-pack ZIP
-    publication, where the source can be large.
+    Same temp-fsync-metadata-replace sequence as :func:`atomic_write`, but the content is streamed from ``src`` via ``shutil.copyfile`` rather than
+    materialised in memory. Used for resource-pack ZIP publication, where the source can be large.
 
-    Raises OSError on any unrecoverable failure; the temp file is
-    unlinked first.
+    Raises OSError on any unrecoverable failure; the temp file is unlinked first.
     """
     if logger is None:
         logger = _log
@@ -206,7 +202,7 @@ def atomic_copy(src: Path, dest: Path, logger: Any = None) -> None:
 
 
 # ===========================================================================
-# §2  Hash helpers (§4.4)
+# Section 2  Hash helpers (Section 4.4)
 # ===========================================================================
 
 
@@ -220,12 +216,12 @@ def _hash_file(path: Path, algo: str) -> str:
 
 
 def compute_sha256(path: Path) -> str:
-    """SHA-256 of a file, lowercase hex (§4.4)."""
+    """SHA-256 of a file, lowercase hex (Section 4.4)."""
     return _hash_file(path, "sha256")
 
 
 def compute_sha1(path: Path) -> str:
-    """SHA-1 of a file, lowercase hex (§4.4, resource-pack-sha1 only)."""
+    """SHA-1 of a file, lowercase hex (Section 4.4, resource-pack-sha1 only)."""
     return _hash_file(path, "sha1")
 
 
@@ -237,9 +233,8 @@ def sha256_bytes(data: bytes) -> str:
 def _hash_tree(root: Path) -> dict[str, str]:
     """Return ``{rel_path: sha256}`` for every regular file under root.
 
-    ``rel_path`` uses forward slashes. Symlinks are not followed for
-    directory traversal; a symlink to a regular file is hashed as its
-    target contents (matching ``Path.is_file()`` semantics).
+    ``rel_path`` uses forward slashes. Symlinks are not followed for directory traversal; a symlink to a regular file is hashed as its target
+    contents (matching ``Path.is_file()`` semantics).
     """
     result: dict[str, str] = {}
     for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
@@ -269,8 +264,7 @@ def hash_tree(root: Path, logger: Any = None) -> dict[str, str]:
 def hash_flat_dir(root: Path, logger: Any = None) -> dict[str, str]:
     """Return ``{filename: sha256}`` for the ``.jar`` files directly in ``root``.
 
-    Non-``.jar`` files and subdirectories are ignored (§4.11: ``mods_dir``
-    is treated as flat).
+    Non-``.jar`` files and subdirectories are ignored (Section 4.11: ``mods_dir`` is treated as flat).
     """
     if logger is None:
         logger = _log
@@ -290,7 +284,7 @@ def hash_flat_dir(root: Path, logger: Any = None) -> dict[str, str]:
 
 
 # ===========================================================================
-# §3  Protect patterns (§3.13)
+# Section 3  Protect patterns (Section 3.13)
 # ===========================================================================
 
 
@@ -307,7 +301,7 @@ def is_protected_path(rel_path: str | Path, protect_patterns: list[str] | None =
     - the ``*`` spans ``/``.
 
     An empty or missing pattern list means nothing is protected
-    (§3.13: missing ``.deploy_protect`` is a silent no-op).
+    (Section 3.13: missing ``.deploy_protect`` is a silent no-op).
     """
     if not protect_patterns:
         return False
@@ -342,11 +336,11 @@ def _normalize_protect_pattern(line: str) -> str:
 
 
 def load_protect_patterns(path: Path | None, logger: Any = None) -> list[str]:
-    """Read ``.deploy_protect`` into a list of globs (§3.13).
+    """Read ``.deploy_protect`` into a list of globs (Section 3.13).
 
-    Missing file → empty list, silent no-op.
-    Empty file → warning, empty list.
-    Non-empty → log count, return patterns.
+    Missing file -> empty list, silent no-op.
+    Empty file -> warning, empty list.
+    Non-empty -> log count, return patterns.
 
     Format: one pattern per line; blank lines and ``#`` comments ignored;
     leading/trailing whitespace stripped; a single trailing ``/`` is
@@ -375,7 +369,7 @@ def load_protect_patterns(path: Path | None, logger: Any = None) -> list[str]:
 
 
 # ===========================================================================
-# §4  Tree copy (§7.2)
+# Section 4  Tree copy (Section 7.2)
 # ===========================================================================
 
 
@@ -490,7 +484,7 @@ def copy_tree(
     protect_patterns: list[str] | None = None,
     logger: Any = None,
 ) -> CopyResult:
-    """Deploy ``src``'s contents into ``dst`` per §7.2.
+    """Deploy ``src``'s contents into ``dst`` per Section 7.2.
 
     ``mode`` is one of:
 
@@ -501,14 +495,14 @@ def copy_tree(
         whose content differs; then copy new/changed. Files present
         only in ``dst`` survive. Unchanged files are never touched.
 
-    Protect patterns (§3.13) apply to *deletions only*. A protected
+    Protect patterns (Section 3.13) apply to *deletions only*. A protected
     file that also exists in the source is still overwritten - protection
-    governs removal, not overwrite (§3.13, §4.11).
+    governs removal, not overwrite (Section 3.13, Section 4.11).
 
     Directory pruning runs after removals: an empty directory left
     behind by a deletion is removed unless it matches a protect pattern.
 
-    Change detection is SHA-256 on file content (§4.4). Unchanged files
+    Change detection is SHA-256 on file content (Section 4.4). Unchanged files
     are neither removed nor rewritten.
     """
     if logger is None:
@@ -538,7 +532,7 @@ def copy_tree(
 
 
 # ===========================================================================
-# §5  Flat-file deployment (§4.11)
+# Section 5  Flat-file deployment (Section 4.11)
 # ===========================================================================
 
 
@@ -559,8 +553,7 @@ def _hash_source_files(src_files: dict[str, Path], logger: Any) -> dict[str, str
 def _split_flat_sets(src_map: dict[str, str], dst_map: dict[str, str]) -> tuple[list[str], list[str], list[str], list[str]]:
     """Return ``(new_files, updated, extras, unchanged)`` as sorted lists.
 
-    Uses the same bucketing rule as :func:`_split_tree_maps`, but the
-    flat-file caller wants deterministic list order rather than sets.
+    Uses the same bucketing rule as :func:`_split_tree_maps`, but the flat-file caller wants deterministic list order rather than sets.
     """
     src_set = set(src_map)
     dst_set = set(dst_map)
@@ -629,7 +622,7 @@ def deploy_flat_files(
     protect_patterns: list[str] | None = None,
     logger: Any = None,
 ) -> CopyResult:
-    """Deploy a flat set of source files into ``dst_dir`` (§7.2, §4.11).
+    """Deploy a flat set of source files into ``dst_dir`` (Section 7.2, Section 4.11).
 
     ``src_files`` maps destination filename to source path. The source
     is a computed set (from the Prism index + side filter + closure),
@@ -637,10 +630,10 @@ def deploy_flat_files(
     call over ``sync/downloads``.
 
     Only files ending in ``.jar`` in ``dst_dir`` are considered, per
-    §2.9's drift definition and §4.11's flat-directory rule.
+    Section 2.9's drift definition and Section 4.11's flat-directory rule.
 
-    Change detection is SHA-256 (§4.4). Unchanged files are left alone.
-    Protected files (§3.13) that are not in the source set survive; a
+    Change detection is SHA-256 (Section 4.4). Unchanged files are left alone.
+    Protected files (Section 3.13) that are not in the source set survive; a
     protected file that *is* in the source set is overwritten with
     source content.
     """
@@ -664,16 +657,15 @@ def deploy_flat_files(
 
 
 # ===========================================================================
-# §6  ZIP creation (§7.1)
+# Section 6  ZIP creation (Section 7.1)
 # ===========================================================================
 
 
 def _write_zip_entries(zf: zipfile.ZipFile, source_dir: Path, file_count: list[int]) -> None:
     """Write every regular file under ``source_dir`` into ``zf``.
 
-    Arcnames are relative to ``source_dir`` with forward slashes.
-    ``file_count`` is a one-element list so the caller can observe the
-    number of files written (closures cannot rebind integers).
+    Arcnames are relative to ``source_dir`` with forward slashes. ``file_count`` is a one-element list so the caller can observe the number of files
+    written (closures cannot rebind integers).
     """
     for dirpath, _dirnames, filenames in os.walk(source_dir, followlinks=False):
         for fname in sorted(filenames):
@@ -696,9 +688,8 @@ def _make_zip_writer(source_dir: Path, file_count: list[int]) -> Callable[[Path]
 def create_zip(source_dir: Path, output_zip: Path, logger: Any = None) -> None:
     """Zip the contents of ``source_dir`` into ``output_zip``, atomically.
 
-    The archive contains paths relative to ``source_dir`` (no leading
-    directory component). Atomic publication via :func:`_publish_atomically`
-    means a partial ZIP can never appear at ``output_zip`` (§4.10).
+    The archive contains paths relative to ``source_dir`` (no leading directory component). Atomic publication via :func:`_publish_atomically` means
+    a partial ZIP can never appear at ``output_zip`` (Section 4.10).
     """
     if logger is None:
         logger = _log
@@ -711,7 +702,7 @@ def create_zip(source_dir: Path, output_zip: Path, logger: Any = None) -> None:
 
 
 # ===========================================================================
-# §7  Shared destinations (§7.5)
+# Section 7  Shared destinations (Section 7.5)
 # ===========================================================================
 
 
@@ -731,7 +722,7 @@ def _validate_at_www_segment(segment: str, value: str) -> None:
 
 
 def parse_shared_dest(value: str, logger: Any = None) -> tuple[str, str]:
-    """Parse ``@www/<segment>(/<segment>)*`` per §7.5.
+    """Parse ``@www/<segment>(/<segment>)*`` per Section 7.5.
 
     Returns ``(prefix, subpath)`` - currently only ``prefix == "www"``
     is supported. ``subpath`` is the portion after ``@www/`` with no
@@ -745,7 +736,7 @@ def parse_shared_dest(value: str, logger: Any = None) -> tuple[str, str]:
         raise ConfigError(f"not a shared destination: {value!r}")
     head, sep, rest = value[1:].partition("/")
     if head != "www":
-        raise ConfigError(f"Unsupported shared destination prefix @{head}: {value!r} (only @www is defined by §7.5)")
+        raise ConfigError(f"Unsupported shared destination prefix @{head}: {value!r} (only @www is defined by Section 7.5)")
     if not sep or not rest:
         raise ConfigError(f"@www requires a non-empty subpath: {value!r}")
     for segment in rest.split("/"):
@@ -771,8 +762,7 @@ def resolve_shared_dest(value: str, www_dir: Path, logger: Any = None) -> Path:
 def resolve_resource_pack_dest(value: str, www_dir: Path, logger: Any = None) -> Path:
     """Return the directory under ``www_dir`` where resource packs land.
 
-    ``value`` is the ``[sync_mapping].resourcepacks.resource_pack`` string,
-    which must be a valid ``@www/...`` destination (§7.5).
+    ``value`` is the ``[sync_mapping].resourcepacks.resource_pack`` string, which must be a valid ``@www/...`` destination (Section 7.5).
     """
     if logger is None:
         logger = _log
@@ -782,7 +772,7 @@ def resolve_resource_pack_dest(value: str, www_dir: Path, logger: Any = None) ->
 
 
 # ===========================================================================
-# §8  Resource-pack misc (§3.9, §7.5)
+# Section 8  Resource-pack misc (Section 3.9, Section 7.5)
 # ===========================================================================
 
 
@@ -811,7 +801,7 @@ def resolve_mapping_for_side(mapping_value: Any, side: str) -> str | None:
 
 
 def validate_resource_pack_filename(name: str) -> None:
-    r"""Validate a resource-pack filename per §7.5.
+    r"""Validate a resource-pack filename per Section 7.5.
 
     Rules: non-empty, no ``/`` or ``\\``, no ``..`` anywhere, no leading
     ``.``, no NUL, ends in ``.zip``. Raises ConfigError on any violation.
@@ -836,13 +826,11 @@ def build_resource_pack_url(
     filename: str,
     logger: Any = None,
 ) -> str:
-    """Compose the public URL for a resource-pack ZIP (§7.5).
+    """Compose the public URL for a resource-pack ZIP (Section 7.5).
 
-    ``{base}/{subpath}/{filename}``, with ``base`` trailing-slash-stripped
-    and ``subpath`` extracted from the ``@www/...`` mapping value.
+    ``{base}/{subpath}/{filename}``, with ``base`` trailing-slash-stripped and ``subpath`` extracted from the ``@www/...`` mapping value.
 
-    Raises ConfigError if the mapping value is malformed or the filename
-    is invalid.
+    Raises ConfigError if the mapping value is malformed or the filename is invalid.
     """
     if logger is None:
         logger = _log

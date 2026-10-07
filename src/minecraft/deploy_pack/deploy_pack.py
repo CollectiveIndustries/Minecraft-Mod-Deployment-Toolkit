@@ -1,6 +1,6 @@
 # src/minecraft/deploy_pack/deploy_pack.py
 
-"""Command-line entrypoint shim (Project_Specs.md §9.2).
+"""Command-line entrypoint shim (Project_Specs.md Section 9.2).
 
 The real logic lives in :mod:`minecraft.deploy_pack.main`. This module
 exists so that:
@@ -37,7 +37,10 @@ __all__ = ["cli"]
 
 
 def cli() -> None:
-    """Console-script entry point. Exits with the code from :func:`main`."""
+    """Console-script entry point.
+
+    Exits with the code from :func:`main`.
+    """
     _log.debug("cli: invoking main()")
     code = _main()
     _log.debug(f"cli: main() returned exit code {code}; calling sys.exit")

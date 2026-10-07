@@ -2,10 +2,8 @@
 
 """Tests for the entrypoint shim (deploy_pack.deploy_pack).
 
-The shim is deliberately trivial: its only contract is that calling
-``cli()`` invokes ``main.main()`` and exits with the returned code. The
-runtime behavior of ``main`` is exercised in test_main.py. Here we cover
-the shim wiring and the module-invocation path.
+The shim is deliberately trivial: its only contract is that calling ``cli()`` invokes ``main.main()`` and exits with the returned code. The runtime behavior of
+``main`` is exercised in test_main.py. Here we cover the shim wiring and the module-invocation path.
 """
 
 from __future__ import annotations
@@ -20,7 +18,7 @@ from minecraft.deploy_pack import deploy_pack
 
 
 def test_cli_calls_main_and_exits(monkeypatch: pytest.MonkeyPatch) -> None:
-    """cli() must call main.main() and sys.exit with its return value."""
+    """Cli() must call main.main() and sys.exit with its return value."""
     calls: list[list[str] | None] = []
 
     def fake_main(argv: list[str] | None = None) -> int:
@@ -45,9 +43,8 @@ def test_cli_exit_zero(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_python_dash_m_invocation() -> None:
     """``python -m minecraft.deploy_pack --help`` exits 0.
 
-    This exercises __main__.py + main.main() end to end without
-    needing a Docker daemon or a config tree, because --help is
-    handled before any of those are touched.
+    This exercises __main__.py + main.main() end to end without needing a Docker daemon or a config tree, because --help is handled before any of those are
+    touched.
     """
     result = subprocess.run([sys.executable, "-m", "minecraft.deploy_pack", "--help"], capture_output=True, text=True)
     assert result.returncode == 0
@@ -55,7 +52,7 @@ def test_python_dash_m_invocation() -> None:
 
 
 def test_python_dash_m_no_args_prints_help() -> None:
-    """§2.5: no arguments → print help, exit 0."""
+    """Section 2.5: no arguments -> print help, exit 0."""
     result = subprocess.run([sys.executable, "-m", "minecraft.deploy_pack"], capture_output=True, text=True)
     assert result.returncode == 0
     combined = (result.stdout + result.stderr).lower()
@@ -63,10 +60,10 @@ def test_python_dash_m_no_args_prints_help() -> None:
 
 
 def test_python_dash_m_dry_run_without_scope_exit_2() -> None:
-    """§2.5: --dry-run without a scope → exit 2.
+    """Section 2.5: --dry-run without a scope -> exit 2.
 
-    This is a full subprocess round-trip: parse → validate → UsageError
-    → exit 2. It confirms the shim, __main__, main, and the exit-code
+    This is a full subprocess round-trip: parse -> validate -> UsageError
+    -> exit 2. It confirms the shim, __main__, main, and the exit-code
     mapping all agree.
     """
     result = subprocess.run([sys.executable, "-m", "minecraft.deploy_pack", "--dry-run"], capture_output=True, text=True)

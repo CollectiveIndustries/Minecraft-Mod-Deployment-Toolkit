@@ -43,7 +43,10 @@ _LEVEL_COLORS = {"DEBUG": "\x1b[36m", "INFO": "\x1b[32m", "WARNING": "\x1b[33m",
 
 
 class _StderrConsoleSink(ConsoleSink):
-    """ConsoleSink that writes to stderr. Same format, different stream."""
+    """ConsoleSink that writes to stderr.
+
+    Same format, different stream.
+    """
 
     async def write(self, event: LogEvent) -> None:
         """Write a log event to stderr, optionally colorized."""
@@ -59,7 +62,10 @@ class _StderrConsoleSink(ConsoleSink):
 
 
 def configure(debug: bool = False) -> None:
-    """Install the global LoggingCore with a stderr sink. Idempotent."""
+    """Install the global LoggingCore with a stderr sink.
+
+    Idempotent.
+    """
     global _configured
     if _configured:
         return

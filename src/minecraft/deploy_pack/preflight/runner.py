@@ -15,7 +15,7 @@ applicable) the member name; without those, a ``--debug`` run that
 fails at the top level would show only the trailing summary and the
 operator would have to parse the multi-line ``PreflightError`` text to
 find the cause. The four ``raise PreflightError`` sites - the early
-bail on §3.5/§2.5/§3.19, the post-per-member aggregation, the
+bail on Section 3.5/Section 2.5/Section 3.19, the post-per-member aggregation, the
 RCON-unavailable bail, and the online-template bail - each log at
 ERROR with the failure count and source labels before raising, so the
 aggregated diagnostic lands in the sink regardless of how ``main.py``
@@ -42,7 +42,7 @@ single DEBUG line uses the ``config_model`` module logger.
 Structure
 ---------
 
-:func:`run_preflight` is a thin orchestrator that walks the §4.1
+:func:`run_preflight` is a thin orchestrator that walks the Section 4.1
 sequence in order. Each check phase is a small function with a single
 responsibility, so a failure at any point can be traced to a specific
 phase without reading the entire file. The two ``raise`` points
@@ -84,7 +84,7 @@ from .types import (
 
 _log = get_logger(__name__)
 
-_EARLY_BAIL_SOURCES = ("§3.5", "§2.5", "§3.19")
+_EARLY_BAIL_SOURCES = ("Section 3.5", "Section 2.5", "Section 3.19")
 _MODS_DRIFT_WARNING = "mods_dir differs from the full source set; a targeted deploy does not touch shared mods. Run a non-targeted --server to update mods."
 _PACK_REQUIRED_WARNING = "client pack content changed; the current ZIP is stale. Run --client to rebuild."
 
@@ -116,10 +116,9 @@ def _has_fatal(failures: list[PreflightFailure], *sources: str) -> bool:
 
 
 def _needs_lifecycle(scopes: ScopeSet, config: DeploymentConfig) -> bool:
-    """Return True when the scope requires container inspection (§4.12).
+    """Return True when the scope requires container inspection (Section 4.12).
 
-    Server always does. Resource-pack does only when at least one
-    partition member has a ``[resource_pack.X]`` section (§7.7).
+    Server always does. Resource-pack does only when at least one partition member has a ``[resource_pack.X]`` section (Section 7.7).
     """
     if scopes.server:
         return True
@@ -127,7 +126,7 @@ def _needs_lifecycle(scopes: ScopeSet, config: DeploymentConfig) -> bool:
 
 
 def _compose_needed_for_scopes(scopes: ScopeSet, config: DeploymentConfig) -> bool:
-    """Return True when a broken compose is fatal for this invocation (§3.5)."""
+    """Return True when a broken compose is fatal for this invocation (Section 3.5)."""
     if scopes.server:
         return True
     return scopes.resource_pack and any(m in config.resource_packs for m in config.partition)
@@ -143,11 +142,11 @@ def _check_unknown_instances(
     config: DeploymentConfig,
     logger: Any,
 ) -> None:
-    """§2.5: requested --instance names that are not configured."""
+    """Section 2.5: requested --instance names that are not configured."""
     if not config.partition_unknown:
         return
     logger.warning(f"preflight: unknown --instance name(s): {config.partition_unknown}")
-    failures.append(PreflightFailure("§2.5", "unknown --instance name(s): " + ", ".join(config.partition_unknown)))
+    failures.append(PreflightFailure("Section 2.5", "unknown --instance name(s): " + ", ".join(config.partition_unknown)))
 
 
 def _check_instances_configured(
@@ -156,13 +155,13 @@ def _check_instances_configured(
     scopes: ScopeSet,
     logger: Any,
 ) -> None:
-    """§2.5: server and resource-pack scopes require at least one instance."""
+    """Section 2.5: server and resource-pack scopes require at least one instance."""
     if not (scopes.server or scopes.resource_pack):
         return
     if config.instances:
         return
     logger.warning("preflight: no instances configured")
-    failures.append(PreflightFailure("§2.5", "no instances configured"))
+    failures.append(PreflightFailure("Section 2.5", "no instances configured"))
 
 
 def _check_compose_available(
@@ -171,7 +170,7 @@ def _check_compose_available(
     scopes: ScopeSet,
     logger: Any,
 ) -> None:
-    """§3.5: compose must load when a scope requires it."""
+    """Section 3.5: compose must load when a scope requires it."""
     if not _compose_needed_for_scopes(scopes, config):
         return
     if config.compose.ok:
@@ -179,7 +178,7 @@ def _check_compose_available(
     logger.warning(f"preflight: compose required for this scope but could not be loaded: {config.compose.error}")
     failures.append(
         PreflightFailure(
-            "§3.5",
+            "Section 3.5",
             f"compose is required for this scope but could not be loaded: {config.compose.error}",
         )
     )
@@ -191,7 +190,7 @@ def _check_www_dir_available(
     scopes: ScopeSet,
     logger: Any,
 ) -> None:
-    """§3.19: client and resource-pack scopes require a resolvable www_dir."""
+    """Section 3.19: client and resource-pack scopes require a resolvable www_dir."""
     if not (scopes.client or scopes.resource_pack):
         return
     if config.www_dir is not None:
@@ -201,7 +200,7 @@ def _check_www_dir_available(
     logger.warning(f"preflight: www_dir could not be determined: {config.www_dir_error or 'unknown reason'}")
     failures.append(
         PreflightFailure(
-            "§3.19",
+            "Section 3.19",
             f"www_dir could not be determined: {config.www_dir_error or 'unknown reason'}",
         )
     )
@@ -222,7 +221,7 @@ def _run_top_level_checks(
 
 
 def _raise_if_early_bail(failures: list[PreflightFailure], logger: Any) -> None:
-    """Raise when a §3.5/§2.5/§3.19 failure makes further checks meaningless."""
+    """Raise when a Section 3.5/Section 2.5/Section 3.19 failure makes further checks meaningless."""
     if not _has_fatal(failures, *_EARLY_BAIL_SOURCES):
         return
     logger.error(f"preflight: aborting early with {len(failures)} top-level failure(s): {[f.source for f in failures]}")
@@ -230,7 +229,7 @@ def _raise_if_early_bail(failures: list[PreflightFailure], logger: Any) -> None:
 
 
 def _raise_if_failures(failures: list[PreflightFailure], logger: Any) -> None:
-    """Raise after all independently detectable failures have been collected (§4.3)."""
+    """Raise after all independently detectable failures have been collected (Section 4.3)."""
     if not failures:
         return
     logger.error(f"preflight: {len(failures)} failure(s) after per-member checks: {[f.source for f in failures]}")
@@ -248,12 +247,10 @@ def _check_one_member_compose(
     scopes: ScopeSet,
     logger: Any,
 ) -> tuple[list[PreflightFailure], tuple[str, Path] | None]:
-    """§3.2/§3.6/§3.8 checks for a single partition member.
+    """Section 3.2/Section 3.6/Section 3.8 checks for a single partition member.
 
-    Returns ``(failures, mods_dir_candidate)``. The candidate is
-    ``(member, resolved_mods_dir)`` when the server scope is active and
-    the member's service declares a ``/data/mods`` bind; ``None``
-    otherwise.
+    Returns ``(failures, mods_dir_candidate)``. The candidate is ``(member, resolved_mods_dir)`` when the server scope is active and the member's
+    service declares a ``/data/mods`` bind; ``None`` otherwise.
     """
     inst = config.instances.get(member)
     if inst is None:
@@ -263,14 +260,14 @@ def _check_one_member_compose(
 
     if inst.service_match_error is not None:
         logger.warning(f"preflight: [{member}] compose match failed: {inst.service_match_error}")
-        failures.append(PreflightFailure(f"§3.6 [{member}]", inst.service_match_error))
+        failures.append(PreflightFailure(f"Section 3.6 [{member}]", inst.service_match_error))
         return failures, None
 
     if inst.stop_grace_parse_error is not None:
         logger.warning(f"preflight: [{member}] stop_grace_period parse failed: {inst.stop_grace_parse_error}")
         failures.append(
             PreflightFailure(
-                f"§3.2 [{member}]",
+                f"Section 3.2 [{member}]",
                 f"stop_grace_period parse failed: {inst.stop_grace_parse_error}",
             )
         )
@@ -279,7 +276,7 @@ def _check_one_member_compose(
         logger.warning(f"preflight: [{member}] no /data bind found for container {inst.container!r}")
         failures.append(
             PreflightFailure(
-                f"§3.6 [{member}]",
+                f"Section 3.6 [{member}]",
                 f"no /data bind found for container {inst.container!r}",
             )
         )
@@ -289,7 +286,7 @@ def _check_one_member_compose(
         logger.warning(f"preflight: [{member}] compose service {inst.service.name!r} has no healthcheck")
         failures.append(
             PreflightFailure(
-                f"§3.8 [{member}]",
+                f"Section 3.8 [{member}]",
                 f"compose service {inst.service.name!r} has no healthcheck",
             )
         )
@@ -320,7 +317,7 @@ def _check_all_member_compose(
 
 
 def _should_check_mods_dir_agreement(config: DeploymentConfig, scopes: ScopeSet) -> bool:
-    """§3.7 gate: server scope, not a targeted deploy, and a non-empty partition."""
+    """Section 3.7 gate: server scope, not a targeted deploy, and a non-empty partition."""
     return scopes.server and config.requested_instances is None and bool(config.partition)
 
 
@@ -338,9 +335,8 @@ def _find_disagreeing_mods_dir_sources(
 ) -> set[Path] | None:
     """Return the distinct host sources when >1 is present, else None.
 
-    None means "all candidates agree on the same source" (the healthy
-    case); a returned set means the partition disagrees and preflight
-    should fail with the sorted source list.
+    None means "all candidates agree on the same source" (the healthy case); a returned set means the partition disagrees and preflight should fail
+    with the sorted source list.
     """
     sources = {path for _name, path in mods_dir_candidates}
     if len(sources) <= 1:
@@ -353,7 +349,7 @@ def _warn_mods_dir_toml_mismatch(
     mods_dir_candidates: list[tuple[str, Path]],
     logger: Any,
 ) -> None:
-    """§3.4: log when TOML disagrees with the (authoritative) compose source."""
+    """Section 3.4: log when TOML disagrees with the (authoritative) compose source."""
     if config.mods_dir_toml is None:
         return
     compose_source = next(iter({path for _name, path in mods_dir_candidates}))
@@ -367,7 +363,7 @@ def _check_mods_dir_agreement(
     mods_dir_candidates: list[tuple[str, Path]],
     logger: Any,
 ) -> list[PreflightFailure]:
-    """§3.7: every non-targeted partition member must share one mods_dir bind.
+    """Section 3.7: every non-targeted partition member must share one mods_dir bind.
 
     Three checks in order, first failure wins:
 
@@ -375,7 +371,7 @@ def _check_mods_dir_agreement(
       2. All members' binds must resolve to the same host source.
       3. (Informational only) A TOML-vs-compose disagreement is warned.
 
-    Skipped entirely for a targeted deploy (§2.9: --server --instance X
+    Skipped entirely for a targeted deploy (Section 2.9: --server --instance X
     does not touch mods_dir).
     """
     if not _should_check_mods_dir_agreement(config, scopes):
@@ -386,7 +382,7 @@ def _check_mods_dir_agreement(
         logger.warning(f"preflight: partition member(s) missing /data/mods bind: {missing}")
         return [
             PreflightFailure(
-                "§3.7",
+                "Section 3.7",
                 "partition member(s) missing /data/mods bind: " + ", ".join(missing),
             )
         ]
@@ -397,7 +393,7 @@ def _check_mods_dir_agreement(
         logger.warning(f"preflight: mods_dir bind sources disagree across partition members: {sorted(str(p) for p in sorted_sources)}")
         return [
             PreflightFailure(
-                "§3.7",
+                "Section 3.7",
                 "mods_dir bind sources disagree across partition members: " + ", ".join(str(p) for p in sorted_sources),
             )
         ]
@@ -417,7 +413,10 @@ def _inspect_all(
     failures: list[PreflightFailure],
     logger: Any = None,
 ) -> tuple[dict[str, ContainerState], list[str]]:
-    """Inspect every partition member's container. Return (states, restarting)."""
+    """Inspect every partition member's container.
+
+    Return (states, restarting).
+    """
     if logger is None:
         logger = _log
     logger.debug(f"_inspect_all: inspecting {len(config.partition)} member(s)")
@@ -432,7 +431,7 @@ def _inspect_all(
             state = runtime.inspect(inst.container)
         except Exception as exc:
             logger.warning(f"_inspect_all: [{member}] inspect of {inst.container!r} failed: {exc}")
-            failures.append(PreflightFailure(f"§4.12 [{member}]", f"inspect failed: {exc}"))
+            failures.append(PreflightFailure(f"Section 4.12 [{member}]", f"inspect failed: {exc}"))
             continue
         states[member] = state
         logger.debug(f"_inspect_all: [{member}] {inst.container} status={state.status!r} running={state.running} health={state.health!r}")
@@ -450,7 +449,7 @@ def _settle_restarting(
     restarting: list[str],
     logger: Any = None,
 ) -> None:
-    """Bounded wait on restarting containers; update ``states`` in place (§4.12)."""
+    """Bounded wait on restarting containers; update ``states`` in place (Section 4.12)."""
     if logger is None:
         logger = _log
     wait = config.docker.preflight_restarting_wait_seconds
@@ -476,7 +475,7 @@ def _classify_states(
     failures: list[PreflightFailure],
     logger: Any = None,
 ) -> None:
-    """Apply §4.12's per-state policy; append failures, log warnings."""
+    """Apply Section 4.12's per-state policy; append failures, log warnings."""
     if logger is None:
         logger = _log
     for member, state in states.items():
@@ -486,7 +485,7 @@ def _classify_states(
         msg = classify_state(state, inst.container)
         if msg is not None:
             logger.warning(f"_classify_states: [{member}] {msg}")
-            failures.append(PreflightFailure(f"§4.12 [{member}]", msg))
+            failures.append(PreflightFailure(f"Section 4.12 [{member}]", msg))
         elif state.running and state.health == "unhealthy":
             logger.warning(f"[{member}] container {inst.container} is unhealthy at preflight")
         elif state.running and state.health == "starting":
@@ -500,7 +499,7 @@ def _check_drift(
     failures: list[PreflightFailure],
     logger: Any = None,
 ) -> None:
-    """Verify compose-vs-container mount agreement for every running member (§3.17)."""
+    """Verify compose-vs-container mount agreement for every running member (Section 3.17)."""
     if logger is None:
         logger = _log
     compose_file = config.compose.file
@@ -517,7 +516,7 @@ def _check_drift(
             check_mount_drift(runtime, inst.container, expected, logger)
         except ConfigError as exc:
             logger.warning(f"_check_drift: [{member}] drift detected on {inst.container!r}: {exc}")
-            failures.append(PreflightFailure(f"§3.17 [{member}]", str(exc)))
+            failures.append(PreflightFailure(f"Section 3.17 [{member}]", str(exc)))
 
 
 def _run_member_checks(
@@ -530,10 +529,8 @@ def _run_member_checks(
 ) -> dict[str, ContainerState]:
     """Run the per-member compose/lifecycle phase.
 
-    Returns the container-state map. Populates ``failures`` with
-    everything detected. When lifecycle checks are not required, or the
-    compose file could not be loaded, returns an empty map without
-    touching Docker.
+    Returns the container-state map. Populates ``failures`` with everything detected. When lifecycle checks are not required, or the compose file
+    could not be loaded, returns an empty map without touching Docker.
     """
     if not (needs_lifecycle and config.compose.ok):
         return {}
@@ -555,7 +552,7 @@ def _run_member_checks(
 
 
 # ---------------------------------------------------------------------------
-# Resource-pack source validation (§7.7 / §7.8)
+# Resource-pack source validation (Section 7.7 / Section 7.8)
 # ---------------------------------------------------------------------------
 
 
@@ -564,7 +561,7 @@ def _check_resource_pack_sources(
     failures: list[PreflightFailure],
     logger: Any = None,
 ) -> None:
-    """Validate resource-pack source files and filenames for the partition (§7.7, §7.8)."""
+    """Validate resource-pack source files and filenames for the partition (Section 7.7, Section 7.8)."""
     if logger is None:
         logger = _log
     logger.debug("_check_resource_pack_sources: validating RP sources for partition")
@@ -575,7 +572,7 @@ def _check_resource_pack_sources(
             logger.warning("_check_resource_pack_sources: [sync_mapping].resourcepacks.client is required when at least one pack is configured")
             failures.append(
                 PreflightFailure(
-                    "§7.7",
+                    "Section 7.7",
                     "[sync_mapping].resourcepacks.client is required when at least one pack is configured",
                 )
             )
@@ -591,12 +588,12 @@ def _check_resource_pack_sources(
             validate_resource_pack_filename(rp.filename)
         except ConfigError as exc:
             logger.warning(f"_check_resource_pack_sources: [{member}] filename invalid: {exc}")
-            failures.append(PreflightFailure(f"§7.5 [{member}]", str(exc)))
+            failures.append(PreflightFailure(f"Section 7.5 [{member}]", str(exc)))
             continue
         source = config.sync_root / client_sub / rp.filename
         if not source.is_file():
             logger.warning(f"_check_resource_pack_sources: [{member}] source not found: {source}")
-            failures.append(PreflightFailure(f"§7.8 [{member}]", f"resource pack source not found: {source}"))
+            failures.append(PreflightFailure(f"Section 7.8 [{member}]", f"resource pack source not found: {source}"))
         else:
             logger.debug(f"_check_resource_pack_sources: [{member}] {rp.filename} validated at {source}")
 
@@ -607,7 +604,7 @@ def _check_resource_pack_sources_if_needed(
     scopes: ScopeSet,
     logger: Any,
 ) -> None:
-    """Run §7.7/§7.8 source validation only when the RP scope is active."""
+    """Run Section 7.7/Section 7.8 source validation only when the RP scope is active."""
     if not scopes.resource_pack:
         return
     logger.debug("preflight: resource-pack source validation")
@@ -615,7 +612,7 @@ def _check_resource_pack_sources_if_needed(
 
 
 # ---------------------------------------------------------------------------
-# Discord template validation (§5.11)
+# Discord template validation (Section 5.11)
 # ---------------------------------------------------------------------------
 
 
@@ -627,7 +624,7 @@ def _check_template_availability_if_notify(
     dry_run: bool,
     logger: Any,
 ) -> None:
-    """§5.11: validate the reachable Discord templates before any write."""
+    """Section 5.11: validate the reachable Discord templates before any write."""
     if not notify:
         return
     logger.debug("preflight: discord template validation")
@@ -642,16 +639,15 @@ def _check_template_availability_if_notify(
 
 
 # ---------------------------------------------------------------------------
-# Plan assembly (§4.6)
+# Plan assembly (Section 4.6)
 # ---------------------------------------------------------------------------
 
 
 def _first_mods_dir(config: DeploymentConfig) -> Path | None:
     """Return the first partition member's mods_dir, or None.
 
-    Compose is authoritative for ``mods_dir`` (§3.4); the first member
-    that resolves a ``/data/mods`` bind wins. Consistency across the
-    partition is enforced earlier by :func:`_check_mods_dir_agreement`.
+    Compose is authoritative for ``mods_dir`` (Section 3.4); the first member that resolves a ``/data/mods`` bind wins. Consistency across the partition is
+    enforced earlier by :func:`_check_mods_dir_agreement`.
     """
     if not (config.compose.ok and config.partition):
         return None
@@ -703,10 +699,9 @@ def _detect_mods_drift(
     mods_change,
     logger: Any,
 ) -> tuple[bool, str | None]:
-    """§2.9: a targeted server deploy warns when mods_dir differs from source.
+    """Section 2.9: a targeted server deploy warns when mods_dir differs from source.
 
-    Returns ``(drift_detected, warning_message)``. The warning is None
-    when no drift is detected.
+    Returns ``(drift_detected, warning_message)``. The warning is None when no drift is detected.
     """
     if not (scopes.server and targeted and mods_change is not None and mods_change.any):
         return (False, None)
@@ -723,7 +718,7 @@ def _build_member_plans(
     rp_changes: dict,
     logger: Any = None,
 ) -> dict[str, MemberPlan]:
-    """Compute per-member effective action and reasons (§4.6)."""
+    """Compute per-member effective action and reasons (Section 4.6)."""
     if logger is None:
         logger = _log
     policy = config.restart_policy
@@ -817,10 +812,9 @@ def _check_rcon_if_needed(
     dry_run: bool,
     logger: Any,
 ) -> None:
-    """§8.4: every running restart_set member must have a selectable RCON transport.
+    """Section 8.4: every running restart_set member must have a selectable RCON transport.
 
-    Skipped under ``--dry-run`` (§2.6) and when no restart will happen.
-    Raises ``PreflightError`` on any failure.
+    Skipped under ``--dry-run`` (Section 2.6) and when no restart will happen. Raises ``PreflightError`` on any failure.
     """
     if not (needs_lifecycle and restart_set and not dry_run):
         return
@@ -842,11 +836,9 @@ def _compute_pack_required_warning(
     warnings: list[str],
     logger: Any,
 ) -> str | None:
-    """§4.6.9: emit the staleness warning when --client is not in scope.
+    """Section 4.6.9: emit the staleness warning when --client is not in scope.
 
-    Appends to ``warnings`` so the CLI prints it, and returns the text
-    so the live notification can render it. Returns None when no
-    warning applies.
+    Appends to ``warnings`` so the CLI prints it, and returns the text so the live notification can render it. Returns None when no warning applies.
     """
     if not (pack_required and not scopes.client):
         return None
@@ -863,7 +855,7 @@ def _validate_online_template_if_needed(
     container_states: dict[str, ContainerState],
     logger: Any,
 ) -> None:
-    """§5.11 second pass: online template, only when a running restart will fire.
+    """Section 5.11 second pass: online template, only when a running restart will fire.
 
     Raises ``PreflightError`` on any template failure.
     """
@@ -872,7 +864,7 @@ def _validate_online_template_if_needed(
     any_running = any(container_states.get(m) is not None and container_states[m].is_running for m in restart_set)
     if not any_running:
         return
-    logger.debug("preflight: validating online template (§5.11 second pass)")
+    logger.debug("preflight: validating online template (Section 5.11 second pass)")
     online_failures = notifications.validate_online(config.discord, logger)
     if online_failures:
         logger.error(f"preflight: online template validation failed with {len(online_failures)} failure(s)")
@@ -954,18 +946,18 @@ def run_preflight(
 
     Raises PreflightError (a ConfigError, exit 3) if any check fails.
 
-    The sequence mirrors §4.1:
+    The sequence mirrors Section 4.1:
 
-      1. Top-level prerequisites (§2.5, §3.5, §3.19). Bail early on
+      1. Top-level prerequisites (Section 2.5, Section 3.5, Section 3.19). Bail early on
          failure - nothing downstream can be trusted.
-      2. Per-member compose checks and lifecycle inspection (§3.2,
-         §3.6, §3.7, §3.8, §4.12, §3.17).
-      3. Resource-pack source validation (§7.7, §7.8) and Discord
-         template validation (§5.11, first pass).
-      4. Bail if any failures were collected (§4.3).
-      5. Plan assembly (§4.6): effective actions, partition, RCON
-         availability (§8.4), pack-required warning (§4.6.9), online
-         template (§5.11, second pass).
+      2. Per-member compose checks and lifecycle inspection (Section 3.2,
+         Section 3.6, Section 3.7, Section 3.8, Section 4.12, Section 3.17).
+      3. Resource-pack source validation (Section 7.7, Section 7.8) and Discord
+         template validation (Section 5.11, first pass).
+      4. Bail if any failures were collected (Section 4.3).
+      5. Plan assembly (Section 4.6): effective actions, partition, RCON
+         availability (Section 8.4), pack-required warning (Section 4.6.9), online
+         template (Section 5.11, second pass).
 
     ``logger`` is optional; when omitted, the module logger
     ``minecraft.deploy_pack.preflight.runner`` is used.

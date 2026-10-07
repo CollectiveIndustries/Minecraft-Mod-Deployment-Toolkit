@@ -2,9 +2,8 @@
 
 """Unit tests for changelog.py.
 
-The changelog describes the client pack by diffing the current staging
-tree against the most recent previous client ZIP. These tests exercise
-the ZIP-reading comparison, the initial-build case, and the renderer.
+The changelog describes the client pack by diffing the current staging tree against the most recent previous client ZIP. These tests exercise the ZIP-reading
+comparison, the initial-build case, and the renderer.
 """
 
 from __future__ import annotations

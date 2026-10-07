@@ -1,26 +1,26 @@
 # src/minecraft/deploy_pack/hooks.py
 
-"""Docker lifecycle orchestration (Project_Specs.md §4.14, §4.13, §4.7, §4.8, §8.8).
+"""Docker lifecycle orchestration (Project_Specs.md Section 4.14, Section 4.13, Section 4.7, Section 4.8, Section 8.8).
 
-Responsibilities (§9.2):
-  * compute ``warned_and_running`` from the restart set and preflight states (§4.5, §4.14 step 3)
-  * execute the stop phase: re-inspect, stop ``to_stop``, collect outcomes (§4.14 step 6)
-  * on stop failure, run the §8.8 recovery flow
+Responsibilities (Section 9.2):
+  * compute ``warned_and_running`` from the restart set and preflight states (Section 4.5, Section 4.14 step 3)
+  * execute the stop phase: re-inspect, stop ``to_stop``, collect outcomes (Section 4.14 step 6)
+  * on stop failure, run the Section 8.8 recovery flow
   * execute the post phase: start every container this deployment actually
-    stopped, wait for health, collect start/health results (§4.13)
+    stopped, wait for health, collect start/health results (Section 4.13)
   * expose the recovery flow as a standalone function so write-failure
-    (§4.7) and reload-failure (§4.8) paths can invoke the same logic
+    (Section 4.7) and reload-failure (Section 4.8) paths can invoke the same logic
 
 Non-responsibilities:
   * RCON notice dispatch and the restart wait. Those interleave with
-    lifecycle phases but are caller concerns (§4.14 steps 4-5). Hooks
+    lifecycle phases but are caller concerns (Section 4.14 steps 4-5). Hooks
     exposes the sets; the caller drives the notices.
   * Discord notifications. Hooks reports facts; notifications renders.
   * Deciding whether an instance is in ``restart_set``. That is the
     restart-policy adapter's job (scope_server).
   * Preflight-state capture. That happens in preflight.
 
-Daemon-loss policy (§2.4)
+Daemon-loss policy (Section 2.4)
 -------------------------
 
 Preflight lets ``DockerUnavailableError`` propagate (exit 3). Every
@@ -80,7 +80,7 @@ __all__ = [
     "recover_stopped_containers",
 ]
 ReachabilityProbeFn = Callable[[str], bool]
-'Return True if the named container is currently RCON-reachable.\n\nMust not raise. Implementations should treat any exception as "not\nreachable" - the wait loop here is best-effort (§4.7).'
+'Return True if the named container is currently RCON-reachable.\n\nMust not raise. Implementations should treat any exception as "not\nreachable" - the wait loop here is best-effort (Section 4.7).'
 CancelNoticeFn = Callable[[list[str]], None]
 "Send the in-game cancellation notice to each named container.\n\nBest-effort. Must not raise. Recipients are the set of containers that\nshould receive the notice; filtering has already been done by the\ncaller (see :func:`recover_stopped_containers`)."
 
@@ -89,9 +89,8 @@ CancelNoticeFn = Callable[[list[str]], None]
 class RecoveryContext:
     """Callbacks and timings for a recovery flow.
 
-    Grouped so signatures stay readable and so the write-failure (§4.7),
-    reload-failure (§4.8), and stop-failure (§8.8) paths all pass the
-    same bundle.
+    Grouped so signatures stay readable and so the write-failure (Section 4.7), reload-failure (Section 4.8), and stop-failure (Section 8.8) paths all pass the same
+    bundle.
     """
 
     reachability_probe: ReachabilityProbeFn
@@ -103,7 +102,7 @@ class RecoveryContext:
 
 @dataclass
 class RecoveryResult:
-    """Outcome of a recovery flow (§4.7, §4.8, §8.8)."""
+    """Outcome of a recovery flow (Section 4.7, Section 4.8, Section 8.8)."""
 
     started: list[str] = field(default_factory=list)
     start_failed: list[str] = field(default_factory=list)
@@ -119,7 +118,7 @@ class RecoveryResult:
 
 @dataclass
 class PreHookResult:
-    """Outcome of the stop phase (§4.14 step 6) plus §8.8 recovery, if any."""
+    """Outcome of the stop phase (Section 4.14 step 6) plus Section 8.8 recovery, if any."""
 
     stopped: list[str] = field(default_factory=list)
     exited_before_stop: list[str] = field(default_factory=list)
@@ -134,7 +133,7 @@ class PreHookResult:
 
 @dataclass
 class PostHookResult:
-    """Outcome of the start + health phase (§4.13)."""
+    """Outcome of the start + health phase (Section 4.13)."""
 
     started: list[str] = field(default_factory=list)
     start_failed: list[str] = field(default_factory=list)
@@ -154,10 +153,9 @@ class PostHookResult:
 
     @property
     def failure_stage(self) -> str | None:
-        """Return the §5.10 failure stage for this phase, or None.
+        """Return the Section 5.10 failure stage for this phase, or None.
 
-        §4.13: ``post_hook`` takes precedence when both start and health
-        failures occur; the error text notes the health timeouts.
+        Section 4.13: ``post_hook`` takes precedence when both start and health failures occur; the error text notes the health timeouts.
         """
         if self.any_start_failure:
             return "post_hook"
@@ -168,8 +166,7 @@ class PostHookResult:
     def error_summary(self) -> str:
         """Human-readable summary of start and health failures.
 
-        When both occur, start failures are listed first (they dominate
-        the failure stage) and health timeouts follow with a note.
+        When both occur, start failures are listed first (they dominate the failure stage) and health timeouts follow with a note.
         """
         parts: list[str] = []
         if self.start_failed:
@@ -186,11 +183,10 @@ class PostHookResult:
 
 @contextmanager
 def _runtime_errors(context: str):
-    """Convert DockerUnavailableError into DockerRuntimeError (§2.4).
+    """Convert DockerUnavailableError into DockerRuntimeError (Section 2.4).
 
-    Once preflight has passed, any loss of the daemon is a runtime
-    failure (exit 1), not a configuration failure (exit 3). This
-    wrapper encodes that transition at the exact boundary.
+    Once preflight has passed, any loss of the daemon is a runtime failure (exit 1), not a configuration failure (exit 3). This wrapper encodes that
+    transition at the exact boundary.
     """
     try:
         yield
@@ -201,9 +197,8 @@ def _runtime_errors(context: str):
 def _container_name(instance_name: str, container_of: dict[str, str] | None) -> str:
     """Translate an instance name to its container name.
 
-    Deploy-state sets are keyed by instance name; the Docker SDK is
-    keyed by container name. When ``container_of`` is None the two are
-    the same and the name is returned unchanged.
+    Deploy-state sets are keyed by instance name; the Docker SDK is keyed by container name. When ``container_of`` is None the two are the same and
+    the name is returned unchanged.
     """
     if container_of is None:
         return instance_name
@@ -219,15 +214,12 @@ def compute_warned_and_running(
 ) -> list[str]:
     """Return restart_set members running at preflight AND at re-inspection.
 
-    The set is computed once, before notice dispatch (§4.5). Membership
-    describes eligibility, not notice delivery: a member may be in this
-    set and fail to receive its notice.
+    The set is computed once, before notice dispatch (Section 4.5). Membership describes eligibility, not notice delivery: a member may be in this set and
+    fail to receive its notice.
 
-    Preserves ``restart_set`` order so callers relying on partition
-    ordering (lexicographic, §2.9) get the right notice dispatch order.
+    Preserves ``restart_set`` order so callers relying on partition ordering (lexicographic, Section 2.9) get the right notice dispatch order.
 
-    The returned list is keyed by instance name; the SDK is queried with
-    the corresponding container name when ``container_of`` is supplied.
+    The returned list is keyed by instance name; the SDK is queried with the corresponding container name when ``container_of`` is supplied.
     """
     if logger is None:
         logger = _log
@@ -267,9 +259,9 @@ def execute_pre_hook(
     ``warned_and_running`` is the set computed by
     :func:`compute_warned_and_running`. The pre-stop re-inspection
     filters it down to containers still running immediately before the
-    stop call; those are ``to_stop`` (§4.14 step 6).
+    stop call; those are ``to_stop`` (Section 4.14 step 6).
 
-    A stop failure triggers the §8.8 recovery flow inline: every
+    A stop failure triggers the Section 8.8 recovery flow inline: every
     container we actually stopped is restarted, an in-game cancel
     notice is dispatched to running members of ``warned_and_running``,
     and the outcome is returned on ``result.recovery``.
@@ -320,7 +312,7 @@ def execute_pre_hook(
 
     recovery: RecoveryResult | None = None
     if failed:
-        logger.error(f"pre-hook: {len(failed)} stop failure(s); running §8.8 recovery for {stopped}")
+        logger.error(f"pre-hook: {len(failed)} stop failure(s); running Section 8.8 recovery for {stopped}")
         recovery = recover_stopped_containers(
             runtime=runtime,
             stopped_by_deployment=stopped,
@@ -347,13 +339,13 @@ def execute_post_hook(
     """Start every container this deployment actually stopped; then health-check.
 
     ``stopped_by_deployment`` is the ``stopped`` list from
-    :class:`PreHookResult` - real stops only, no no-op stops (§4.5).
+    :class:`PreHookResult` - real stops only, no no-op stops (Section 4.5).
 
-    Start attempts are not halted on first failure (§4.13). Containers
+    Start attempts are not halted on first failure (Section 4.13). Containers
     that start successfully are then health-polled. A ``.State.Health``
-    block missing post-start is treated as a health failure (§8.3), and
+    block missing post-start is treated as a health failure (Section 8.3), and
     a container observed ``unhealthy`` at preflight has its error text
-    prefixed with that fact (§4.12).
+    prefixed with that fact (Section 4.12).
 
     Raise policy: start and health failures are captured in the result;
     a daemon loss is raised as ``DockerRuntimeError``.
@@ -417,7 +409,7 @@ def _probe_reachable(probe: ReachabilityProbeFn, name: str, logger: Any) -> bool
 
 
 def _wait_for_reachability(names: list[str], ctx: RecoveryContext, logger: Any) -> tuple[list[str], list[str]]:
-    """Wait for ``names`` to become RCON-reachable (§4.7).
+    """Wait for ``names`` to become RCON-reachable (Section 4.7).
 
     Parallel: every pending name is probed once per iteration. Bounded
     by ``ctx.cancel_ready_timeout``; a value of 0 disables the wait
@@ -476,7 +468,7 @@ def _select_cancel_recipients(
     logger: Any,
     container_of: dict[str, str] | None = None,
 ) -> list[str]:
-    """warned_and_running members that are currently running (§8.7)."""
+    """warned_and_running members that are currently running (Section 8.7)."""
     result: list[str] = []
     for name in warned_and_running:
         container = _container_name(name, container_of)
@@ -500,20 +492,20 @@ def recover_stopped_containers(
 
     This is the shared recovery flow used by:
 
-      * §8.8 - a stop failure aborted the restart phase. The pre-hook
+      * Section 8.8 - a stop failure aborted the restart phase. The pre-hook
         calls this inline.
-      * §4.7 - a non-server-scope write failed after the stop phase.
+      * Section 4.7 - a non-server-scope write failed after the stop phase.
         The caller invokes this directly.
-      * §4.8 - a reload failed after the stop phase. Same as §4.7.
+      * Section 4.8 - a reload failed after the stop phase. Same as Section 4.7.
 
     Flow:
 
       1. Start every container in ``stopped_by_deployment``. Attempt
          all, do not halt on failure.
       2. Wait for RCON-reachability of the started containers, bounded
-         by ``ctx.cancel_ready_timeout`` (§4.7).
+         by ``ctx.cancel_ready_timeout`` (Section 4.7).
       3. Send the in-game cancel notice to every ``warned_and_running``
-         member that is currently running (§8.7). Best-effort.
+         member that is currently running (Section 8.7). Best-effort.
 
     Returns a :class:`RecoveryResult` describing what came back up. A
     daemon loss raises ``DockerRuntimeError`` (exit 1); the caller
@@ -521,7 +513,7 @@ def recover_stopped_containers(
     """
     if logger is None:
         logger = _log
-    logger.info(f"recovery: starting §4.7/§8.8 flow; stopped_by_deployment={stopped_by_deployment} warned_and_running={warned_and_running}")
+    logger.info(f"recovery: starting Section 4.7/Section 8.8 flow; stopped_by_deployment={stopped_by_deployment} warned_and_running={warned_and_running}")
 
     started: list[str] = []
     start_failed: list[str] = []

@@ -133,7 +133,10 @@ def show_tags(registry, identifier):
 
 
 def show_mod(registry, mod):
-    """Displays all registry entries belonging to a specified mod, showing entry kind, ID, and name. If no registry or mod is provided, defaults to a no-op display."""
+    """Displays all registry entries belonging to a specified mod, showing entry kind, ID, and name.
+
+    If no registry or mod is provided, defaults to a no-op display.
+    """
     mod = mod.lower()
     results = []
     for kind in registry:
@@ -149,7 +152,10 @@ def show_mod(registry, mod):
 
 
 def main():
-    """Parses command-line arguments and dispatches to the appropriate lookup subcommand (item, block, machine, entity, tags, or mod). Handles help and unknown commands with usage output and exit codes."""
+    """Parses command-line arguments and dispatches to the appropriate lookup subcommand (item, block, machine, entity, tags, or mod).
+
+    Handles help and unknown commands with usage output and exit codes.
+    """
     args = sys.argv[1:]
     if not args:
         usage()

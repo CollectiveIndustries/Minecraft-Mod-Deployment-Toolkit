@@ -2,8 +2,7 @@
 
 """Tests for deploy_pack.prompt_ui.
 
-The pure model is tested unconditionally. Textual-specific tests are
-skipped when Textual isn't installed.
+The pure model is tested unconditionally. Textual-specific tests are skipped when Textual isn't installed.
 """
 
 from __future__ import annotations

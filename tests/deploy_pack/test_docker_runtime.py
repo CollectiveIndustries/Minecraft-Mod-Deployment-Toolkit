@@ -1,21 +1,21 @@
 # tests/deploy_pack/test_docker_runtime.py
 
-"""Tests for deploy_pack.docker_runtime, Project_Specs.md §2.4, §4.12, §8.3, §8.4, §8.10.
+"""Tests for deploy_pack.docker_runtime, Project_Specs.md Section 2.4, Section 4.12, Section 8.3, Section 8.4, Section 8.10.
 
 Coverage:
 
-  * §4.12 - container state policy: running / exited / created / stopped /
+  * Section 4.12 - container state policy: running / exited / created / stopped /
             paused / restarting / removing / dead / missing, plus the
             bounded wait on restarting containers
-  * §8.3  - health polling until healthy or timeout; missing
+  * Section 8.3  - health polling until healthy or timeout; missing
             .State.Health on a running container; pre-existing
             unhealthy note
-  * §8.4  - RCON transport selection (Option A via exec, Option B via
+  * Section 8.4  - RCON transport selection (Option A via exec, Option B via
             TCP), RCON_PORT resolution (environment, env_file, default),
             secret loading, multi-mapping ambiguity, remote rcon_host
             rules
-  * §8.10 - stop semantics: real stop, no-op stop, stop failure
-  * §2.4  - daemon unavailable at any operation -> DockerUnavailableError
+  * Section 8.10 - stop semantics: real stop, no-op stop, stop failure
+  * Section 2.4  - daemon unavailable at any operation -> DockerUnavailableError
 
 The Docker SDK is a hard external boundary. A fake client and fake
 container are used in place of a real daemon; everything else uses the
@@ -191,7 +191,7 @@ def _runtime(containers: dict[str, FakeContainer] | None = None, clock: Clock | 
     ],
 )
 def test_inspect_reports_state_faithfully(status: str, health: str | None, running: bool) -> None:
-    """§4.12: inspect reports the status, running flag, and health verbatim."""
+    """Section 4.12: inspect reports the status, running flag, and health verbatim."""
     c = FakeContainer("mc", status=status, health=health)
     runtime, _ = _runtime({"mc": c})
     state = runtime.inspect("mc")
@@ -202,7 +202,7 @@ def test_inspect_reports_state_faithfully(status: str, health: str | None, runni
 
 
 def test_inspect_missing_container_returns_missing_state() -> None:
-    """§8.9: a container that does not exist is reported as missing, not raised."""
+    """Section 8.9: a container that does not exist is reported as missing, not raised."""
     runtime, _ = _runtime({})
     state = runtime.inspect("nope")
     assert not state.exists
@@ -211,7 +211,7 @@ def test_inspect_missing_container_returns_missing_state() -> None:
 
 
 def test_inspect_daemon_unavailable_raises_docker_unavailable() -> None:
-    """§2.4: a daemon connection error is DockerUnavailableError."""
+    """Section 2.4: a daemon connection error is DockerUnavailableError."""
     runtime, client = _runtime({"mc": FakeContainer("mc")})
 
     def boom(name: str) -> None:
@@ -223,14 +223,14 @@ def test_inspect_daemon_unavailable_raises_docker_unavailable() -> None:
 
 
 def test_ping_delegates_to_client() -> None:
-    """§2.4: ping is a thin pass-through to the SDK client's ping."""
+    """Section 2.4: ping is a thin pass-through to the SDK client's ping."""
     runtime, client = _runtime({})
     runtime.ping()
     assert client.ping_calls == 1
 
 
 def test_ping_daemon_unavailable_raises() -> None:
-    """§2.4: a ping failure is DockerUnavailableError."""
+    """Section 2.4: a ping failure is DockerUnavailableError."""
     runtime, client = _runtime({})
     client.ping_raises = docker.errors.DockerException("Cannot connect to the Docker daemon")
     with pytest.raises(DockerUnavailableError):
@@ -238,7 +238,7 @@ def test_ping_daemon_unavailable_raises() -> None:
 
 
 def test_wait_for_restarting_settle_returns_when_settled() -> None:
-    """§4.12: the wait exits as soon as no container is still restarting."""
+    """Section 4.12: the wait exits as soon as no container is still restarting."""
     c = FakeContainer("mc", status="restarting", health=None)
     count = [0]
 
@@ -257,7 +257,7 @@ def test_wait_for_restarting_settle_returns_when_settled() -> None:
 
 
 def test_wait_for_restarting_times_out() -> None:
-    """§4.12: the wait ends when the total timeout elapses, even if still restarting."""
+    """Section 4.12: the wait ends when the total timeout elapses, even if still restarting."""
     c = FakeContainer("mc", status="restarting", health=None)
     clock = FakeClock()
     runtime, _ = _runtime({"mc": c}, clock=clock)
@@ -267,7 +267,7 @@ def test_wait_for_restarting_times_out() -> None:
 
 
 def test_wait_for_restarting_zero_disables_the_wait() -> None:
-    """§4.12: total_timeout=0 captures one snapshot and returns without sleeping."""
+    """Section 4.12: total_timeout=0 captures one snapshot and returns without sleeping."""
     c = FakeContainer("mc", status="restarting", health=None)
     clock = FakeClock()
     runtime, _ = _runtime({"mc": c}, clock=clock)
@@ -277,7 +277,7 @@ def test_wait_for_restarting_zero_disables_the_wait() -> None:
 
 
 def test_wait_for_restarting_polls_containers_in_parallel() -> None:
-    """§4.12: the bounded wait inspects every name once per iteration."""
+    """Section 4.12: the bounded wait inspects every name once per iteration."""
     a = FakeContainer("a", status="restarting", health=None)
     b = FakeContainer("b", status="restarting", health=None)
     for c in (a, b):
@@ -304,7 +304,7 @@ def test_wait_for_restarting_polls_containers_in_parallel() -> None:
 
 
 def test_wait_healthy_returns_immediately_when_already_healthy() -> None:
-    """§8.3: a healthy container returns on the first poll."""
+    """Section 8.3: a healthy container returns on the first poll."""
     c = FakeContainer("mc", status="running", health="healthy")
     runtime, _ = _runtime({"mc": c})
     r = runtime.wait_healthy("mc", 10, 1)
@@ -313,7 +313,7 @@ def test_wait_healthy_returns_immediately_when_already_healthy() -> None:
 
 
 def test_wait_healthy_transitions_to_healthy() -> None:
-    """§8.3: the poll loop returns as soon as the status flips to healthy."""
+    """Section 8.3: the poll loop returns as soon as the status flips to healthy."""
     c = FakeContainer("mc", status="running", health="starting")
     count = [0]
 
@@ -329,7 +329,7 @@ def test_wait_healthy_transitions_to_healthy() -> None:
 
 
 def test_wait_healthy_times_out(tmp_path: Path) -> None:
-    """§8.3: a health poll that never succeeds returns a timeout error."""
+    """Section 8.3: a health poll that never succeeds returns a timeout error."""
     c = FakeContainer("mc", status="running", health="unhealthy")
     runtime, _ = _runtime({"mc": c})
     r = runtime.wait_healthy("mc", 5, 1)
@@ -339,7 +339,7 @@ def test_wait_healthy_times_out(tmp_path: Path) -> None:
 
 
 def test_wait_healthy_preexisting_unhealthy_is_prefixed() -> None:
-    """§8.3: the error message notes that the container was unhealthy before the deployment."""
+    """Section 8.3: the error message notes that the container was unhealthy before the deployment."""
     c = FakeContainer("mc", status="running", health="unhealthy")
     runtime, _ = _runtime({"mc": c})
     r = runtime.wait_healthy("mc", 0, 1, preexisting_unhealthy=True)
@@ -349,7 +349,7 @@ def test_wait_healthy_preexisting_unhealthy_is_prefixed() -> None:
 
 
 def test_wait_healthy_running_without_health_block_is_failure() -> None:
-    """§8.3: a running container with no .State.Health is a distinct failure."""
+    """Section 8.3: a running container with no .State.Health is a distinct failure."""
     c = FakeContainer("mc", status="running", health=None)
     runtime, _ = _runtime({"mc": c})
     r = runtime.wait_healthy("mc", 10, 1)
@@ -359,7 +359,7 @@ def test_wait_healthy_running_without_health_block_is_failure() -> None:
 
 
 def test_wait_healthy_container_not_running_is_failure() -> None:
-    """§8.3: a container that exits mid-wait returns a not-running error."""
+    """Section 8.3: a container that exits mid-wait returns a not-running error."""
     c = FakeContainer("mc", status="exited", health=None)
     runtime, _ = _runtime({"mc": c})
     r = runtime.wait_healthy("mc", 10, 1)
@@ -369,7 +369,7 @@ def test_wait_healthy_container_not_running_is_failure() -> None:
 
 
 def test_start_ok() -> None:
-    """§4.13: a successful start returns success and flips the running flag."""
+    """Section 4.13: a successful start returns success and flips the running flag."""
     c = FakeContainer("mc", status="exited", health=None)
     runtime, _ = _runtime({"mc": c})
     r = runtime.start("mc")
@@ -379,7 +379,7 @@ def test_start_ok() -> None:
 
 
 def test_start_failure_is_reported_not_raised() -> None:
-    """§4.13: start failures are collected, not raised."""
+    """Section 4.13: start failures are collected, not raised."""
     c = FakeContainer("mc", status="exited", health=None)
     c.start_raises = docker.errors.DockerException("boom")
     runtime, _ = _runtime({"mc": c})
@@ -389,7 +389,7 @@ def test_start_failure_is_reported_not_raised() -> None:
 
 
 def test_start_missing_container_is_reported() -> None:
-    """§8.9: starting a missing container returns an error result, not a raise."""
+    """Section 8.9: starting a missing container returns an error result, not a raise."""
     runtime, _ = _runtime({})
     r = runtime.start("mc")
     assert not r.success
@@ -398,7 +398,7 @@ def test_start_missing_container_is_reported() -> None:
 
 
 def test_stop_real_stop_returns_stopped() -> None:
-    """§8.10: a real stop returns STOPPED and passes the timeout through."""
+    """Section 8.10: a real stop returns STOPPED and passes the timeout through."""
     c = FakeContainer("mc", status="running")
     runtime, _ = _runtime({"mc": c})
     r = runtime.stop("mc", 30)
@@ -407,7 +407,7 @@ def test_stop_real_stop_returns_stopped() -> None:
 
 
 def test_stop_timeout_is_forwarded() -> None:
-    """§8.10: the timeout argument is forwarded to the SDK's stop call."""
+    """Section 8.10: the timeout argument is forwarded to the SDK's stop call."""
     c = FakeContainer("mc", status="running")
     runtime, _ = _runtime({"mc": c})
     runtime.stop("mc", 42)
@@ -415,7 +415,7 @@ def test_stop_timeout_is_forwarded() -> None:
 
 
 def test_stop_already_exited_is_noop() -> None:
-    """§8.10: a container that already exited is not stopped; the SDK is not called."""
+    """Section 8.10: a container that already exited is not stopped; the SDK is not called."""
     c = FakeContainer("mc", status="exited", health=None)
     runtime, _ = _runtime({"mc": c})
     r = runtime.stop("mc", 10)
@@ -424,7 +424,7 @@ def test_stop_already_exited_is_noop() -> None:
 
 
 def test_stop_pre_stop_race_not_running_error() -> None:
-    """§8.10: a stop that races an external exit is treated as a no-op."""
+    """Section 8.10: a stop that races an external exit is treated as a no-op."""
     c = FakeContainer("mc", status="running")
     c.stop_raises = docker.errors.DockerException("container is not running")
     runtime, _ = _runtime({"mc": c})
@@ -432,7 +432,7 @@ def test_stop_pre_stop_race_not_running_error() -> None:
 
 
 def test_stop_pre_stop_race_container_not_running_class() -> None:
-    """§8.10: the ContainerNotRunning subclass is recognized as a pre-stop race."""
+    """Section 8.10: the ContainerNotRunning subclass is recognized as a pre-stop race."""
 
     class ContainerNotRunning(docker.errors.DockerException):
         pass
@@ -444,7 +444,7 @@ def test_stop_pre_stop_race_container_not_running_class() -> None:
 
 
 def test_stop_returning_304_is_treated_as_noop() -> None:
-    """§8.10: the SDK's 304 already-stopped response is a no-op stop."""
+    """Section 8.10: the SDK's 304 already-stopped response is a no-op stop."""
     c = FakeContainer("mc", status="running")
     c.stop_return = 304
     runtime, _ = _runtime({"mc": c})
@@ -452,7 +452,7 @@ def test_stop_returning_304_is_treated_as_noop() -> None:
 
 
 def test_stop_failure_is_reported() -> None:
-    """§8.10: a genuine stop failure is reported as FAILED."""
+    """Section 8.10: a genuine stop failure is reported as FAILED."""
     c = FakeContainer("mc", status="running")
     c.stop_raises = docker.errors.DockerException("permission denied")
     runtime, _ = _runtime({"mc": c})
@@ -462,7 +462,7 @@ def test_stop_failure_is_reported() -> None:
 
 
 def test_stop_daemon_unavailable_raises() -> None:
-    """§2.4: a daemon-loss stop raises DockerUnavailableError."""
+    """Section 2.4: a daemon-loss stop raises DockerUnavailableError."""
     c = FakeContainer("mc", status="running")
     c.stop_raises = docker.errors.DockerException("Cannot connect to the Docker daemon")
     runtime, _ = _runtime({"mc": c})
@@ -471,7 +471,7 @@ def test_stop_daemon_unavailable_raises() -> None:
 
 
 def test_stop_missing_container_is_failed() -> None:
-    """§8.9: stopping a missing container returns FAILED with an error."""
+    """Section 8.9: stopping a missing container returns FAILED with an error."""
     runtime, _ = _runtime({})
     r = runtime.stop("mc", 10)
     assert r.outcome == StopOutcome.FAILED
@@ -517,7 +517,7 @@ def test_exec_run_missing_container_raises_docker_unavailable() -> None:
 
 
 def test_list_mounts_returns_binds_only() -> None:
-    """§3.17: only bind mounts are surfaced."""
+    """Section 3.17: only bind mounts are surfaced."""
     c = FakeContainer(
         "mc",
         mounts=[
@@ -532,14 +532,14 @@ def test_list_mounts_returns_binds_only() -> None:
 
 
 def test_published_ports_skips_unpublished_mappings() -> None:
-    """§8.4: only ports with at least one published mapping appear."""
+    """Section 8.4: only ports with at least one published mapping appear."""
     c = FakeContainer("mc", ports={"25575/tcp": [{"HostIp": "0.0.0.0", "HostPort": "25575"}], "25565/tcp": None})
     runtime, _ = _runtime({"mc": c})
     assert runtime.published_ports("mc") == {"25575/tcp": [("0.0.0.0", 25575)]}
 
 
 def test_check_mount_drift_no_drift(tmp_path: Path) -> None:
-    """§3.17: matching host sources produce no error."""
+    """Section 3.17: matching host sources produce no error."""
     data = tmp_path / "data"
     data.mkdir()
     c = FakeContainer("mc", mounts=[{"Type": "bind", "Source": str(data), "Destination": "/data"}])
@@ -548,7 +548,7 @@ def test_check_mount_drift_no_drift(tmp_path: Path) -> None:
 
 
 def test_check_mount_drift_missing_mount_is_error() -> None:
-    """§3.17: a compose-declared mount missing from the running container is exit 3."""
+    """Section 3.17: a compose-declared mount missing from the running container is exit 3."""
     c = FakeContainer("mc", mounts=[])
     runtime, _ = _runtime({"mc": c})
     with pytest.raises(ConfigError) as ei:
@@ -557,7 +557,7 @@ def test_check_mount_drift_missing_mount_is_error() -> None:
 
 
 def test_check_mount_drift_mismatch_is_error(tmp_path: Path) -> None:
-    """§3.17: differing host sources for the same target is exit 3."""
+    """Section 3.17: differing host sources for the same target is exit 3."""
     a = tmp_path / "a"
     a.mkdir()
     b = tmp_path / "b"
@@ -570,7 +570,7 @@ def test_check_mount_drift_mismatch_is_error(tmp_path: Path) -> None:
 
 
 def test_check_mount_drift_realpath_failure_is_error(tmp_path: Path) -> None:
-    """§3.17: a broken symlink is exit 3."""
+    """Section 3.17: a broken symlink is exit 3."""
     data = tmp_path / "data"
     data.mkdir()
     broken = tmp_path / "broken"
@@ -606,24 +606,24 @@ def _empty_compose() -> ComposeFile:
 
 
 def test_resolve_rcon_port_default() -> None:
-    """§8.4: no override anywhere yields 25575."""
+    """Section 8.4: no override anywhere yields 25575."""
     assert resolve_rcon_port(_service(), _empty_compose()) == 25575
 
 
 def test_resolve_rcon_port_from_environment() -> None:
-    """§8.4: services.<svc>.environment.RCON_PORT wins."""
+    """Section 8.4: services.<svc>.environment.RCON_PORT wins."""
     assert resolve_rcon_port(_service(env={"RCON_PORT": "30000"}), _empty_compose()) == 30000
 
 
 def test_resolve_rcon_port_from_env_file(tmp_path: Path) -> None:
-    """§8.4: RCON_PORT is read from env_file entries."""
+    """Section 8.4: RCON_PORT is read from env_file entries."""
     f = tmp_path / "svc.env"
     f.write_text("# comment\nRCON_PORT=40000\n", encoding="utf-8")
     assert resolve_rcon_port(_service(env_files=[f]), _empty_compose()) == 40000
 
 
 def test_resolve_rcon_port_env_file_last_wins(tmp_path: Path) -> None:
-    """§8.4: with multiple env_file entries, the last value wins."""
+    """Section 8.4: with multiple env_file entries, the last value wins."""
     a = tmp_path / "a.env"
     a.write_text("RCON_PORT=1\n", encoding="utf-8")
     b = tmp_path / "b.env"
@@ -632,21 +632,21 @@ def test_resolve_rcon_port_env_file_last_wins(tmp_path: Path) -> None:
 
 
 def test_resolve_rcon_port_environment_beats_env_file(tmp_path: Path) -> None:
-    """§8.4: environment takes priority over env_file."""
+    """Section 8.4: environment takes priority over env_file."""
     a = tmp_path / "a.env"
     a.write_text("RCON_PORT=99\n", encoding="utf-8")
     assert resolve_rcon_port(_service(env={"RCON_PORT": "5"}, env_files=[a]), _empty_compose()) == 5
 
 
 def test_resolve_rcon_port_missing_env_file_is_error_when_needed(tmp_path: Path) -> None:
-    """§8.4: a missing env_file needed to resolve RCON_PORT is exit 3."""
+    """Section 8.4: a missing env_file needed to resolve RCON_PORT is exit 3."""
     with pytest.raises(ConfigError) as ei:
         resolve_rcon_port(_service(env_files=[tmp_path / "missing.env"]), _empty_compose())
     assert "missing" in str(ei.value)
 
 
 def test_resolve_rcon_port_missing_env_file_is_ignored_when_not_needed(tmp_path: Path) -> None:
-    """§8.4: a missing env_file after RCON_PORT has been found is ignored."""
+    """Section 8.4: a missing env_file after RCON_PORT has been found is ignored."""
     a = tmp_path / "a.env"
     a.write_text("RCON_PORT=7\n", encoding="utf-8")
     svc = _service(env_files=[a, tmp_path / "missing.env"])
@@ -654,7 +654,7 @@ def test_resolve_rcon_port_missing_env_file_is_ignored_when_not_needed(tmp_path:
 
 
 def test_resolve_rcon_port_bad_value_is_error() -> None:
-    """§8.4: a non-integer RCON_PORT is exit 3."""
+    """Section 8.4: a non-integer RCON_PORT is exit 3."""
     with pytest.raises(ConfigError):
         resolve_rcon_port(_service(env={"RCON_PORT": "notanint"}), _empty_compose())
 
@@ -667,19 +667,19 @@ def _compose_with_secret(tmp_path: Path, content: str = "hunter2\n") -> ComposeF
 
 
 def test_load_rcon_password_ok(tmp_path: Path) -> None:
-    """§8.4: the password is read from secrets.rcon_password.file."""
+    """Section 8.4: the password is read from secrets.rcon_password.file."""
     compose = _compose_with_secret(tmp_path, "hunter2\n")
     assert load_rcon_password(compose, _service(secrets=["rcon_password"])) == "hunter2"
 
 
 def test_load_rcon_password_strips_trailing_whitespace(tmp_path: Path) -> None:
-    """§8.4: trailing whitespace is stripped."""
+    """Section 8.4: trailing whitespace is stripped."""
     compose = _compose_with_secret(tmp_path, "hunter2  \n\t\n")
     assert load_rcon_password(compose, _service(secrets=["rcon_password"])) == "hunter2"
 
 
 def test_load_rcon_password_missing_declaration_is_error(tmp_path: Path) -> None:
-    """§8.4: a service that does not declare rcon_password is exit 3."""
+    """Section 8.4: a service that does not declare rcon_password is exit 3."""
     compose = _compose_with_secret(tmp_path)
     with pytest.raises(ConfigError) as ei:
         load_rcon_password(compose, _service(secrets=[]))
@@ -687,14 +687,14 @@ def test_load_rcon_password_missing_declaration_is_error(tmp_path: Path) -> None
 
 
 def test_load_rcon_password_missing_secret_file_entry_is_error() -> None:
-    """§8.4: a declared secret with no secrets.<name>.file entry is exit 3."""
+    """Section 8.4: a declared secret with no secrets.<name>.file entry is exit 3."""
     compose = ComposeFile(Path("/c.yml"), Path("/"), {}, {})
     with pytest.raises(ConfigError):
         load_rcon_password(compose, _service(secrets=["rcon_password"]))
 
 
 def test_load_rcon_password_missing_file_on_disk_is_error(tmp_path: Path) -> None:
-    """§8.4: a secrets file that does not exist is exit 3."""
+    """Section 8.4: a secrets file that does not exist is exit 3."""
     compose = ComposeFile(Path("/c.yml"), Path("/"), {}, {"rcon_password": tmp_path / "nope.txt"})
     with pytest.raises(ConfigError):
         load_rcon_password(compose, _service(secrets=["rcon_password"]))
@@ -720,7 +720,7 @@ def _compose_and_service(tmp_path: Path, *, rcon_port: int = 25575, secrets_pres
 
 
 def test_select_transport_option_b_same_host(tmp_path: Path) -> None:
-    """§8.4: exactly one published mapping on the same host -> Option B to 127.0.0.1."""
+    """Section 8.4: exactly one published mapping on the same host -> Option B to 127.0.0.1."""
     c = FakeContainer("mc-survival", ports={"25575/tcp": [{"HostIp": "0.0.0.0", "HostPort": "25575"}]})
     runtime, _ = _runtime({"mc-survival": c})
     compose, svc = _compose_and_service(tmp_path)
@@ -731,7 +731,7 @@ def test_select_transport_option_b_same_host(tmp_path: Path) -> None:
 
 
 def test_select_transport_option_a_when_no_published_port(tmp_path: Path) -> None:
-    """§8.4: zero published mappings -> Option A via exec."""
+    """Section 8.4: zero published mappings -> Option A via exec."""
     c = FakeContainer("mc-survival", ports={})
     runtime, _ = _runtime({"mc-survival": c})
     compose, svc = _compose_and_service(tmp_path)
@@ -739,7 +739,7 @@ def test_select_transport_option_a_when_no_published_port(tmp_path: Path) -> Non
 
 
 def test_select_transport_multiple_mappings_is_error(tmp_path: Path) -> None:
-    """§8.4: multiple published mappings is exit 3."""
+    """Section 8.4: multiple published mappings is exit 3."""
     c = FakeContainer("mc-survival", ports={"25575/tcp": [{"HostIp": "0.0.0.0", "HostPort": "25575"}, {"HostIp": "::", "HostPort": "25575"}]})
     runtime, _ = _runtime({"mc-survival": c})
     compose, svc = _compose_and_service(tmp_path)
@@ -748,7 +748,7 @@ def test_select_transport_multiple_mappings_is_error(tmp_path: Path) -> None:
 
 
 def test_select_transport_remote_host_requires_published_port(tmp_path: Path) -> None:
-    """§8.4: rcon_host with no published mapping is exit 3."""
+    """Section 8.4: rcon_host with no published mapping is exit 3."""
     c = FakeContainer("mc-survival", ports={})
     runtime, _ = _runtime({"mc-survival": c})
     compose, svc = _compose_and_service(tmp_path)
@@ -758,7 +758,7 @@ def test_select_transport_remote_host_requires_published_port(tmp_path: Path) ->
 
 
 def test_select_transport_remote_host_multiple_mappings_is_error(tmp_path: Path) -> None:
-    """§8.4: rcon_host with multiple published mappings is exit 3."""
+    """Section 8.4: rcon_host with multiple published mappings is exit 3."""
     c = FakeContainer("mc-survival", ports={"25575/tcp": [{"HostIp": "0.0.0.0", "HostPort": "25575"}, {"HostIp": "::", "HostPort": "25575"}]})
     runtime, _ = _runtime({"mc-survival": c})
     compose, svc = _compose_and_service(tmp_path)
@@ -767,7 +767,7 @@ def test_select_transport_remote_host_multiple_mappings_is_error(tmp_path: Path)
 
 
 def test_select_transport_remote_host_ok(tmp_path: Path) -> None:
-    """§8.4: rcon_host with exactly one published mapping -> Option B to the remote host."""
+    """Section 8.4: rcon_host with exactly one published mapping -> Option B to the remote host."""
     c = FakeContainer("mc-survival", ports={"25575/tcp": [{"HostIp": "0.0.0.0", "HostPort": "25575"}]})
     runtime, _ = _runtime({"mc-survival": c})
     compose, svc = _compose_and_service(tmp_path)
@@ -778,7 +778,7 @@ def test_select_transport_remote_host_ok(tmp_path: Path) -> None:
 
 
 def test_select_transport_option_b_missing_secret_is_error(tmp_path: Path) -> None:
-    """§8.4: Option B requires the rcon_password secret."""
+    """Section 8.4: Option B requires the rcon_password secret."""
     c = FakeContainer("mc-survival", ports={"25575/tcp": [{"HostIp": "0.0.0.0", "HostPort": "25575"}]})
     runtime, _ = _runtime({"mc-survival": c})
     compose, svc = _compose_and_service(tmp_path, secrets_present=False)
@@ -787,7 +787,7 @@ def test_select_transport_option_b_missing_secret_is_error(tmp_path: Path) -> No
 
 
 def test_exec_transport_list_command() -> None:
-    """§8.4 Option A: 'list' becomes rcon-cli list."""
+    """Section 8.4 Option A: 'list' becomes rcon-cli list."""
     c = FakeContainer("mc")
     c.exec_results.append(FakeExecResult(0, b""))
     runtime, _ = _runtime({"mc": c})
@@ -797,7 +797,7 @@ def test_exec_transport_list_command() -> None:
 
 
 def test_exec_transport_say_with_spaces() -> None:
-    """§8.4 Option A: the message after 'say' is passed as one argument."""
+    """Section 8.4 Option A: the message after 'say' is passed as one argument."""
     c = FakeContainer("mc")
     c.exec_results.append(FakeExecResult(0, b""))
     runtime, _ = _runtime({"mc": c})
@@ -807,7 +807,7 @@ def test_exec_transport_say_with_spaces() -> None:
 
 
 def test_exec_transport_failure_exit_code_is_reported() -> None:
-    """§8.4 Option A: a non-zero exit code reports failure."""
+    """Section 8.4 Option A: a non-zero exit code reports failure."""
     c = FakeContainer("mc")
     c.exec_results.append(FakeExecResult(127, b"not found"))
     runtime, _ = _runtime({"mc": c})
@@ -817,7 +817,7 @@ def test_exec_transport_failure_exit_code_is_reported() -> None:
 
 
 def test_exec_transport_missing_container_raises() -> None:
-    """§8.4 Option A: a missing container is DockerUnavailableError."""
+    """Section 8.4 Option A: a missing container is DockerUnavailableError."""
     runtime, _ = _runtime({})
     with pytest.raises(DockerUnavailableError):
         ExecRconTransport(runtime, "mc").execute("list")
@@ -864,7 +864,7 @@ class FakeSocket:
 
 
 def test_tcp_transport_round_trip() -> None:
-    """§8.4 Option B: login then command round-trips through one connection."""
+    """Section 8.4 Option B: login then command round-trips through one connection."""
     sock = FakeSocket([_encode(1, 2, ""), _encode(2, 0, "There are 0 of a max of 20 players online")])
     t = TcpRconTransport(host="127.0.0.1", port=25575, password="hunter2", sock_factory=lambda h, p, to: sock)
     ok, out = t.execute("list")
@@ -875,7 +875,7 @@ def test_tcp_transport_round_trip() -> None:
 
 
 def test_tcp_transport_auth_failure() -> None:
-    """§8.4 Option B: an authentication rejection reports login failure."""
+    """Section 8.4 Option B: an authentication rejection reports login failure."""
     sock = FakeSocket([_encode(-1, 2, "")])
     t = TcpRconTransport(host="127.0.0.1", port=25575, password="wrong", sock_factory=lambda h, p, to: sock)
     ok, out = t.execute("list")
@@ -884,7 +884,7 @@ def test_tcp_transport_auth_failure() -> None:
 
 
 def test_tcp_transport_connect_failure() -> None:
-    """§8.4 Option B: a connect failure reports, does not raise."""
+    """Section 8.4 Option B: a connect failure reports, does not raise."""
 
     def factory(h: str, p: int, to: float) -> Any:
         raise OSError("connection refused")
@@ -896,7 +896,7 @@ def test_tcp_transport_connect_failure() -> None:
 
 
 def test_tcp_transport_packet_framing() -> None:
-    """§8.4 Option B: auth and command packets match the RCON framing."""
+    """Section 8.4 Option B: auth and command packets match the RCON framing."""
     sock = FakeSocket([_encode(1, 2, ""), _encode(2, 0, "ok")])
     t = TcpRconTransport(host="127.0.0.1", port=25575, password="pw", sock_factory=lambda h, p, to: sock)
     t.execute("list")

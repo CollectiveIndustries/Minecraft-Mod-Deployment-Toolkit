@@ -144,8 +144,7 @@ def parse_blockstate_path(path: str) -> tuple[str, str] | None:
 def parse_resource_id(path: str, expected_folder: str) -> tuple[str, str] | None:
     """Parse ``assets/<ns>/<folder>/<name>.json`` or ``data/<ns>/<folder>/<name>.json``.
 
-    Returns (namespace, name) or None if the path does not match.
-    Name may contain slashes for nested folders.
+    Returns (namespace, name) or None if the path does not match. Name may contain slashes for nested folders.
     """
     parts = path.split("/")
     if len(parts) < 4:
@@ -227,8 +226,7 @@ def parse_tag_path(path: str, tag_kind: str) -> tuple[str, str] | None:
 def parse_tag_entries(values) -> tuple[set[str], set[str]]:
     """Return (direct_block_ids, tag_references).
 
-    Tag references come back without the leading ``#``. Handles both
-    the 1.20.x plain-string format and the newer object-with-id format.
+    Tag references come back without the leading ``#``. Handles both the 1.20.x plain-string format and the newer object-with-id format.
     """
     blocks: set[str] = set()
     tags: set[str] = set()
@@ -283,11 +281,9 @@ def _condition_requires_silk_touch(condition) -> bool:
 def _walk_loot_entries(entry, inherited_silk: bool, out_normal: set[str], out_silk: set[str]) -> None:
     """Recurse a loot-table entry tree, bucketing items by silk-touch.
 
-    ``inherited_silk`` is the silk-touch state carried down from
-    ancestors. Each entry may add its own silk-touch requirement via
-    its ``conditions`` list; that requirement then propagates to
-    children. ``minecraft:item`` and ``minecraft:tag`` entries emit
-    their identifier into the appropriate bucket.
+    ``inherited_silk`` is the silk-touch state carried down from ancestors. Each entry may add its own silk-touch requirement via its ``conditions``
+    list; that requirement then propagates to children. ``minecraft:item`` and ``minecraft:tag`` entries emit their identifier into the appropriate
+    bucket.
     """
     if not isinstance(entry, dict):
         return
@@ -321,9 +317,8 @@ def _walk_loot_entries(entry, inherited_silk: bool, out_normal: set[str], out_si
 def extract_drops_from_loot_table(table) -> tuple[set[str], set[str]]:
     """Return (normal_drops, silk_touch_drops) from a loot table.
 
-    Every item and tag reference in every pool is walked. Entries nested
-    under a silk-touch condition go to the silk-touch set. Everything
-    else goes to the normal set. Tag references are prefixed with ``#``.
+    Every item and tag reference in every pool is walked. Entries nested under a silk-touch condition go to the silk-touch set. Everything else goes
+    to the normal set. Tag references are prefixed with ``#``.
     """
     normal: set[str] = set()
     silk: set[str] = set()
@@ -385,9 +380,8 @@ def name_looks_like_ore(name: str) -> bool:
 def tag_is_ore_tag(tag_name: str) -> bool:
     """Return True if the tag is a material ore tag.
 
-    Accepts either fully qualified (``forge:ores/aluminum``) or
-    path-only (``ores/aluminum``) forms. The path must be exactly
-    ``ores`` or begin with ``ores/``.
+    Accepts either fully qualified (``forge:ores/aluminum``) or path-only (``ores/aluminum``) forms. The path must be exactly ``ores`` or begin with
+    ``ores/``.
     """
     path = _tag_path(tag_name)
     if path == ORE_TAG_PATH:
@@ -398,9 +392,8 @@ def tag_is_ore_tag(tag_name: str) -> bool:
 def extract_material_from_tag(tag_name: str) -> str | None:
     """Return the material segment of an ore tag, if any.
 
-    Splits on the first ``/`` after ``ores`` so hierarchical tags like
-    ``ores/lead/deepslate`` yield ``lead``. Rejects segments that are
-    stone-type or dimension qualifiers.
+    Splits on the first ``/`` after ``ores`` so hierarchical tags like ``ores/lead/deepslate`` yield ``lead``. Rejects segments that are stone-type
+    or dimension qualifiers.
     """
     path = _tag_path(tag_name)
     prefix = ORE_TAG_PATH + "/"
@@ -416,11 +409,8 @@ def extract_material_from_tag(tag_name: str) -> str | None:
 def extract_material_from_name(name: str) -> str | None:
     """Best-effort material extraction from a block name.
 
-    Handles ``<material>_ore``, ``ore_<material>``, and
-    ``<stone>_ore_<material>`` (via leading prefix strip). Dimension
-    and stone prefixes are stripped before the ore pattern is matched,
-    so ``deepslate_ore_aluminum`` reduces to ``ore_aluminum`` and then
-    to ``aluminum``.
+    Handles ``<material>_ore``, ``ore_<material>``, and ``<stone>_ore_<material>`` (via leading prefix strip). Dimension and stone prefixes are
+    stripped before the ore pattern is matched, so ``deepslate_ore_aluminum`` reduces to ``ore_aluminum`` and then to ``aluminum``.
     """
     base = name
     for prefix in DIMENSION_PREFIXES:
@@ -447,12 +437,9 @@ def extract_material_from_name(name: str) -> str | None:
 class AuditResults:
     """Accumulated audit state.
 
-    Intermediate maps (``block_to_tags``, ``tag_to_blocks``,
-    ``tag_to_tag_refs``, ``worldgen_by_block``) are global across all
-    jars, because Forge tags compose across the union of all loaded
-    mods. ``loot_table_index`` maps a block id to the (jar, member)
-    pair that owns its loot table so we can read it lazily in the
-    finalize pass without re-scanning every jar.
+    Intermediate maps (``block_to_tags``, ``tag_to_blocks``, ``tag_to_tag_refs``, ``worldgen_by_block``) are global across all jars, because Forge
+    tags compose across the union of all loaded mods. ``loot_table_index`` maps a block id to the (jar, member) pair that owns its loot table so we
+    can read it lazily in the finalize pass without re-scanning every jar.
     """
 
     ores: dict[str, OreRecord] = field(default_factory=dict)
@@ -530,8 +517,7 @@ def collect_jar(jar_path: Path, results: AuditResults, quiet: bool) -> None:
 def _resolve_ore_tags(results: AuditResults) -> dict[str, set[str]]:
     """Return {ore_tag: resolved_block_ids} over the global tag union.
 
-    Walks every tag whose path is an ore tag, transitively following
-    tag references. This is where cross-jar composition is applied.
+    Walks every tag whose path is an ore tag, transitively following tag references. This is where cross-jar composition is applied.
     """
     resolved: dict[str, set[str]] = {}
     all_tags = set(results.tag_to_blocks.keys()) | set(results.tag_to_tag_refs.keys())
@@ -556,10 +542,8 @@ def _resolve_ore_tags(results: AuditResults) -> dict[str, set[str]]:
 def _select_candidates(results: AuditResults) -> set[str]:
     """Return block ids that qualify as ore candidates.
 
-    A candidate is a block whose short name matches the ore naming
-    pattern, or a block that is a member of an ore tag (post
-    resolution). Worldgen and loot-table signals enrich existing
-    candidates but do not create new ones.
+    A candidate is a block whose short name matches the ore naming pattern, or a block that is a member of an ore tag (post resolution). Worldgen
+    and loot-table signals enrich existing candidates but do not create new ones.
     """
     candidates: set[str] = set()
     for block_id in results.block_ids:
@@ -577,9 +561,8 @@ def _select_candidates(results: AuditResults) -> set[str]:
 def finalize_audit(results: AuditResults) -> None:
     """Resolve tags, select candidates, and read loot tables.
 
-    Runs after all jars have been collected. Resolves ore tags over
-    the global union, picks the candidate set, and reads loot tables
-    for candidates in one batch per source jar.
+    Runs after all jars have been collected. Resolves ore tags over the global union, picks the candidate set, and reads loot tables for candidates
+    in one batch per source jar.
     """
     ore_tags = _resolve_ore_tags(results)
     for tag, blocks in ore_tags.items():

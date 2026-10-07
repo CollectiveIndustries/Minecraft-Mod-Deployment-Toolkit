@@ -1,20 +1,20 @@
 # tests/deploy_pack/test_hooks.py
 
-"""Tests for deploy_pack.hooks, Project_Specs.md §4.5, §4.7, §4.8, §4.13, §4.14, §8.7, §8.8.
+"""Tests for deploy_pack.hooks, Project_Specs.md Section 4.5, Section 4.7, Section 4.8, Section 4.13, Section 4.14, Section 8.7, Section 8.8.
 
 Coverage, in spec-section order:
 
-  * §4.5 / §4.14 step 3 - compute_warned_and_running: the two-moment test
-  * §4.14 step 6       - execute_pre_hook: the pre-stop re-inspection,
+  * Section 4.5 / Section 4.14 step 3 - compute_warned_and_running: the two-moment test
+  * Section 4.14 step 6       - execute_pre_hook: the pre-stop re-inspection,
                          real stop vs. no-op stop vs. stop failure
-  * §8.8               - pre-hook stop failure triggers the recovery flow
-  * §4.13              - execute_post_hook: start every container, then
+  * Section 8.8               - pre-hook stop failure triggers the recovery flow
+  * Section 4.13              - execute_post_hook: start every container, then
                          health-check; failure_stage selection
-  * §4.7 / §4.8        - recover_stopped_containers: start, wait for
+  * Section 4.7 / Section 4.8        - recover_stopped_containers: start, wait for
                          RCON-reachability, send the cancel notice
-  * §8.7               - cancel-notice recipients are currently-running
+  * Section 8.7               - cancel-notice recipients are currently-running
                          warned-and-running members
-  * §2.4               - DockerUnavailableError raised inside a hook is
+  * Section 2.4               - DockerUnavailableError raised inside a hook is
                          re-raised as DockerRuntimeError
 
 The Docker SDK boundary is the only thing faked here; every function
@@ -162,8 +162,7 @@ def _ctx(
 ) -> tuple[RecoveryContext, list[str], list[list[str]]]:
     """Build a RecoveryContext with recorded callbacks.
 
-    Returns (context, probe_calls, notice_calls). The default probe
-    always reports reachable; the default notice records recipients.
+    Returns (context, probe_calls, notice_calls). The default probe always reports reachable; the default notice records recipients.
     """
     probe_calls: list[str] = []
     notice_calls: list[list[str]] = []
@@ -186,58 +185,58 @@ def _ctx(
 
 
 # ---------------------------------------------------------------------------
-# §4.5 / §4.14 step 3: compute_warned_and_running
+# Section 4.5 / Section 4.14 step 3: compute_warned_and_running
 # ---------------------------------------------------------------------------
 
 
 def test_warned_and_running_all_running() -> None:
-    """§4.5: restart_set members running at preflight and re-inspection are kept."""
+    """Section 4.5: restart_set members running at preflight and re-inspection are kept."""
     runtime = FakeRuntime()
     preflight = {"a": _state("a"), "b": _state("b")}
     assert compute_warned_and_running(runtime, ["a", "b"], preflight) == ["a", "b"]
 
 
 def test_warned_and_running_excludes_not_running_at_preflight() -> None:
-    """§4.5: a member not running at preflight is not eligible."""
+    """Section 4.5: a member not running at preflight is not eligible."""
     runtime = FakeRuntime()
     preflight = {"a": _state("a"), "b": _state("b", running=False)}
     assert compute_warned_and_running(runtime, ["a", "b"], preflight) == ["a"]
 
 
 def test_warned_and_running_excludes_not_running_at_reinspection() -> None:
-    """§4.5: a member that exited between preflight and re-inspection is excluded."""
+    """Section 4.5: a member that exited between preflight and re-inspection is excluded."""
     runtime = FakeRuntime(inspect_states={"a": [_state("a", running=False)]})
     preflight = {"a": _state("a"), "b": _state("b")}
     assert compute_warned_and_running(runtime, ["a", "b"], preflight) == ["b"]
 
 
 def test_warned_and_running_missing_preflight_state_excludes_member() -> None:
-    """§4.5: a restart_set member with no captured preflight state is not eligible."""
+    """Section 4.5: a restart_set member with no captured preflight state is not eligible."""
     runtime = FakeRuntime()
     assert compute_warned_and_running(runtime, ["a"], {}) == []
 
 
 def test_warned_and_running_preserves_restart_set_order() -> None:
-    """§2.9: the returned order matches the restart_set's (partition) order."""
+    """Section 2.9: the returned order matches the restart_set's (partition) order."""
     runtime = FakeRuntime()
     preflight = {"c": _state("c"), "a": _state("a"), "b": _state("b")}
     assert compute_warned_and_running(runtime, ["c", "a", "b"], preflight) == ["c", "a", "b"]
 
 
 def test_warned_and_running_daemon_loss_is_converted_to_runtime_error() -> None:
-    """§2.4: a DockerUnavailableError during re-inspection becomes DockerRuntimeError."""
+    """Section 2.4: a DockerUnavailableError during re-inspection becomes DockerRuntimeError."""
     runtime = FakeRuntime(raise_on={"inspect:a": DockerUnavailableError("boom")})
     with pytest.raises(DockerRuntimeError):
         compute_warned_and_running(runtime, ["a"], {"a": _state("a")})
 
 
 # ---------------------------------------------------------------------------
-# §4.14 step 6 / §8.8: execute_pre_hook
+# Section 4.14 step 6 / Section 8.8: execute_pre_hook
 # ---------------------------------------------------------------------------
 
 
 def test_pre_hook_stops_every_running_warned_member() -> None:
-    """§4.14 step 6: every warned member still running at the pre-stop re-inspection is stopped."""
+    """Section 4.14 step 6: every warned member still running at the pre-stop re-inspection is stopped."""
     runtime = FakeRuntime()
     ctx, _, _ = _ctx()
     result = execute_pre_hook(runtime, ["a", "b"], {"a": 30, "b": 30}, ctx)
@@ -249,7 +248,7 @@ def test_pre_hook_stops_every_running_warned_member() -> None:
 
 
 def test_pre_hook_stop_timeout_is_taken_from_the_timeouts_map() -> None:
-    """§8.10: the stop timeout is the instance's stop_grace_period seconds."""
+    """Section 8.10: the stop timeout is the instance's stop_grace_period seconds."""
     runtime = FakeRuntime()
     ctx, _, _ = _ctx()
     execute_pre_hook(runtime, ["a"], {"a": 42}, ctx)
@@ -257,7 +256,7 @@ def test_pre_hook_stop_timeout_is_taken_from_the_timeouts_map() -> None:
 
 
 def test_pre_hook_exited_before_stop_is_not_counted_as_stopped() -> None:
-    """§4.5 / §8.10: a no-op stop is not 'actually stopped by this deployment'."""
+    """Section 4.5 / Section 8.10: a no-op stop is not 'actually stopped by this deployment'."""
     runtime = FakeRuntime(stop_results={"a": [StopResult("a", StopOutcome.EXITED_BEFORE_STOP)]})
     ctx, _, _ = _ctx()
     result = execute_pre_hook(runtime, ["a"], {"a": 10}, ctx)
@@ -267,7 +266,7 @@ def test_pre_hook_exited_before_stop_is_not_counted_as_stopped() -> None:
 
 
 def test_pre_hook_member_not_running_at_reinspection_is_not_stopped() -> None:
-    """§4.14 step 6: only members running at the pre-stop re-inspection enter to_stop."""
+    """Section 4.14 step 6: only members running at the pre-stop re-inspection enter to_stop."""
     runtime = FakeRuntime(inspect_states={"a": [_state("a", running=False)]})
     ctx, _, _ = _ctx()
     result = execute_pre_hook(runtime, ["a"], {"a": 10}, ctx)
@@ -278,7 +277,7 @@ def test_pre_hook_member_not_running_at_reinspection_is_not_stopped() -> None:
 
 
 def test_pre_hook_stop_failure_triggers_recovery() -> None:
-    """§8.8: a stop failure invokes the recovery flow over the actually-stopped members."""
+    """Section 8.8: a stop failure invokes the recovery flow over the actually-stopped members."""
     runtime = FakeRuntime(
         stop_results={
             "a": [StopResult("a", StopOutcome.STOPPED)],
@@ -295,7 +294,7 @@ def test_pre_hook_stop_failure_triggers_recovery() -> None:
 
 
 def test_pre_hook_all_stops_fail_does_not_start_anything() -> None:
-    """§8.8: with no actually-stopped members, recovery has nothing to start."""
+    """Section 8.8: with no actually-stopped members, recovery has nothing to start."""
     runtime = FakeRuntime(stop_results={"a": [StopResult("a", StopOutcome.FAILED, error="x")]})
     ctx, _, _ = _ctx()
     result = execute_pre_hook(runtime, ["a"], {"a": 10}, ctx)
@@ -306,7 +305,7 @@ def test_pre_hook_all_stops_fail_does_not_start_anything() -> None:
 
 
 def test_pre_hook_empty_warned_list_is_a_noop() -> None:
-    """§4.14 step 6: no warned members means no stop phase."""
+    """Section 4.14 step 6: no warned members means no stop phase."""
     runtime = FakeRuntime()
     ctx, _, _ = _ctx()
     result = execute_pre_hook(runtime, [], {}, ctx)
@@ -315,7 +314,7 @@ def test_pre_hook_empty_warned_list_is_a_noop() -> None:
 
 
 def test_pre_hook_daemon_loss_during_stop_is_a_runtime_error() -> None:
-    """§2.4: a daemon loss during a stop becomes DockerRuntimeError."""
+    """Section 2.4: a daemon loss during a stop becomes DockerRuntimeError."""
     runtime = FakeRuntime(raise_on={"stop:a": DockerUnavailableError("boom")})
     ctx, _, _ = _ctx()
     with pytest.raises(DockerRuntimeError):
@@ -323,12 +322,12 @@ def test_pre_hook_daemon_loss_during_stop_is_a_runtime_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.13: execute_post_hook
+# Section 4.13: execute_post_hook
 # ---------------------------------------------------------------------------
 
 
 def test_post_hook_all_healthy() -> None:
-    """§4.13: every container that starts healthy is reported as started and healthy."""
+    """Section 4.13: every container that starts healthy is reported as started and healthy."""
     runtime = FakeRuntime()
     result = execute_post_hook(runtime, ["a", "b"], {}, 600, 2)
     assert result.started == ["a", "b"]
@@ -337,7 +336,7 @@ def test_post_hook_all_healthy() -> None:
 
 
 def test_post_hook_start_failure_does_not_halt_remaining_attempts() -> None:
-    """§4.13: start attempts are all made, no halt on first failure."""
+    """Section 4.13: start attempts are all made, no halt on first failure."""
     runtime = FakeRuntime(start_results={"a": [StartResult("a", False, error="nope")]})
     result = execute_post_hook(runtime, ["a", "b"], {}, 600, 2)
     assert result.start_failed == ["a"]
@@ -347,7 +346,7 @@ def test_post_hook_start_failure_does_not_halt_remaining_attempts() -> None:
 
 
 def test_post_hook_health_timeout_is_the_health_timeout_stage() -> None:
-    """§4.13 / §5.10: when only health fails, failure_stage is 'health_timeout'."""
+    """Section 4.13 / Section 5.10: when only health fails, failure_stage is 'health_timeout'."""
     runtime = FakeRuntime(health_results={"a": [HealthResult("a", False, "unhealthy", error="timeout")]})
     result = execute_post_hook(runtime, ["a"], {}, 600, 2)
     assert result.health_failed == ["a"]
@@ -356,7 +355,7 @@ def test_post_hook_health_timeout_is_the_health_timeout_stage() -> None:
 
 
 def test_post_hook_mixed_failures_take_the_post_hook_stage() -> None:
-    """§4.13: when start and health both fail, post_hook takes precedence."""
+    """Section 4.13: when start and health both fail, post_hook takes precedence."""
     runtime = FakeRuntime(
         start_results={"a": [StartResult("a", False, error="nope")]},
         health_results={"b": [HealthResult("b", False, "unhealthy", error="timeout")]},
@@ -370,7 +369,7 @@ def test_post_hook_mixed_failures_take_the_post_hook_stage() -> None:
 
 
 def test_post_hook_forwards_preexisting_unhealthy_to_health_poll() -> None:
-    """§4.12 / §8.3: an unhealthy-at-preflight container has the flag forwarded to wait_healthy."""
+    """Section 4.12 / Section 8.3: an unhealthy-at-preflight container has the flag forwarded to wait_healthy."""
     runtime = FakeRuntime()
     execute_post_hook(runtime, ["a"], {"a": _state("a", health="unhealthy")}, 600, 2)
     (call,) = runtime.calls["wait_healthy"]
@@ -378,7 +377,7 @@ def test_post_hook_forwards_preexisting_unhealthy_to_health_poll() -> None:
 
 
 def test_post_hook_empty_list_is_a_noop() -> None:
-    """§4.13: nothing to start, nothing to health-check."""
+    """Section 4.13: nothing to start, nothing to health-check."""
     runtime = FakeRuntime()
     result = execute_post_hook(runtime, [], {}, 600, 2)
     assert result.started == []
@@ -387,19 +386,19 @@ def test_post_hook_empty_list_is_a_noop() -> None:
 
 
 def test_post_hook_daemon_loss_is_a_runtime_error() -> None:
-    """§2.4: a daemon loss during start becomes DockerRuntimeError."""
+    """Section 2.4: a daemon loss during start becomes DockerRuntimeError."""
     runtime = FakeRuntime(raise_on={"start:a": DockerUnavailableError("boom")})
     with pytest.raises(DockerRuntimeError):
         execute_post_hook(runtime, ["a"], {}, 600, 2)
 
 
 # ---------------------------------------------------------------------------
-# §4.7 / §4.8 / §8.8: recover_stopped_containers
+# Section 4.7 / Section 4.8 / Section 8.8: recover_stopped_containers
 # ---------------------------------------------------------------------------
 
 
 def test_recover_starts_every_stopped_member_and_sends_the_cancel_notice() -> None:
-    """§4.7 / §8.7: every stopped container is started; running warned members receive the cancel notice."""
+    """Section 4.7 / Section 8.7: every stopped container is started; running warned members receive the cancel notice."""
     runtime = FakeRuntime()
     ctx, _probes, notices = _ctx()
     result = recover_stopped_containers(runtime, stopped_by_deployment=["a", "b"], warned_and_running=["a", "b"], ctx=ctx)
@@ -411,7 +410,7 @@ def test_recover_starts_every_stopped_member_and_sends_the_cancel_notice() -> No
 
 
 def test_recover_start_failure_is_recorded() -> None:
-    """§4.7: a start failure during recovery is reported in the result."""
+    """Section 4.7: a start failure during recovery is reported in the result."""
     runtime = FakeRuntime(start_results={"a": [StartResult("a", False, error="boom")]})
     ctx, _, _ = _ctx()
     result = recover_stopped_containers(runtime, stopped_by_deployment=["a", "b"], warned_and_running=["a", "b"], ctx=ctx)
@@ -422,7 +421,7 @@ def test_recover_start_failure_is_recorded() -> None:
 
 
 def test_recover_reachability_timeout_marks_unreachable() -> None:
-    """§4.7: a container that never becomes RCON-reachable is reported as unreachable."""
+    """Section 4.7: a container that never becomes RCON-reachable is reported as unreachable."""
 
     def probe(name: str) -> bool:
         return False
@@ -439,7 +438,7 @@ def test_recover_reachability_timeout_marks_unreachable() -> None:
 
 
 def test_recover_zero_timeout_disables_the_wait() -> None:
-    """§4.7: cancel_ready_timeout=0 performs one probe and no sleep."""
+    """Section 4.7: cancel_ready_timeout=0 performs one probe and no sleep."""
     calls = {"n": 0}
 
     def probe(name: str) -> bool:
@@ -456,7 +455,7 @@ def test_recover_zero_timeout_disables_the_wait() -> None:
 
 
 def test_recover_cancel_notice_recipients_are_currently_running_only() -> None:
-    """§8.7: the cancel notice goes to warned members that are currently running."""
+    """Section 8.7: the cancel notice goes to warned members that are currently running."""
     runtime = FakeRuntime(inspect_states={"b": [_state("b", running=False)]})
     ctx, _, notices = _ctx()
     recover_stopped_containers(runtime, stopped_by_deployment=["a"], warned_and_running=["a", "b"], ctx=ctx)
@@ -464,7 +463,7 @@ def test_recover_cancel_notice_recipients_are_currently_running_only() -> None:
 
 
 def test_recover_cancel_notice_raising_does_not_fail_the_recovery() -> None:
-    """§8.7: the cancel notice is best-effort."""
+    """Section 8.7: the cancel notice is best-effort."""
 
     def boom(names: list[str]) -> None:
         raise RuntimeError("nope")
@@ -476,7 +475,7 @@ def test_recover_cancel_notice_raising_does_not_fail_the_recovery() -> None:
 
 
 def test_recover_probe_exception_is_treated_as_unreachable() -> None:
-    """§4.7: the reachability probe is best-effort; exceptions mean not reachable."""
+    """Section 4.7: the reachability probe is best-effort; exceptions mean not reachable."""
 
     def probe(name: str) -> bool:
         raise RuntimeError("probe blew up")
@@ -488,7 +487,7 @@ def test_recover_probe_exception_is_treated_as_unreachable() -> None:
 
 
 def test_recover_empty_stopped_list_is_a_noop() -> None:
-    """§4.7: nothing was stopped, so nothing is started and no notice is sent."""
+    """Section 4.7: nothing was stopped, so nothing is started and no notice is sent."""
     runtime = FakeRuntime()
     ctx, _, notices = _ctx()
     result = recover_stopped_containers(runtime, stopped_by_deployment=[], warned_and_running=[], ctx=ctx)
@@ -498,7 +497,7 @@ def test_recover_empty_stopped_list_is_a_noop() -> None:
 
 
 def test_recover_preserves_input_order_in_reachable_and_unreachable() -> None:
-    """§4.7: reachability results preserve the caller's input order."""
+    """Section 4.7: reachability results preserve the caller's input order."""
     reachable_names = {"c", "a"}
 
     def probe(name: str) -> bool:
@@ -512,7 +511,7 @@ def test_recover_preserves_input_order_in_reachable_and_unreachable() -> None:
 
 
 def test_recover_daemon_loss_is_a_runtime_error() -> None:
-    """§2.4: a daemon loss during recovery becomes DockerRuntimeError."""
+    """Section 2.4: a daemon loss during recovery becomes DockerRuntimeError."""
     runtime = FakeRuntime(raise_on={"start:a": DockerUnavailableError("boom")})
     ctx, _, _ = _ctx()
     with pytest.raises(DockerRuntimeError):
@@ -525,21 +524,21 @@ def test_recover_daemon_loss_is_a_runtime_error() -> None:
 
 
 def test_post_hook_result_healthy_has_no_failure_stage() -> None:
-    """§5.10: a healthy result reports no failure stage."""
+    """Section 5.10: a healthy result reports no failure stage."""
     r = PostHookResult(started=["a"], healthy=["a"])
     assert r.failure_stage is None
     assert r.error_summary() == "no failure"
 
 
 def test_post_hook_result_start_only_uses_post_hook_stage() -> None:
-    """§5.10: a start-only failure uses the post_hook stage."""
+    """Section 5.10: a start-only failure uses the post_hook stage."""
     r = PostHookResult(start_failed=["a"], errors={"a": "boom"})
     assert r.failure_stage == "post_hook"
     assert r.error_summary() == "start failed: a"
 
 
 def test_post_hook_result_health_only_uses_health_timeout_stage() -> None:
-    """§5.10: a health-only failure uses the health_timeout stage."""
+    """Section 5.10: a health-only failure uses the health_timeout stage."""
     r = PostHookResult(health_failed=["a", "b"], errors={"a": "x", "b": "y"})
     assert r.failure_stage == "health_timeout"
     assert "health check timed out: a, b" in r.error_summary()

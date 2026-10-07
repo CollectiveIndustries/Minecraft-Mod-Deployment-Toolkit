@@ -1,6 +1,6 @@
 # src/minecraft/deploy_pack/preflight/actions.py
 
-"""Restart-policy adapter: per-path action, sticky-max, reasons (§4.6.1-4.6.3).
+"""Restart-policy adapter: per-path action, sticky-max, reasons (Section 4.6.1-4.6.3).
 
 Logging
 -------
@@ -71,11 +71,10 @@ def is_pack_action(action: str) -> bool:
 
 
 def sticky_max(actions: list[str]) -> str:
-    """Return the §4.6.2 sticky-max over ``actions``.
+    """Return the Section 4.6.2 sticky-max over ``actions``.
 
-    ``+pack`` is a property of the batch, not of any single path: if any
-    input carries it, the result carries it even when the maximum-ranked
-    input did not.
+    ``+pack`` is a property of the batch, not of any single path: if any input carries it, the result carries it even when the maximum-ranked input
+    did not.
     """
     if not actions:
         _log.debug("sticky_max: empty input -> 'none'")
@@ -90,7 +89,7 @@ def sticky_max(actions: list[str]) -> str:
 
 
 def resolve_paths_action(changed_paths: list[str], policy: dict[str, str]) -> tuple[str, list[ReasonEntry]]:
-    """Compute the effective action and its contributing reasons (§4.6.3).
+    """Compute the effective action and its contributing reasons (Section 4.6.3).
 
     Logs one DEBUG line per contributing pattern and one final DEBUG
     line with the effective action and reason count. Per-path decisions

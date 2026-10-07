@@ -132,9 +132,8 @@ def _install_run_stubs(
 ) -> _RunHandles:
     """Wire every collaborator :func:`_run` touches and return call records.
 
-    The returned namespace carries the config, the plan, and lists
-    recording each stub invocation so tests can assert both on the
-    return code and on which branches fired.
+    The returned namespace carries the config, the plan, and lists recording each stub invocation so tests can assert both on the return code and on which
+    branches fired.
     """
     cfg = config if config is not None else _stub_config(tmp_path)
     plan = preflight_result if preflight_result is not None else _stub_plan()

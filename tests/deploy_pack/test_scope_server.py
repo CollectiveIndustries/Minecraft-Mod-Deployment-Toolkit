@@ -1,20 +1,20 @@
 # tests/deploy_pack/test_scope_server.py
 
-"""Tests for deploy_pack.scope_server, Project_Specs.md §2.9, §4.2, §4.11, §6.3, §7.2.
+"""Tests for deploy_pack.scope_server, Project_Specs.md Section 2.9, Section 4.2, Section 4.11, Section 6.3, Section 7.2.
 
 Coverage:
 
-  * §2.9  - targeted server deploys skip mods_dir entirely
-  * §4.2  - halt on first runtime failure; no rollback of completed steps
-  * §4.11 - mods_dir is flat; protected files outside the source set
+  * Section 2.9  - targeted server deploys skip mods_dir entirely
+  * Section 4.2  - halt on first runtime failure; no rollback of completed steps
+  * Section 4.11 - mods_dir is flat; protected files outside the source set
             survive the clean
-  * §6.3  - unmarked entries (declared side outside {client, server, both})
+  * Section 6.3  - unmarked entries (declared side outside {client, server, both})
             are dropped from the deploy set unless an override marks them
-  * §7.2  - config_mode merge vs delete; kubejs_mode is always delete
+  * Section 7.2  - config_mode merge vs delete; kubejs_mode is always delete
 
 Every test drives the scope through :func:`deploy_server_scope` against
 a real DeploymentConfig and a real PreflightPlan. The mod-source
-resolution is spec-defined (§3.11, §6.3) and lives behind a private
+resolution is spec-defined (Section 3.11, Section 6.3) and lives behind a private
 helper; the tests pin its observable behavior by asserting what ends up
 on disk.
 """
@@ -154,12 +154,12 @@ def _write_index(tmp_path: Path, entries: dict[str, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.11: mods_dir is flat
+# Section 4.11: mods_dir is flat
 # ---------------------------------------------------------------------------
 
 
 def test_mods_dir_flat_deploy_adds_new_jars(tmp_path: Path) -> None:
-    """§4.11: source jars not present in mods_dir are added."""
+    """Section 4.11: source jars not present in mods_dir are added."""
     _write_index(tmp_path, {"a.jar": "server", "b.jar": "server"})
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
@@ -179,7 +179,7 @@ def test_mods_dir_flat_deploy_adds_new_jars(tmp_path: Path) -> None:
 
 
 def test_mods_dir_flat_removes_stale_jars(tmp_path: Path) -> None:
-    """§4.11: a .jar not in the source set is removed from mods_dir."""
+    """Section 4.11: a .jar not in the source set is removed from mods_dir."""
     _write_index(tmp_path, {"a.jar": "server"})
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
@@ -199,7 +199,7 @@ def test_mods_dir_flat_removes_stale_jars(tmp_path: Path) -> None:
 
 
 def test_mods_dir_flat_ignores_non_jar_files(tmp_path: Path) -> None:
-    """§4.11: only *.jar is in the effective mod set; other files are untouched."""
+    """Section 4.11: only *.jar is in the effective mod set; other files are untouched."""
     _write_index(tmp_path, {"a.jar": "server"})
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
@@ -217,7 +217,7 @@ def test_mods_dir_flat_ignores_non_jar_files(tmp_path: Path) -> None:
 
 
 def test_mods_dir_flat_protected_stale_survives(tmp_path: Path) -> None:
-    """§3.13 + §4.11: a protected stale jar survives the clean."""
+    """Section 3.13 + Section 4.11: a protected stale jar survives the clean."""
     _write_index(tmp_path, {"a.jar": "server"})
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
@@ -236,7 +236,7 @@ def test_mods_dir_flat_protected_stale_survives(tmp_path: Path) -> None:
 
 
 def test_mods_dir_flat_protected_in_source_is_overwritten(tmp_path: Path) -> None:
-    """§3.13: protection governs deletion, not overwrite."""
+    """Section 3.13: protection governs deletion, not overwrite."""
     _write_index(tmp_path, {"keep.jar": "server"})
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
@@ -255,12 +255,12 @@ def test_mods_dir_flat_protected_in_source_is_overwritten(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# §2.9: targeted server deploy skips mods_dir
+# Section 2.9: targeted server deploy skips mods_dir
 # ---------------------------------------------------------------------------
 
 
 def test_targeted_deploy_does_not_touch_mods_dir(tmp_path: Path) -> None:
-    """§2.9: --server --instance X does not write to mods_dir."""
+    """Section 2.9: --server --instance X does not write to mods_dir."""
     _write_index(tmp_path, {"a.jar": "server"})
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
@@ -281,7 +281,7 @@ def test_targeted_deploy_does_not_touch_mods_dir(tmp_path: Path) -> None:
 
 
 def test_no_mods_dir_in_plan_skips_mods(tmp_path: Path) -> None:
-    """§3.7: when mods_dir cannot be determined, mods are not deployed."""
+    """Section 3.7: when mods_dir cannot be determined, mods are not deployed."""
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
     cfg = _config(
@@ -296,12 +296,12 @@ def test_no_mods_dir_in_plan_skips_mods(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7.2: config_mode merge vs delete
+# Section 7.2: config_mode merge vs delete
 # ---------------------------------------------------------------------------
 
 
 def test_config_merge_keeps_extra_files(tmp_path: Path) -> None:
-    """§7.2: merge mode keeps files that exist only in the destination."""
+    """Section 7.2: merge mode keeps files that exist only in the destination."""
     _write_tree(tmp_path / "sync" / "config", {"common.toml": "new"})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     root = tmp_path / "survival"
@@ -317,7 +317,7 @@ def test_config_merge_keeps_extra_files(tmp_path: Path) -> None:
 
 
 def test_config_delete_removes_extra_files(tmp_path: Path) -> None:
-    """§7.2: delete mode removes files that exist only in the destination."""
+    """Section 7.2: delete mode removes files that exist only in the destination."""
     _write_tree(tmp_path / "sync" / "config", {"common.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     root = tmp_path / "survival"
@@ -335,7 +335,7 @@ def test_config_delete_removes_extra_files(tmp_path: Path) -> None:
 
 
 def test_config_merge_updates_changed_files_in_place(tmp_path: Path) -> None:
-    """§4.4: a file present in both trees with different content is updated, not removed."""
+    """Section 4.4: a file present in both trees with different content is updated, not removed."""
     _write_tree(tmp_path / "sync" / "config", {"common.toml": "new"})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     root = tmp_path / "survival"
@@ -353,7 +353,7 @@ def test_config_merge_updates_changed_files_in_place(tmp_path: Path) -> None:
 
 
 def test_config_merge_leaves_unchanged_files_untouched(tmp_path: Path) -> None:
-    """§4.4: unchanged files are neither removed nor rewritten."""
+    """Section 4.4: unchanged files are neither removed nor rewritten."""
     _write_tree(tmp_path / "sync" / "config", {"common.toml": "same"})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     root = tmp_path / "survival"
@@ -369,12 +369,12 @@ def test_config_merge_leaves_unchanged_files_untouched(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7.2: kubejs_mode is always delete
+# Section 7.2: kubejs_mode is always delete
 # ---------------------------------------------------------------------------
 
 
 def test_kubejs_always_delete_regardless_of_instance_setting(tmp_path: Path) -> None:
-    """§7.2: kubejs_mode is always delete."""
+    """Section 7.2: kubejs_mode is always delete."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "new"})
     root = tmp_path / "survival"
@@ -394,7 +394,7 @@ def test_kubejs_always_delete_regardless_of_instance_setting(tmp_path: Path) -> 
 
 
 def test_unknown_sync_mapping_key_defaults_to_merge(tmp_path: Path) -> None:
-    """§7.2: modes are defined only for config and kubejs; other keys default to merge."""
+    """Section 7.2: modes are defined only for config and kubejs; other keys default to merge."""
     _write_tree(tmp_path / "sync" / "extra", {"a.txt": "1"})
     root = tmp_path / "survival"
     _write_tree(root / "extra", {"a.txt": "1", "keep.txt": "x"})
@@ -416,7 +416,7 @@ def test_unknown_sync_mapping_key_defaults_to_merge(tmp_path: Path) -> None:
 
 
 def test_shared_dest_is_skipped_by_server_scope(tmp_path: Path) -> None:
-    """§2.1: @www/* items are published by the client scope, not the server scope."""
+    """Section 2.1: @www/* items are published by the client scope, not the server scope."""
     _write_tree(tmp_path / "sync" / "resourcepacks", {"pack.zip": "x"})
     root = tmp_path / "survival"
     root.mkdir(parents=True)
@@ -454,12 +454,12 @@ def test_missing_source_dir_is_silently_skipped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §6.3: unmarked entries
+# Section 6.3: unmarked entries
 # ---------------------------------------------------------------------------
 
 
 def test_unmarked_entries_are_dropped(tmp_path: Path) -> None:
-    """§6.3: an entry whose declared side is outside {client, server, both} is not deployed."""
+    """Section 6.3: an entry whose declared side is outside {client, server, both} is not deployed."""
     idx = tmp_path / "sync" / "downloads" / ".index"
     idx.mkdir(parents=True)
     (idx / "a.pw.toml").write_text('filename = "a.jar"\nside = "skipped"\n', encoding="utf-8")
@@ -479,7 +479,7 @@ def test_unmarked_entries_are_dropped(tmp_path: Path) -> None:
 
 
 def test_unmarked_entry_with_override_is_included(tmp_path: Path) -> None:
-    """§6.3: an override on an otherwise-unmarked entry makes it marked."""
+    """Section 6.3: an override on an otherwise-unmarked entry makes it marked."""
     idx = tmp_path / "sync" / "downloads" / ".index"
     idx.mkdir(parents=True)
     (idx / "a.pw.toml").write_text('filename = "a.jar"\nside = "skipped"\n', encoding="utf-8")
@@ -502,12 +502,12 @@ def test_unmarked_entry_with_override_is_included(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.2: halt on first failure
+# Section 4.2: halt on first failure
 # ---------------------------------------------------------------------------
 
 
 def test_mods_failure_halts_before_any_member_is_touched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """§4.2: a mods failure halts the whole scope before any member is touched."""
+    """Section 4.2: a mods failure halts the whole scope before any member is touched."""
     _write_index(tmp_path, {"a.jar": "server"})
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     _write_tree(tmp_path / "sync" / "kubejs", {"scripts/a.js": "x"})
@@ -532,7 +532,7 @@ def test_mods_failure_halts_before_any_member_is_touched(tmp_path: Path, monkeyp
 
 
 def test_member_failure_halts_subsequent_members(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """§4.2: a member failure stops the scope before the next member is touched."""
+    """Section 4.2: a member failure stops the scope before the next member is touched."""
     _write_tree(tmp_path / "sync" / "config", {"c.toml": "x"})
     root_a = tmp_path / "a"
     root_b = tmp_path / "b"

@@ -1,16 +1,16 @@
 # src/minecraft/deploy_pack/notifications.py
 
-"""Discord notifications: template validation, rendering, and posting (Project_Specs.md §5).
+"""Discord notifications: template validation, rendering, and posting (Project_Specs.md Section 5).
 
-Responsibilities (§9.2):
-  * template validation per §5.11 - placeholder-set checking, empty
+Responsibilities (Section 9.2):
+  * template validation per Section 5.11 - placeholder-set checking, empty
     template, unknown placeholder, invalid-everywhere, cross-template
-  * rendering the four templates (§5.4-§5.7) with their placeholders
-  * the §5.8 container-status vocabulary and its rendering
-  * the §5.14 allowed_mentions payload
-  * the §5.13 2000-char guard
+  * rendering the four templates (Section 5.4-Section 5.7) with their placeholders
+  * the Section 5.8 container-status vocabulary and its rendering
+  * the Section 5.14 allowed_mentions payload
+  * the Section 5.13 2000-char guard
   * posting via HTTP, best-effort, never authoritative over the
-    deployment outcome (§5.12)
+    deployment outcome (Section 5.12)
 
 Dependency direction
 --------------------
@@ -22,10 +22,10 @@ returns ``list[tuple[str, str]]`` - (source-label, message) - and the
 caller wraps them into its own diagnostic type. This is why
 ``PreflightFailure`` is not used here.
 
-State vocabulary (§5.8)
+State vocabulary (Section 5.8)
 -----------------------
 
-Container states are represented as the literal strings §5.8 defines.
+Container states are represented as the literal strings Section 5.8 defines.
 The deploy pipeline produces *facts* (StopOutcome, StartResult.success,
 HealthResult.healthy); ``main`` maps those facts into these strings when
 it builds a notification context. Keeping the strings here rather than
@@ -35,7 +35,7 @@ Internal states ``cancelled`` and ``exited before stop`` are rendered
 in CLI output but are dropped from Discord messages by
 :func:`render_container_status`.
 
-Pack-required warning in the server section (§4.6.9)
+Pack-required warning in the server section (Section 4.6.9)
 ----------------------------------------------------
 
 When ``pack_required`` is true and ``--client`` is not in scope, the
@@ -49,7 +49,7 @@ Logging
 -------
 
 Module logger is ``minecraft.deploy_pack.notifications``. The module is
-best-effort per §5.12, so it emits no ERROR: a failed post is a WARN,
+best-effort per Section 5.12, so it emits no ERROR: a failed post is a WARN,
 a successful post is an INFO, and every intermediate step is a DEBUG.
 Rendered message bodies are never logged - the templates carry player
 role IDs and deployment details that should not land in a log sink.
@@ -154,14 +154,11 @@ _PLACEHOLDER_RE = re.compile("\\{([^{}]*)\\}")
 
 
 def _check(label: str, text: str | None, allowed: frozenset[str], logger: Any) -> list[tuple[str, str]]:
-    """Validate one template. Returns (source, message) tuples.
+    """Validate one template.
 
-    Missing template → warn, no failure.
-    Empty template → failure.
-    Malformed template → failure.
+    Returns (source, message) tuples.     Missing template -> warn, no failure.     Empty template -> failure.     Malformed template -> failure.
 
-    "Malformed" per §5.11 means a placeholder that is invalid everywhere,
-    unknown, or cross-template.
+    "Malformed" per Section 5.11 means a placeholder that is invalid everywhere, unknown, or cross-template.
     """
     if logger is None:
         logger = _log
@@ -175,7 +172,7 @@ def _check(label: str, text: str | None, allowed: frozenset[str], logger: Any) -
     for m in _PLACEHOLDER_RE.finditer(text):
         ph = m.group(1)
         if ph in _INVALID_EVERYWHERE:
-            failures.append((label, f"placeholder {{{ph}}} is invalid everywhere (§11.3)"))
+            failures.append((label, f"placeholder {{{ph}}} is invalid everywhere (Section 11.3)"))
         elif ph not in _ALL_VALID:
             failures.append((label, f"unknown placeholder {{{ph}}}"))
         elif ph not in allowed:
@@ -188,11 +185,10 @@ def _check(label: str, text: str | None, allowed: frozenset[str], logger: Any) -
 
 
 def validate_live_and_failure(discord: DiscordConfig, *, notify: bool, dry_run: bool, has_scope: bool, logger: Any = None) -> list[tuple[str, str]]:
-    """Validate templates reachable before restart_set is known (§5.11).
+    """Validate templates reachable before restart_set is known (Section 5.11).
 
-    Under ``--dry-run`` only the live template is validated. Otherwise
-    live and failure are validated. With no scope, diagnostic is
-    validated instead.
+    Under ``--dry-run`` only the live template is validated. Otherwise live and failure are validated. With no scope, diagnostic is validated
+    instead.
     """
     if logger is None:
         logger = _log
@@ -210,7 +206,7 @@ def validate_live_and_failure(discord: DiscordConfig, *, notify: bool, dry_run: 
 
 
 def validate_online(discord: DiscordConfig, logger: Any = None) -> list[tuple[str, str]]:
-    """Validate the online template (§5.11, second pass)."""
+    """Validate the online template (Section 5.11, second pass)."""
     if logger is None:
         logger = _log
     logger.debug("validate_online: validating online template")
@@ -218,7 +214,7 @@ def validate_online(discord: DiscordConfig, logger: Any = None) -> list[tuple[st
 
 
 def validate_diagnostic(discord: DiscordConfig, logger: Any = None) -> list[tuple[str, str]]:
-    """Validate the diagnostic template (§5.11, no-scope path)."""
+    """Validate the diagnostic template (Section 5.11, no-scope path)."""
     if logger is None:
         logger = _log
     logger.debug("validate_diagnostic: validating diagnostic template")
@@ -226,12 +222,12 @@ def validate_diagnostic(discord: DiscordConfig, logger: Any = None) -> list[tupl
 
 
 def render_timestamp_now() -> str:
-    """RFC 3339 with Z suffix (§5.4)."""
+    """RFC 3339 with Z suffix (Section 5.4)."""
     return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def render_player_tags(role_ids: list[str], logger: Any = None) -> str:
-    """Render role IDs as Discord role mentions, space-separated (§5.16)."""
+    """Render role IDs as Discord role mentions, space-separated (Section 5.16)."""
     if logger is None:
         logger = _log
     logger.debug(f"render_player_tags: {len(role_ids)} role id(s)")
@@ -239,7 +235,7 @@ def render_player_tags(role_ids: list[str], logger: Any = None) -> str:
 
 
 def render_container_status(statuses: dict[str, str], scope: str, logger: Any = None) -> str:
-    """Render ``<instance>: <state>`` lines per §5.8.
+    """Render ``<instance>: <state>`` lines per Section 5.8.
 
     ``scope`` is ``"online"`` or ``"failure"``.
 
@@ -297,7 +293,7 @@ def build_server_section(
     pack_required_warning: str | None = None,
     logger: Any = None,
 ) -> str:
-    """Render the server section (§4.6.10).
+    """Render the server section (Section 4.6.10).
 
     Standard form:
 
@@ -324,7 +320,7 @@ def build_server_section(
         - No container restart performed
 
     ``pack_required_warning`` is populated by preflight when
-    ``pack_required`` is true and ``--client`` is not in scope (§4.6.9).
+    ``pack_required`` is true and ``--client`` is not in scope (Section 4.6.9).
     It is rendered as an informational ``- Note:`` line immediately
     after ``- Pack required:``. Passing ``None`` suppresses the line.
     """
@@ -365,8 +361,7 @@ def build_server_section(
 def build_client_section(*, zip_filename: str | None, sha256: str | None, changelog_url: str | None, dry_run: bool, logger: Any = None) -> str:
     """Render the client section.
 
-    §5.4 does not spell out the exact shape; this follows the same list
-    style as the server and resource-pack sections.
+    Section 5.4 does not spell out the exact shape; this follows the same list style as the server and resource-pack sections.
     """
     if logger is None:
         logger = _log
@@ -391,7 +386,7 @@ def build_client_section(*, zip_filename: str | None, sha256: str | None, change
 def build_resource_pack_section(
     *, configured: bool, published_filename: str | None, members: list[str], effective_action: str | None, logger: Any = None
 ) -> str:
-    """Render the resource-pack section (§7.7)."""
+    """Render the resource-pack section (Section 7.7)."""
     if logger is None:
         logger = _log
     logger.debug(f"build_resource_pack_section: configured={configured} published={'y' if published_filename else 'n'} members={len(members)}")
@@ -412,7 +407,9 @@ def build_resource_pack_section(
 
 @dataclass
 class LiveContext:
-    """Represents the runtime context for a live operation, including tool version, timestamp, requested scopes, instance list, dry-run flag, roles, and section identifiers."""
+    """Represents the runtime context for a live operation, including tool version, timestamp, requested scopes, instance list, dry-run flag, roles,
+    and section identifiers.
+    """
 
     tool_version: str
     timestamp: str
@@ -574,12 +571,11 @@ Poster = Callable[[str, str, dict[str, Any], float], tuple[bool, str | None]]
 
 
 def _default_poster(webhook_url: str, content: str, allowed_mentions: dict[str, Any], timeout: float) -> tuple[bool, str | None]:
-    """POST the payload to ``webhook_url`` via requests. Transport boundary.
+    """POST the payload to ``webhook_url`` via requests.
 
-    Logs the attempt at DEBUG with the payload length only; the payload
-    itself carries player role IDs and deployment details and must not
-    land in a log sink. Failure modes log at WARN because they are
-    actionable to the operator running with ``--notify``.
+    Transport boundary.     Logs the attempt at DEBUG with the payload length only; the payload     itself carries player role IDs and deployment
+    details and must not     land in a log sink. Failure modes log at WARN because they are     actionable to the operator running with
+    ``--notify``.
     """
     payload = {"content": content, "allowed_mentions": allowed_mentions}
     _log.debug(f"_default_poster: POST timeout={timeout:g}s content_len={len(content)}")
@@ -598,17 +594,15 @@ def _default_poster(webhook_url: str, content: str, allowed_mentions: dict[str, 
 def _post(
     webhook_url: str | None, content: str, allowed_mentions: dict[str, Any], kind: str, poster: Poster, logger: Any, timeout: float = 10.0
 ) -> NotifyResult:
-    """Shared posting logic: guard, post, translate failure (§5.12, §5.13).
+    """Shared posting logic: guard, post, translate failure (Section 5.12, Section 5.13).
 
-    Emits the single INFO line per notification outcome. ``kind`` is the
-    NotifyKind constant; the content body is never logged, only its
-    length.
+    Emits the single INFO line per notification outcome. ``kind`` is the NotifyKind constant; the content body is never logged, only its length.
     """
     if logger is None:
         logger = _log
     logger.debug(f"_post: kind={kind} content_len={len(content)} webhook_set={webhook_url is not None}")
     if len(content) > DISCORD_CONTENT_LIMIT:
-        msg = f"rendered content is {len(content)} chars, exceeding the {DISCORD_CONTENT_LIMIT}-char limit (§5.13)"
+        msg = f"rendered content is {len(content)} chars, exceeding the {DISCORD_CONTENT_LIMIT}-char limit (Section 5.13)"
         logger.warning(msg)
         return NotifyResult(kind=kind, success=False, error=msg, rendered_length=len(content))
     if not webhook_url:
@@ -627,14 +621,14 @@ def _post(
 
 
 def _allowed_mentions(ctx_roles: list[str]) -> dict[str, Any]:
-    """§5.14: parse=[]; roles = union of all configured role IDs."""
+    """Section 5.14: parse=[]; roles = union of all configured role IDs."""
     return {"parse": [], "roles": ctx_roles, "users": []}
 
 
 def notify_live(
     template: str | None, ctx: LiveContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
 ) -> NotifyResult:
-    """Render and post the live message (§5.4)."""
+    """Render and post the live message (Section 5.4)."""
     if logger is None:
         logger = _log
     logger.debug(f"notify_live: template_set={template is not None} webhook_set={webhook_url is not None} roles={len(all_role_ids)}")
@@ -648,7 +642,7 @@ def notify_live(
 def notify_online(
     template: str | None, ctx: OnlineContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
 ) -> NotifyResult:
-    """Render and post the online message (§5.5)."""
+    """Render and post the online message (Section 5.5)."""
     if logger is None:
         logger = _log
     logger.debug(f"notify_online: template_set={template is not None} webhook_set={webhook_url is not None} roles={len(all_role_ids)}")
@@ -662,7 +656,7 @@ def notify_online(
 def notify_failure(
     template: str | None, ctx: FailureContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
 ) -> NotifyResult:
-    """Render and post the failure message (§5.6)."""
+    """Render and post the failure message (Section 5.6)."""
     if logger is None:
         logger = _log
     logger.debug(
@@ -678,7 +672,7 @@ def notify_failure(
 def notify_diagnostic(
     template: str | None, ctx: DiagnosticContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
 ) -> NotifyResult:
-    """Render and post the diagnostic message (§5.7)."""
+    """Render and post the diagnostic message (Section 5.7)."""
     if logger is None:
         logger = _log
     logger.debug(f"notify_diagnostic: template_set={template is not None} webhook_set={webhook_url is not None} roles={len(all_role_ids)}")

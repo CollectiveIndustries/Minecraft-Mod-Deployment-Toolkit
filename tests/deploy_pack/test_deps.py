@@ -11,9 +11,9 @@ Coverage:
     mandatory-only, side=BOTH/CLIENT/SERVER
   * dependency closure: index namespace, jar namespace, transitive
     expansion, order preservation, missing-dep skip
-  * §6.3 unmarked detection: jar without .pw.toml, or .pw.toml whose
+  * Section 6.3 unmarked detection: jar without .pw.toml, or .pw.toml whose
     side is outside {client, server, both}
-  * §6.2 remove_unmarked: filters by filename
+  * Section 6.2 remove_unmarked: filters by filename
   * resolve_mod_sources: unmarked-drop rule and the override-retention
     rule that depends on :meth:`SideOverrides.matches`
 
@@ -101,7 +101,10 @@ def _jar(
     deps: list[tuple[str, bool, str]] | None = None,
     neoforge: bool = False,
 ) -> Path:
-    """Create a jar containing a mods.toml. ``deps`` is (modId, mandatory, side)."""
+    """Create a jar containing a mods.toml.
+
+    ``deps`` is (modId, mandatory, side).
+    """
     lines: list[str] = []
     for mid in mod_ids:
         lines.append("[[mods]]")
@@ -197,7 +200,7 @@ def test_parse_prism_toml_side_is_case_insensitive(tmp_path: Path, raw: str) -> 
 
 
 def test_parse_prism_toml_invalid_side_is_coerced_but_side_raw_preserved(tmp_path: Path) -> None:
-    """§6.3: side_raw preserves the original value that the side filter cannot see."""
+    """Section 6.3: side_raw preserves the original value that the side filter cannot see."""
     e = parse_prism_toml(_pw(tmp_path, "a", side="skipped"))
     assert e["side"] == "both"
     assert e["side_raw"] == "skipped"
@@ -470,36 +473,36 @@ def test_expand_with_required_rejects_invalid_target_side() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §6.3: is_unmarked
+# Section 6.3: is_unmarked
 # ---------------------------------------------------------------------------
 
 
 def test_is_unmarked_side_raw_none_is_marked() -> None:
-    """§6.3: no explicit side key means the parser defaulted it to 'both', so the entry is marked."""
+    """Section 6.3: no explicit side key means the parser defaulted it to 'both', so the entry is marked."""
     assert not is_unmarked({"side_raw": None})
 
 
 def test_is_unmarked_valid_sides_are_marked() -> None:
-    """§6.3: client, server, and both are all inside the valid set."""
+    """Section 6.3: client, server, and both are all inside the valid set."""
     assert not is_unmarked({"side_raw": "client"})
     assert not is_unmarked({"side_raw": "server"})
     assert not is_unmarked({"side_raw": "both"})
 
 
 def test_is_unmarked_values_outside_the_set_are_unmarked() -> None:
-    """§6.3: any explicit side outside {client, server, both} is unmarked."""
+    """Section 6.3: any explicit side outside {client, server, both} is unmarked."""
     assert is_unmarked({"side_raw": "universal"})
     assert is_unmarked({"side_raw": "skipped"})
     assert is_unmarked({"side_raw": ""})
 
 
 # ---------------------------------------------------------------------------
-# §6.3: find_unmarked
+# Section 6.3: find_unmarked
 # ---------------------------------------------------------------------------
 
 
 def test_find_unmarked_jar_without_pw_toml(tmp_path: Path) -> None:
-    """§6.3 rule 1: a jar with no matching index entry is unmarked."""
+    """Section 6.3 rule 1: a jar with no matching index entry is unmarked."""
     _jar(tmp_path / "orphan.jar", mod_ids=["orphan"])
     unmarked = find_unmarked(tmp_path, [])
     assert len(unmarked) == 1
@@ -508,13 +511,13 @@ def test_find_unmarked_jar_without_pw_toml(tmp_path: Path) -> None:
 
 
 def test_find_unmarked_valid_side_is_not_reported(tmp_path: Path) -> None:
-    """§6.3: an entry with a valid side is marked and not reported."""
+    """Section 6.3: an entry with a valid side is marked and not reported."""
     _jar(tmp_path / "a.jar", mod_ids=["a"])
     assert find_unmarked(tmp_path, [_entry("a.jar", "a", "both")]) == []
 
 
 def test_find_unmarked_side_raw_none_is_not_reported(tmp_path: Path) -> None:
-    """§6.3: side_raw is None means the entry is treated as marked."""
+    """Section 6.3: side_raw is None means the entry is treated as marked."""
     _jar(tmp_path / "a.jar", mod_ids=["a"])
     e = _entry("a.jar", "a")
     e["side_raw"] = None
@@ -522,7 +525,7 @@ def test_find_unmarked_side_raw_none_is_not_reported(tmp_path: Path) -> None:
 
 
 def test_find_unmarked_side_outside_the_set_is_reported(tmp_path: Path) -> None:
-    """§6.3 rule 2: an entry whose declared side is outside the set is unmarked."""
+    """Section 6.3 rule 2: an entry whose declared side is outside the set is unmarked."""
     _jar(tmp_path / "a.jar", mod_ids=["a"])
     e = _entry("a.jar", "a", "both")
     e["side_raw"] = "skipped"
@@ -532,7 +535,7 @@ def test_find_unmarked_side_outside_the_set_is_reported(tmp_path: Path) -> None:
 
 
 def test_find_unmarked_arbitrary_invalid_side_is_reported(tmp_path: Path) -> None:
-    """§6.3 rule 2 covers any value, not just the ones the spec names."""
+    """Section 6.3 rule 2 covers any value, not just the ones the spec names."""
     _jar(tmp_path / "a.jar", mod_ids=["a"])
     e = _entry("a.jar", "a", "both")
     e["side_raw"] = "sometimes"
@@ -540,7 +543,7 @@ def test_find_unmarked_arbitrary_invalid_side_is_reported(tmp_path: Path) -> Non
 
 
 def test_find_unmarked_results_are_sorted_by_filename(tmp_path: Path) -> None:
-    """§6.3: results are sorted for deterministic output."""
+    """Section 6.3: results are sorted for deterministic output."""
     for name in ("z.jar", "a.jar", "m.jar"):
         _jar(tmp_path / name, mod_ids=[name.replace(".jar", "")])
     unmarked = find_unmarked(tmp_path, [])
@@ -548,38 +551,38 @@ def test_find_unmarked_results_are_sorted_by_filename(tmp_path: Path) -> None:
 
 
 def test_find_unmarked_no_duplicates(tmp_path: Path) -> None:
-    """§6.3: a jar cannot be unmarked by both rules simultaneously."""
+    """Section 6.3: a jar cannot be unmarked by both rules simultaneously."""
     _jar(tmp_path / "a.jar", mod_ids=["a"])
     assert find_unmarked(tmp_path, [_entry("a.jar", "a", "both")]) == []
 
 
 def test_find_unmarked_index_only_entry_still_reported(tmp_path: Path) -> None:
-    """§6.3: an entry with an invalid side is reported even when its jar is absent."""
+    """Section 6.3: an entry with an invalid side is reported even when its jar is absent."""
     e = _entry("ghost.jar", "ghost")
     e["side_raw"] = "skipped"
     assert [u.filename for u in find_unmarked(tmp_path, [e])] == ["ghost.jar"]
 
 
 def test_find_unmarked_nonexistent_directory_raises_config_error() -> None:
-    """§6.3: a missing modpack_dir is a configuration error."""
+    """Section 6.3: a missing modpack_dir is a configuration error."""
     with pytest.raises(ConfigError):
         find_unmarked(Path("/nonexistent-modpack"), [])
 
 
 # ---------------------------------------------------------------------------
-# §6.2: remove_unmarked
+# Section 6.2: remove_unmarked
 # ---------------------------------------------------------------------------
 
 
 def test_remove_unmarked_filters_by_filename() -> None:
-    """§6.2: every entry whose file appears in the unmarked list is dropped."""
+    """Section 6.2: every entry whose file appears in the unmarked list is dropped."""
     entries = [{"file": "a.jar"}, {"file": "b.jar"}, {"file": "c.jar"}]
     unmarked = [UnmarkedJar(filename="b.jar", reason="x"), UnmarkedJar(filename="c.jar", reason="y")]
     assert [e["file"] for e in remove_unmarked(entries, unmarked)] == ["a.jar"]
 
 
 def test_remove_unmarked_empty_list_is_a_noop() -> None:
-    """§6.2: nothing unmarked -> entries unchanged."""
+    """Section 6.2: nothing unmarked -> entries unchanged."""
     entries = [{"file": "a.jar"}]
     assert remove_unmarked(entries, []) == entries
 

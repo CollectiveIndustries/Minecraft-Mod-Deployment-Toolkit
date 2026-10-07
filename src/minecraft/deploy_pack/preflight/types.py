@@ -1,7 +1,8 @@
 # src/minecraft/deploy_pack/preflight/types.py
 
-"""Data model for preflight results. No logic, no I/O.
+"""Data model for preflight results.
 
+No logic, no I/O.
 Logging
 -------
 
@@ -33,7 +34,7 @@ _log = get_logger(__name__)
 
 @dataclass(frozen=True)
 class ScopeSet:
-    """Which deployment scopes are active for this invocation (§2.1)."""
+    """Which deployment scopes are active for this invocation (Section 2.1)."""
 
     server: bool = False
     client: bool = False
@@ -44,7 +45,7 @@ class ScopeSet:
         return self.server or self.client or self.resource_pack
 
     def names(self) -> list[str]:
-        """Return active scope names in §5.4's fixed order."""
+        """Return active scope names in Section 5.4's fixed order."""
         out: list[str] = []
         if self.server:
             out.append("server")
@@ -55,7 +56,7 @@ class ScopeSet:
         return out
 
     def bitmask(self) -> int:
-        """Return the §5.3 bitmask: server=1, client=2, resource-pack=4."""
+        """Return the Section 5.3 bitmask: server=1, client=2, resource-pack=4."""
         m = 0
         if self.server:
             m |= 1
@@ -75,10 +76,9 @@ class PreflightFailure:
 
 
 class PreflightError(ConfigError):
-    """Raised after every preflight check has run (§4.3). Exit 3.
+    """Raised after every preflight check has run (Section 4.3).
 
-    Construction is logged at DEBUG; the operator-facing ERROR is
-    emitted by the caller immediately before the raise.
+    Exit 3.     Construction is logged at DEBUG; the operator-facing ERROR is     emitted by the caller immediately before the raise.
     """
 
     def __init__(self, failures: list[PreflightFailure]) -> None:
@@ -93,7 +93,7 @@ class PreflightError(ConfigError):
 
 @dataclass
 class ModsChange:
-    """Diff between the source mod set and the current mods_dir (§4.11)."""
+    """Diff between the source mod set and the current mods_dir (Section 4.11)."""
 
     added: list[str] = field(default_factory=list)
     updated: list[str] = field(default_factory=list)
@@ -135,7 +135,7 @@ class InstanceServerChange:
 
 @dataclass
 class ResourcePackChange:
-    """Resource-pack evaluation for one instance (§4.6.6)."""
+    """Resource-pack evaluation for one instance (Section 4.6.6)."""
 
     member: str
     properties_changes: dict[str, tuple[str | None, str]] = field(default_factory=dict)
@@ -152,7 +152,7 @@ class ResourcePackChange:
 
 @dataclass
 class ReasonEntry:
-    """One entry of §4.6.3's ``reasons`` list."""
+    """One entry of Section 4.6.3's ``reasons`` list."""
 
     path_prefix: str
     action: str

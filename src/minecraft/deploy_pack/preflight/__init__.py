@@ -1,6 +1,6 @@
 # src/minecraft/deploy_pack/preflight/__init__.py
 
-"""Preflight validation and deployment planning (§4.1, §4.3)."""
+"""Preflight validation and deployment planning (Section 4.1, Section 4.3)."""
 
 from .actions import ACTION_ORDER, is_pack_action, resolve_action, resolve_paths_action, sticky_max
 from .changes import compute_instance_server_change, compute_mods_change, compute_resource_pack_change

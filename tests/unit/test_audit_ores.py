@@ -77,8 +77,7 @@ from minecraft.audit_ores import (
 def _make_jar(path: Path, files: dict) -> Path:
     """Write a zip at ``path`` with ``files`` as members.
 
-    Dict and list values are JSON-serialised; str values are UTF-8
-    encoded; bytes are written verbatim.
+    Dict and list values are JSON-serialised; str values are UTF-8 encoded; bytes are written verbatim.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w") as zf:
@@ -325,8 +324,7 @@ class TestExtractMaterialFromName:
     def test_stone_ore_material_pins_current_behavior(self) -> None:
         """Tests that "stone_ore_copper" extracts "stone" as the material.
 
-        This pins the current behavior where the stone prefix is kept instead of
-        being reduced to the material, contrary to the module docstring. If the
+        This pins the current behavior where the stone prefix is kept instead of being reduced to the material, contrary to the module docstring. If the
         implementation is fixed, update the expected value to "copper".
         """
         assert extract_material_from_name("stone_ore_copper") == "stone"

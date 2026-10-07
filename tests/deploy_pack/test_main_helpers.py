@@ -139,14 +139,14 @@ def _state(*, exists=True, status="running", health=None, running=True):
 
 
 def test_classify_state_missing_container():
-    """A container that does not exist is a §8.9 failure."""
+    """A container that does not exist is a Section 8.9 failure."""
     msg = states_mod.classify_state(_state(exists=False, running=False), "c")
     assert msg is not None
     assert "missing" in msg
 
 
 def test_classify_state_running_without_health():
-    """A running container without .State.Health is a §3.17 / §4.12 failure."""
+    """A running container without .State.Health is a Section 3.17 / Section 4.12 failure."""
     msg = states_mod.classify_state(_state(health=None), "c")
     assert msg is not None
     assert ".State.Health" in msg
@@ -203,7 +203,7 @@ def test_classify_state_unknown_status_fails():
 
 
 def test_configure_clears_module_logger_cache() -> None:
-    """configure() must clear the module-level logger cache.
+    """Configure() must clear the module-level logger cache.
 
     Regression: configure() replaced ``_logging_core`` but not
     ``_logger_cache``, so module loggers captured at import time kept

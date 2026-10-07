@@ -1,6 +1,6 @@
 # src/minecraft/deploy_pack/prompt_ui.py
 
-"""Textual audit UI for mod side assignments (Project_Specs.md §6.1).
+"""Textual audit UI for mod side assignments (Project_Specs.md Section 6.1).
 
 Loads ``config.d/side_overrides.toml`` and every ``*.pw.toml`` from
 ``<modpack_dir>/.index/``, and lets the operator toggle each mod
@@ -8,7 +8,7 @@ between server / client / both / skipped / no-entry.
 
 On save, the ``[deployment_tool_review]`` section of
 ``side_overrides.toml`` is written by ``overrides.save_side_overrides``,
-which is a line-based splice (§6.1 step 5) that preserves every other
+which is a line-based splice (Section 6.1 step 5) that preserves every other
 byte of the file.
 
 Import behaviour
@@ -26,7 +26,7 @@ Testability
 and the toggle state machine are plain Python and do not require
 Textual. The ``AuditApp`` class is a thin driver over that model.
 
-Toggle semantics (§6.1)
+Toggle semantics (Section 6.1)
 -----------------------
 
 The four toggles are S/C/N/D:
@@ -50,7 +50,7 @@ Scope
 
 The audit shows only mods that appear in the Prism index - i.e. jars
 with a ``.pw.toml``. Jars without one are reported as unmarked by the
-deploy pipeline (§6.3), but are not shown here. The review section
+deploy pipeline (Section 6.3), but are not shown here. The review section
 mechanism keys off a filename; a review entry for a jar with no
 ``.pw.toml`` would not be picked up by the marking logic, so
 including such jars would be misleading. Flagged as a limitation.
@@ -117,9 +117,8 @@ VALID_REVIEW_VALUES = ("server", "client", "both", "skipped")
 class AuditRow:
     """One mod's audit state.
 
-    Pure data plus pure methods. No logging: :meth:`toggle` runs once
-    per keystroke and :meth:`from_entry` runs once per Prism entry, so
-    per-call logging would drown the sink for no diagnostic gain.
+    Pure data plus pure methods. No logging: :meth:`toggle` runs once per keystroke and :meth:`from_entry` runs once per Prism entry, so per-call
+    logging would drown the sink for no diagnostic gain.
     """
 
     filename: str
@@ -133,7 +132,10 @@ class AuditRow:
     toggle_d: bool = False
 
     def toggle(self, key: str) -> None:
-        """Apply a toggle key. ``key`` is one of s/c/n/d."""
+        """Apply a toggle key.
+
+        ``key`` is one of s/c/n/d.
+        """
         key = key.lower()
         if key == "s":
             self.toggle_s = not self.toggle_s
@@ -236,8 +238,7 @@ class AuditRow:
 def build_audit_rows(config: DeploymentConfig, logger: Any = None) -> list[AuditRow]:
     """Load every indexed mod and its current override state.
 
-    Logs at INFO with the final row count and the number of rows that
-    carried a pre-existing override from each section.
+    Logs at INFO with the final row count and the number of rows that carried a pre-existing override from each section.
     """
     if logger is None:
         logger = _log
@@ -265,8 +266,7 @@ def build_audit_rows(config: DeploymentConfig, logger: Any = None) -> list[Audit
 def compute_review_entries(rows: list[AuditRow], logger: Any = None) -> dict[str, str]:
     """Build the [deployment_tool_review] dict from the row toggles.
 
-    Rows whose :attr:`AuditRow.review_value` is None are omitted, so
-    saving after toggling D (or clearing all toggles) removes the entry.
+    Rows whose :attr:`AuditRow.review_value` is None are omitted, so saving after toggling D (or clearing all toggles) removes the entry.
     """
     if logger is None:
         logger = _log
@@ -294,7 +294,7 @@ if HAS_TEXTUAL:
     ]
 
     class AuditApp(App):
-        """Textual app for auditing mod side assignments (§6.1).
+        """Textual app for auditing mod side assignments (Section 6.1).
 
         Widget methods stay silent on the hot path (per-keystroke toggles,
         per-repaint row updates, per-action selection lookups). Only the
@@ -393,14 +393,15 @@ if HAS_TEXTUAL:
 
 
 def run_audit(config: DeploymentConfig, logger: Any = None) -> int:
-    """Run the audit UI. Returns the process exit code.
+    """Run the audit UI.
 
-    0 on save, discard, or Ctrl+C. 1 only on an unrecoverable error
-    (missing Textual, config parse failure, or save write failure).
+    Returns the process exit code.
+        0 on save, discard, or Ctrl+C. 1 only on an unrecoverable error
+        (missing Textual, config parse failure, or save write failure).
 
-    The save path is ``overrides.save_side_overrides`` - the same
-    line-based splice used by the CLI. A crash mid-save leaves the
-    original file intact (§6.1, §4.10).
+        The save path is ``overrides.save_side_overrides`` - the same
+        line-based splice used by the CLI. A crash mid-save leaves the
+        original file intact (Section 6.1, Section 4.10).
     """
     if logger is None:
         logger = _log

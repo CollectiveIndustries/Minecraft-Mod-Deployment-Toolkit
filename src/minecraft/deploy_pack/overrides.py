@@ -1,6 +1,6 @@
 # src/minecraft/deploy_pack/overrides.py
 
-"""Side override handling (§3.11) and audit-tool write-back (§6.1).
+"""Side override handling (Section 3.11) and audit-tool write-back (Section 6.1).
 
 Two responsibilities, both independent of the rest of the pipeline:
 
@@ -11,12 +11,12 @@ Two responsibilities, both independent of the rest of the pipeline:
     rather than by its declared side.
 
   * write the ``[deployment_tool_review]`` section back to the file
-    after the ``--audit-mods`` TUI runs (§6.1). The write is a
+    after the ``--audit-mods`` TUI runs (Section 6.1). The write is a
     line-based splice: the tool never parses-then-reserialises the
     file, so comments, whitespace, and key ordering outside the review
     section are preserved byte-for-byte.
 
-Precedence (§3.11): ``by_id`` > ``by_filename`` > ``deployment_tool_review``.
+Precedence (Section 3.11): ``by_id`` > ``by_filename`` > ``deployment_tool_review``.
 
 Values are case-sensitive: ``"client"`` is valid, ``"Client"`` is not.
 Any non-string value, or any string outside the valid set, is a
@@ -81,7 +81,7 @@ class SideOverrides:
     def lookup(self, mod_id: str, filename: str) -> str | None:
         """Return the override value for the given mod, or None.
 
-        Precedence (§3.11): by_id > by_filename > deployment_tool_review.
+        Precedence (Section 3.11): by_id > by_filename > deployment_tool_review.
         ``mod_id`` and ``filename`` are matched verbatim; callers pass
         already-stringified values.
 
@@ -101,7 +101,7 @@ class SideOverrides:
         """Return True if this Prism entry is overridden in any section.
 
         Used by :func:`deps.resolve_mod_sources` to decide whether an
-        otherwise-unmarked entry (§6.3) should be kept. An override on
+        otherwise-unmarked entry (Section 6.3) should be kept. An override on
         an unmarked entry marks it; the caller uses this to build the
         marked set before applying overrides. This is a thin wrapper
         over :meth:`lookup`, so the precedence rule is not duplicated.
@@ -116,14 +116,12 @@ class SideOverrides:
 
 
 def load_side_overrides(path: Path, logger: Any = None) -> SideOverrides:
-    """Load and validate side_overrides.toml (§3.11).
+    """Load and validate side_overrides.toml (Section 3.11).
 
-    Missing file → empty overrides, no error.
-    Invalid values or malformed TOML → ConfigError (exit 3).
+    Missing file -> empty overrides, no error. Invalid values or malformed TOML -> ConfigError (exit 3).
 
-    The ``[deployment_tool_review]`` section may carry a leading
-    ``# Last generated: ...`` comment; tomllib treats it as a comment
-    and it does not affect the parsed values.
+    The ``[deployment_tool_review]`` section may carry a leading ``# Last generated: ...`` comment; tomllib treats it as a comment and it does not
+    affect the parsed values.
     """
     if logger is None:
         logger = _log
@@ -204,7 +202,10 @@ def _detect_eol(text: str, logger: Any = None) -> str:
 
 
 def _count_newline_sequences(text: str) -> int:
-    """Count logical newlines in ``text``. A CRLF pair counts as one."""
+    """Count logical newlines in ``text``.
+
+    A CRLF pair counts as one.
+    """
     count = 0
     i = 0
     while i < len(text):
@@ -223,9 +224,8 @@ def _count_newline_sequences(text: str) -> int:
 def _append_gap(original: str, logger: Any = None) -> str:
     """Return text to insert between ``original`` and an appended section.
 
-    Ensures exactly one blank line separates the existing content from
-    the appended header, without adding more than necessary. Preserves
-    any already-present trailing blank lines rather than collapsing them.
+    Ensures exactly one blank line separates the existing content from the appended header, without adding more than necessary. Preserves any
+    already-present trailing blank lines rather than collapsing them.
     """
     if logger is None:
         logger = _log
@@ -250,8 +250,7 @@ def _append_gap(original: str, logger: Any = None) -> str:
 def _toml_escape(s: str) -> str:
     """Escape a string for a TOML basic string.
 
-    Filenames rarely need this, but a backslash or double quote in a
-    key would otherwise break the generated section.
+    Filenames rarely need this, but a backslash or double quote in a key would otherwise break the generated section.
     """
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -301,10 +300,8 @@ def _find_section_range(text: str, section_name: str, logger: Any = None) -> tup
 def _read_text_preserving_eol(path: Path, logger: Any = None) -> str:
     r"""Read ``path`` as UTF-8 without universal-newline translation.
 
-    ``Path.read_text`` collapses ``\r\n`` to ``\n``, which would make
-    every CRLF file look like LF to :func:`_detect_eol` and defeat the
-    line-ending preservation guarantee. Reading with ``newline=""``
-    keeps the original bytes intact.
+    ``Path.read_text`` collapses ``\r\n`` to ``\n``, which would make every CRLF file look like LF to :func:`_detect_eol` and defeat the line-ending
+    preservation guarantee. Reading with ``newline=""`` keeps the original bytes intact.
     """
     if logger is None:
         logger = _log
@@ -319,13 +316,13 @@ def _read_text_preserving_eol(path: Path, logger: Any = None) -> str:
 
 
 def save_side_overrides(path: Path, review_entries: Mapping[str, str], timestamp: str | None = None, logger: Any = None) -> None:
-    """Write ``[deployment_tool_review]`` to ``path``, preserving everything else (§6.1).
+    """Write ``[deployment_tool_review]`` to ``path``, preserving everything else (Section 6.1).
 
     Behaviour:
 
-      * File does not exist → the generated section is the entire file.
-      * Section absent → append at EOF, preceded by one blank line.
-      * Section present → replace in place, preserving a trailing blank
+      * File does not exist -> the generated section is the entire file.
+      * Section absent -> append at EOF, preceded by one blank line.
+      * Section present -> replace in place, preserving a trailing blank
         line before the next section if one was there.
 
     The generated section's line endings match the file's last existing
@@ -335,7 +332,7 @@ def save_side_overrides(path: Path, review_entries: Mapping[str, str], timestamp
     ``timestamp`` is the value written into the ``# Last generated:``
     comment. Defaults to now (UTC) formatted ``%Y-%m-%dT%H:%M:%SZ``.
 
-    Writes atomically with metadata preservation (§4.10).
+    Writes atomically with metadata preservation (Section 4.10).
     """
     if logger is None:
         logger = _log

@@ -1,20 +1,20 @@
 # src/minecraft/deploy_pack/main.py
 
-"""Entry point and runtime orchestration (Project_Specs.md §2, §4.1, §6.2, §9.2).
+"""Entry point and runtime orchestration (Project_Specs.md Section 2, Section 4.1, Section 6.2, Section 9.2).
 
-Responsibilities (§9.2):
-  * argument parsing and §2.5's exit-2 matrix
+Responsibilities (Section 9.2):
+  * argument parsing and Section 2.5's exit-2 matrix
   * scope resolution
   * partition resolution (delegated to config_model)
-  * interactive prompt for unmarked jars (§6.2), when the operator has
+  * interactive prompt for unmarked jars (Section 6.2), when the operator has
     not passed --non-interactive
   * preflight invocation (delegated to preflight)
-  * the §4.1 runtime sequence: notices, stop, writes, reload, live, start,
+  * the Section 4.1 runtime sequence: notices, stop, writes, reload, live, start,
     health, online
   * notification dispatch via notifications.py
-  * exit-code mapping per §2.4
+  * exit-code mapping per Section 2.4
 
-Exit codes (§2.4):
+Exit codes (Section 2.4):
   0 success
   1 runtime failure
   2 CLI usage error
@@ -25,23 +25,23 @@ before the interactive prompt; the prompt before preflight; preflight
 before runtime. See :func:`_validate_cli`, :func:`_run_with_scope`,
 and the try/except hierarchy in :func:`main`.
 
-Interactive prompt (§6.2, §6.3)
+Interactive prompt (Section 6.2, Section 6.3)
 -------------------------------
 
 Jars whose ``.pw.toml`` declares a ``side`` outside ``{client, server,
-both}`` are "unmarked" (§6.3). When a server or client scope is active
+both}`` are "unmarked" (Section 6.3). When a server or client scope is active
 and the operator has not passed ``--non-interactive``, the entrypoint
 prompts for each such jar and records the answer as a
 ``[deployment_tool_review]`` entry in ``side_overrides.toml``. The
 prompt runs before preflight so that preflight's mods-change computation
-(§4.4) sees the newly-marked entries; it is skipped under ``--dry-run``
-because §2.6 forbids filesystem writes.
+(Section 4.4) sees the newly-marked entries; it is skipped under ``--dry-run``
+because Section 2.6 forbids filesystem writes.
 
-Jars with *no* ``.pw.toml`` at all are also unmarked by §6.3, but they
+Jars with *no* ``.pw.toml`` at all are also unmarked by Section 6.3, but they
 cannot be fixed by writing a review entry - the index has nothing to
 key against. The prompt warns about them and continues.
 
-CLI failure output (§4.7, §4.8, §4.13)
+CLI failure output (Section 4.7, Section 4.8, Section 4.13)
 ---------------------------------------
 
 The runtime failure paths emit structured diagnostics to stdout
@@ -49,7 +49,7 @@ regardless of ``--notify``:
 
   * **Failure summary line:** ``<failure_stage>: <error>`` on stdout.
   * **Per-container status:** one ``<instance_name>: <state>`` line per
-    lifecycle-touched container, per §5.8's vocabulary. Rendered for
+    lifecycle-touched container, per Section 5.8's vocabulary. Rendered for
     non-server-scope write failures, reload failures, and post-phase
     failures. The server-scope write failure path emits the recovery
     block instead (which carries the affected containers and the reason).
@@ -57,7 +57,7 @@ regardless of ``--notify``:
 Both are in addition to the logged diagnostics; the spec's "print ... to
 CLI (always)" clauses are satisfied by stdout.
 
-CLI warnings (§4.6.9)
+CLI warnings (Section 4.6.9)
 ---------------------
 
 ``preflight`` collects warnings (the pack-required staleness notice,
@@ -74,20 +74,20 @@ comments. Each section is self-contained: everything inside it belongs
 to the same concern, and the eventual module split will move whole
 sections without touching their contents.
 
-    §1  Imports
-    §2  CLI surface             (parser, args, validation, scopes)
-    §3  Config load
-    §4  Interactive prompt
-    §5  RCON transport set
-    §6  Diagnostics
-    §7  Notification composition
-    §8  Recovery / notice helpers
-    §9  Scope writes
-    §10 Runtime phases (§4.1)
-    §11 CLI dispatch
-    §12 Entry point
+    Section 1  Imports
+    Section 2  CLI surface             (parser, args, validation, scopes)
+    Section 3  Config load
+    Section 4  Interactive prompt
+    Section 5  RCON transport set
+    Section 6  Diagnostics
+    Section 7  Notification composition
+    Section 8  Recovery / notice helpers
+    Section 9  Scope writes
+    Section 10 Runtime phases (Section 4.1)
+    Section 11 CLI dispatch
+    Section 12 Entry point
 
-The §4.1 runtime sequence threads its state through a small
+The Section 4.1 runtime sequence threads its state through a small
 :class:`_RuntimeState` dataclass and calls one single-purpose phase
 function per step. Each phase returns ``None`` to continue or an
 ``int`` exit code to abort, which makes the failure contract visible
@@ -96,7 +96,7 @@ at :func:`_run_deployment`'s call site.
 Logging
 -------
 
-Every application module emits exclusively through LoggingCore (§9.2's
+Every application module emits exclusively through LoggingCore (Section 9.2's
 "pluggable sinks" contract). Each module obtains its own logger via
 ``logging_setup.get_logger(__name__)`` so the ``event.logger`` label
 reflects the module that produced the message, not the caller.
@@ -141,7 +141,7 @@ from .scope_resource_pack import ResourcePackScopeResult, deploy_resource_pack_s
 from .scope_server import ServerScopeResult, deploy_server_scope
 
 # ===========================================================================
-# §2  CLI surface
+# Section 2  CLI surface
 # ===========================================================================
 
 
@@ -159,21 +159,21 @@ _KNOWN_OVERRIDE_FLAGS = frozenset(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build the argparse parser for deploy_pack's CLI (§2.2, §2.5)."""
+    """Build the argparse parser for deploy_pack's CLI (Section 2.2, Section 2.5)."""
     parser = argparse.ArgumentParser(prog="deploy_pack", description="Deploy Minecraft server + client pack.", add_help=True)
-    parser.add_argument("--server", action="store_true", help="Server scope (§2.1)")
-    parser.add_argument("--client", action="store_true", help="Client scope (§2.1)")
-    parser.add_argument("--resource-pack", action="store_true", help="Resource-pack scope (§2.1)")
-    parser.add_argument("--full", action="store_true", help="Server + client + resource-pack (§2.1)")
-    parser.add_argument("--notify", action="store_true", help="Opt-in Discord notify (§2.2)")
-    parser.add_argument("--dry-run", action="store_true", help="No writes, no lifecycle (§2.2, §2.6)")
-    parser.add_argument("--with-resources", action="store_true", help="Include RP files in client ZIP (§2.2)")
-    parser.add_argument("--instance", action="append", default=None, help="Target instances; repeatable / comma-separated (§2.9)")
+    parser.add_argument("--server", action="store_true", help="Server scope (Section 2.1)")
+    parser.add_argument("--client", action="store_true", help="Client scope (Section 2.1)")
+    parser.add_argument("--resource-pack", action="store_true", help="Resource-pack scope (Section 2.1)")
+    parser.add_argument("--full", action="store_true", help="Server + client + resource-pack (Section 2.1)")
+    parser.add_argument("--notify", action="store_true", help="Opt-in Discord notify (Section 2.2)")
+    parser.add_argument("--dry-run", action="store_true", help="No writes, no lifecycle (Section 2.2, Section 2.6)")
+    parser.add_argument("--with-resources", action="store_true", help="Include RP files in client ZIP (Section 2.2)")
+    parser.add_argument("--instance", action="append", default=None, help="Target instances; repeatable / comma-separated (Section 2.9)")
     parser.add_argument("--debug", action="store_true", help="Verbose logging")
     parser.add_argument("--debug-deps", action="store_true", help="Print dependency closure and exit / continue")
-    parser.add_argument("--audit-mods", action="store_true", help="Standalone Textual UI (§6.1)")
-    parser.add_argument("--non-interactive", action="store_true", help="Skip prompts; unmarked mods not deployed (§6.2)")
-    parser.add_argument("--config-dir", type=str, default=None, help="Config directory (§2.2)")
+    parser.add_argument("--audit-mods", action="store_true", help="Standalone Textual UI (Section 6.1)")
+    parser.add_argument("--non-interactive", action="store_true", help="Skip prompts; unmarked mods not deployed (Section 6.2)")
+    parser.add_argument("--config-dir", type=str, default=None, help="Config directory (Section 2.2)")
     return parser
 
 
@@ -194,7 +194,7 @@ def _parse_overrides(remaining: list[str]) -> dict[str, str]:
     """Parse leftover ``--flag value`` / ``--flag=value`` tokens into a kwargs dict.
 
     The resulting keys are snake_case (``--sync-root`` -> ``sync_root``),
-    matching ``[deploy_pack.toml]``'s naming convention (§2.8). Unknown
+    matching ``[deploy_pack.toml]``'s naming convention (Section 2.8). Unknown
     flags are caught earlier by :func:`_validate_passthrough_flags`; this
     function only runs on tokens that already passed that gate.
 
@@ -244,7 +244,7 @@ class _Args:
 
 
 def _validate_args(args: _Args, parser: argparse.ArgumentParser) -> None:
-    """Raise UsageError for every §2.5 exit-2 condition."""
+    """Raise UsageError for every Section 2.5 exit-2 condition."""
     if args.audit_mods:
         rejected = []
         if args.server:
@@ -301,7 +301,7 @@ class _Scopes:
 
 
 def _resolve_scopes(args: _Args) -> _Scopes:
-    """Resolve the _Scopes bundle from the parsed CLI surface (§2.1)."""
+    """Resolve the _Scopes bundle from the parsed CLI surface (Section 2.1)."""
     if args.full:
         return _Scopes(ScopeSet(server=True, client=True, resource_pack=True), with_resources=True)
     return _Scopes(
@@ -321,17 +321,15 @@ def _resolve_config_dir(raw: str | None) -> Path:
 
 
 # ===========================================================================
-# §3  Config load
+# Section 3  Config load
 # ===========================================================================
 
 
 def _setup_logging(debug: bool) -> Any:
     """Configure logging and return this module's logger.
 
-    The returned logger is labelled ``minecraft.deploy_pack.main``, so
-    every event emitted by this file carries its own module tag rather
-    than a generic ``deploy_pack`` label. Downstream modules obtain their
-    own loggers via ``logging_setup.get_logger(__name__)``.
+    The returned logger is labelled ``minecraft.deploy_pack.main``, so every event emitted by this file carries its own module tag rather than a
+    generic ``deploy_pack`` label. Downstream modules obtain their own loggers via ``logging_setup.get_logger(__name__)``.
     """
     level = logging.DEBUG if debug else logging.INFO
     logging.getLogger().setLevel(level)
@@ -357,20 +355,19 @@ def _load_config(config_dir: Path, overrides: list[str]) -> DeploymentConfig:
 
 
 def _sticky_max(actions: list[str]) -> str:
-    """Return the §4.6.2 sticky-max over ``actions``."""
+    """Return the Section 4.6.2 sticky-max over ``actions``."""
     return sticky_max(actions)
 
 
 # ===========================================================================
-# §4  Interactive prompt (§6.2, §6.3)
+# Section 4  Interactive prompt (Section 6.2, Section 6.3)
 # ===========================================================================
 
 
 def _classify_unmarked(unmarked: list, entries: list[dict]) -> tuple[list, list]:
     """Split unmarked jars into (fixable, unfixable) by whether an index entry exists.
 
-    A jar with no ``.pw.toml`` cannot be fixed by writing a review entry;
-    the index has nothing to key against.
+    A jar with no ``.pw.toml`` cannot be fixed by writing a review entry; the index has nothing to key against.
     """
     indexed_files = {str(e.get("file", "")) for e in entries if e.get("file")}
     fixable = [u for u in unmarked if u.filename in indexed_files]
@@ -446,7 +443,7 @@ def _prompt_for_unmarked(config: DeploymentConfig, logger: Any) -> None:
 
 
 # ===========================================================================
-# §5  RCON transport set
+# Section 5  RCON transport set
 # ===========================================================================
 
 
@@ -499,12 +496,12 @@ class _RconSet:
 
 
 # ===========================================================================
-# §6  Diagnostics (§2.5)
+# Section 6  Diagnostics (Section 2.5)
 # ===========================================================================
 
 
 def _run_debug_deps(config: DeploymentConfig, logger: Any) -> None:
-    """Print dependency closure for both sides (§2.5)."""
+    """Print dependency closure for both sides (Section 2.5)."""
     index_dir = Path(config.modpack_dir) / ".index"
     if not index_dir.is_dir():
         print(f"Prism index directory not found: {index_dir}", file=sys.stderr)
@@ -522,14 +519,14 @@ def _run_debug_deps(config: DeploymentConfig, logger: Any) -> None:
 
 
 def _run_diagnostic_notify(config: DeploymentConfig, logger: Any) -> None:
-    """Attempt the diagnostic Discord message (§5.2)."""
+    """Attempt the diagnostic Discord message (Section 5.2)."""
     ctx = notifications.DiagnosticContext(tool_version=tool_version(), timestamp=notifications.render_timestamp_now())
     all_roles = config.discord.player_roles + config.discord.operator_roles
     notifications.notify_diagnostic(config.discord.diagnostic_template, ctx, config.webhook_url, all_roles, logger=logger)
 
 
 # ===========================================================================
-# §7  Notification composition (§4.6.9, §4.6.10, §5.4-§5.6)
+# Section 7  Notification composition (Section 4.6.9, Section 4.6.10, Section 5.4-Section 5.6)
 # ===========================================================================
 
 
@@ -567,7 +564,7 @@ def _collect_config_members(plan: PreflightPlan) -> tuple[list[str], int]:
 
 
 def _build_server_section(plan: PreflightPlan) -> str:
-    """Render the live notification's server section (§4.6.10)."""
+    """Render the live notification's server section (Section 4.6.10)."""
     targeted = plan.targeted
     mods_deployed = None
     if plan.mods_change is not None and (not targeted):
@@ -590,7 +587,7 @@ def _build_server_section(plan: PreflightPlan) -> str:
 
 
 def _build_client_section(client_result: ClientScopeResult | None, dry_run: bool) -> str:
-    """Render the live notification's client section (§5.4)."""
+    """Render the live notification's client section (Section 5.4)."""
     if dry_run or client_result is None:
         return notifications.build_client_section(zip_filename=None, sha256=None, changelog_url=None, dry_run=True)
     return notifications.build_client_section(
@@ -602,7 +599,7 @@ def _build_client_section(client_result: ClientScopeResult | None, dry_run: bool
 
 
 def _build_rp_section(plan: PreflightPlan, rp_result: ResourcePackScopeResult | None) -> str:
-    """Render the live notification's resource-pack section (§7.7)."""
+    """Render the live notification's resource-pack section (Section 7.7)."""
     configured = any(member in plan.member_plans and plan.member_plans[member].resource_pack_target for member in plan.partition) or bool(
         plan.partition and rp_result and rp_result.publish_results
     )
@@ -623,7 +620,7 @@ def _send_live(
     dry_run: bool,
     logger: Any,
 ) -> notifications.NotifyResult:
-    """Render and post the live notification (§5.4)."""
+    """Render and post the live notification (Section 5.4)."""
     ctx = notifications.LiveContext(
         tool_version=tool_version(),
         timestamp=notifications.render_timestamp_now(),
@@ -647,7 +644,7 @@ def _send_failure(
     container_status: dict[str, str],
     logger: Any,
 ) -> notifications.NotifyResult:
-    """Render and post the failure notification (§5.6)."""
+    """Render and post the failure notification (Section 5.6)."""
     ctx = notifications.FailureContext(
         tool_version=tool_version(),
         timestamp=notifications.render_timestamp_now(),
@@ -661,7 +658,7 @@ def _send_failure(
 
 
 def _send_online(config: DeploymentConfig, container_status: dict[str, str], logger: Any) -> notifications.NotifyResult:
-    """Render and post the online notification (§5.5)."""
+    """Render and post the online notification (Section 5.5)."""
     ctx = notifications.OnlineContext(
         tool_version=tool_version(),
         timestamp=notifications.render_timestamp_now(),
@@ -673,7 +670,7 @@ def _send_online(config: DeploymentConfig, container_status: dict[str, str], log
 
 
 # ===========================================================================
-# §8  Recovery / notice helpers (§4.5, §5.8, §8.7, §8.8)
+# Section 8  Recovery / notice helpers (Section 4.5, Section 5.8, Section 8.7, Section 8.8)
 # ===========================================================================
 
 
@@ -713,7 +710,7 @@ def _build_recovery_ctx(config: DeploymentConfig, rcon_set: _RconSet, cancel_mes
 
 
 def _dispatch_restart_notices(config: DeploymentConfig, warned_and_running: list[str], rcon_set: _RconSet, logger: Any) -> _NoticeOutcome:
-    """Dispatch the in-game restart notice to warned-and-running members (§4.14 step 4)."""
+    """Dispatch the in-game restart notice to warned-and-running members (Section 4.14 step 4)."""
     template = config.docker.restart_notice_template
     wait_seconds = config.docker.restart_wait_seconds
     message = template.replace("{time}", f"{wait_seconds} seconds")
@@ -734,7 +731,7 @@ def _dispatch_restart_notices(config: DeploymentConfig, warned_and_running: list
 
 
 def _dispatch_cancel_notice(config: DeploymentConfig, recipients: list[str], rcon_set: _RconSet, logger: Any) -> None:
-    """Dispatch the in-game cancel notice to the given recipients (§8.7)."""
+    """Dispatch the in-game cancel notice to the given recipients (Section 8.7)."""
     if not recipients:
         return
     msg = config.docker.restart_cancel_notice_template
@@ -742,7 +739,7 @@ def _dispatch_cancel_notice(config: DeploymentConfig, recipients: list[str], rco
 
 
 def _online_container_status(plan: PreflightPlan, to_stop: list[str], post: PostHookResult) -> dict[str, str]:
-    """§5.8 online: containers successfully stopped and brought up healthy."""
+    """Section 5.8 online: containers successfully stopped and brought up healthy."""
     out: dict[str, str] = {}
     for member in to_stop:
         if member in post.started and member not in post.start_failed and member not in post.health_failed:
@@ -757,7 +754,7 @@ def _failure_container_status(
     reloaded: list[str],
     reload_failed: list[str],
 ) -> dict[str, str]:
-    """§5.8 failure: all lifecycle-touched containers, plus internal states."""
+    """Section 5.8 failure: all lifecycle-touched containers, plus internal states."""
     out: dict[str, str] = {}
     if pre is not None:
         for member in pre.stopped:
@@ -790,13 +787,13 @@ def _failure_container_status(
 
 
 def _print_cli_container_status(status: dict[str, str]) -> None:
-    """Print per-container status to CLI, format per §5.8."""
+    """Print per-container status to CLI, format per Section 5.8."""
     for member in sorted(status):
         print(f"{member}: {status[member]}")
 
 
 def _print_server_write_failure_recovery(config: DeploymentConfig, to_stop: list[str], failure_summary: str) -> None:
-    """Print the §4.7 server-scope write-failure recovery block to CLI."""
+    """Print the Section 4.7 server-scope write-failure recovery block to CLI."""
     print()
     print("RECOVERY REQUIRED")
     print()
@@ -825,7 +822,7 @@ def _print_server_write_failure_recovery(config: DeploymentConfig, to_stop: list
 
 
 def _print_recovery_block(config: DeploymentConfig, recovery: RecoveryResult, container_states: dict[str, Any], reason: str) -> None:
-    """Print the §8.8 recovery block after a failed pre-hook stop."""
+    """Print the Section 8.8 recovery block after a failed pre-hook stop."""
     start_failed = list(getattr(recovery, "start_failed", []) or [])
     unreachable = list(getattr(recovery, "unreachable", []) or [])
     affected = sorted(set(start_failed) | set(unreachable))
@@ -852,7 +849,7 @@ def _print_recovery_block(config: DeploymentConfig, recovery: RecoveryResult, co
 
 
 # ===========================================================================
-# §9  Scope writes (§4.2)
+# Section 9  Scope writes (Section 4.2)
 # ===========================================================================
 
 
@@ -863,10 +860,9 @@ def _run_writes(
     protect_patterns: list[str],
     logger: Any,
 ) -> tuple[bool, ServerScopeResult | None, ClientScopeResult | None, ResourcePackScopeResult | None, str | None]:
-    """Perform scopes in §4.2's order, halting on first failure.
+    """Perform scopes in Section 4.2's order, halting on first failure.
 
-    Each scope receives no logger; it uses its own module logger so
-    events are tagged with the module that produced them.
+    Each scope receives no logger; it uses its own module logger so events are tagged with the module that produced them.
     """
     server_result: ServerScopeResult | None = None
     client_result: ClientScopeResult | None = None
@@ -887,23 +883,19 @@ def _run_writes(
 
 
 # ===========================================================================
-# §10  Runtime phases (§4.1)
+# Section 10  Runtime phases (Section 4.1)
 # ===========================================================================
 
 
 @dataclass
 class _RuntimeState:
-    """Mutable state threaded through the §4.1 runtime phases.
+    """Mutable state threaded through the Section 4.1 runtime phases.
 
-    Populated by :func:`_make_runtime_state` for non-dry-run invocations
-    only, because constructing the RCON set performs Docker port
-    inspection (``select_rcon_transport`` → ``runtime.published_ports``)
-    and §2.6 forbids Docker operations during dry-run.
+    Populated by :func:`_make_runtime_state` for non-dry-run invocations only, because constructing the RCON set performs Docker port inspection
+    (``select_rcon_transport`` -> ``runtime.published_ports``) and Section 2.6 forbids Docker operations during dry-run.
 
-    The phase helpers read inputs from the top half and write their
-    outputs to the bottom half. ``pre``, ``to_stop``, ``reloaded``,
-    ``reload_failed``, and the three scope results are only meaningful
-    once the corresponding phase has run.
+    The phase helpers read inputs from the top half and write their outputs to the bottom half. ``pre``, ``to_stop``, ``reloaded``,
+    ``reload_failed``, and the three scope results are only meaningful once the corresponding phase has run.
     """
 
     # Inputs
@@ -957,7 +949,7 @@ def _make_runtime_state(
 
 
 def _run_dry_run_phase(config: DeploymentConfig, plan: PreflightPlan, scopes: _Scopes, notify: bool, logger: Any) -> int:
-    """§2.6: report the plan and return without any write or lifecycle op."""
+    """Section 2.6: report the plan and return without any write or lifecycle op."""
     logger.info("=" * 72)
     logger.info("DRY RUN - plan")
     logger.info(f"  partition:    {', '.join(plan.partition) or '(none)'}")
@@ -981,10 +973,9 @@ def _run_dry_run_phase(config: DeploymentConfig, plan: PreflightPlan, scopes: _S
 
 
 def _run_notice_phase(state: _RuntimeState) -> int | None:
-    """§4.14 steps 3-5: compute warned_and_running, dispatch notices, wait.
+    """Section 4.14 steps 3-5: compute warned_and_running, dispatch notices, wait.
 
-    Returns 1 when a required notice failed (aborts before any writes),
-    or None to continue.
+    Returns 1 when a required notice failed (aborts before any writes), or None to continue.
     """
     if state.plan.restart_set:
         state.warned_and_running = compute_warned_and_running(
@@ -1011,10 +1002,9 @@ def _run_notice_phase(state: _RuntimeState) -> int | None:
 
 
 def _run_stop_phase(state: _RuntimeState) -> int | None:
-    """§4.14 step 6: execute the pre-hook stop, or abort on failure.
+    """Section 4.14 step 6: execute the pre-hook stop, or abort on failure.
 
-    Returns 1 on stop failure (recovery already attempted by
-    ``execute_pre_hook``), or None to continue.
+    Returns 1 on stop failure (recovery already attempted by ``execute_pre_hook``), or None to continue.
     """
     if not state.plan.restart_set:
         return None
@@ -1041,7 +1031,7 @@ def _run_stop_phase(state: _RuntimeState) -> int | None:
 
 
 def _run_write_phase(state: _RuntimeState) -> int | None:
-    """§4.2: run the scopes; handle write failure per §4.7.
+    """Section 4.2: run the scopes; handle write failure per Section 4.7.
 
     Returns 1 on failure, or None to continue.
     """
@@ -1081,10 +1071,9 @@ def _run_write_phase(state: _RuntimeState) -> int | None:
 
 
 def _run_reload_phase(state: _RuntimeState) -> int | None:
-    """§4.6.8: RCON reload running reload_set members.
+    """Section 4.6.8: RCON reload running reload_set members.
 
-    Returns 1 on reload failure (recovery + notify already handled), or
-    None to continue.
+    Returns 1 on reload failure (recovery + notify already handled), or None to continue.
     """
     if not state.plan.reload_set:
         return None
@@ -1154,10 +1143,9 @@ def _handle_post_failure(state: _RuntimeState, post: PostHookResult) -> int:
 
 
 def _run_post_phase(state: _RuntimeState) -> int:
-    """§4.13: start every container this deployment stopped; wait for health.
+    """Section 4.13: start every container this deployment stopped; wait for health.
 
-    Returns 0 on success (sending the online notification if warranted),
-    or 1 on any start / health failure.
+    Returns 0 on success (sending the online notification if warranted), or 1 on any start / health failure.
     """
     if not state.plan.restart_set:
         return 0
@@ -1187,11 +1175,10 @@ def _run_deployment(
     protect_patterns: list[str],
     logger: Any,
 ) -> int:
-    """Execute the §4.1 runtime sequence. Returns the exit code.
+    """Execute the Section 4.1 runtime sequence.
 
-    Walks the phases in order; each phase returns an exit code to abort
-    or None to continue. Dry-run short-circuits before any state that
-    would touch Docker beyond the read-only preflight inspections.
+    Returns the exit code.     Walks the phases in order; each phase returns an exit code to abort     or None to continue. Dry-run short-circuits
+    before any state that     would touch Docker beyond the read-only preflight inspections.
     """
     if not scopes.scope_set.any():
         return 0
@@ -1217,12 +1204,15 @@ def _run_deployment(
 
 
 # ===========================================================================
-# §11  CLI dispatch (§2.4, §2.5, §2.7)
+# Section 11  CLI dispatch (Section 2.4, Section 2.5, Section 2.7)
 # ===========================================================================
 
 
 def _load_config_or_exit(config_dir: Path, remaining: list[str], logger: Any) -> DeploymentConfig | None:
-    """Load config, logging and swallowing any exception. Returns None on failure."""
+    """Load config, logging and swallowing any exception.
+
+    Returns None on failure.
+    """
     try:
         return _load_config(config_dir, remaining)
     except Exception as exc:
@@ -1239,10 +1229,9 @@ def _run_debug_deps_safe(config: DeploymentConfig, logger: Any) -> None:
 
 
 def _prompt_if_needed(config: DeploymentConfig, scopes: _Scopes, args: _Args, logger: Any) -> int | None:
-    """§6.2: prompt for unmarked jars on live server/client runs.
+    """Section 6.2: prompt for unmarked jars on live server/client runs.
 
-    Skipped under ``--dry-run`` (no writes per §2.6) and under
-    ``--non-interactive``. Returns 3 on prompt failure, else None.
+    Skipped under ``--dry-run`` (no writes per Section 2.6) and under ``--non-interactive``. Returns 3 on prompt failure, else None.
     """
     if not (scopes.scope_set.server or scopes.scope_set.client):
         return None
@@ -1305,7 +1294,7 @@ def _emit_plan_warnings(plan: PreflightPlan, args: _Args, logger: Any) -> None:
 
 
 def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
-    """Config load -> prompt -> preflight -> runtime, in spec order (§2.4)."""
+    """Config load -> prompt -> preflight -> runtime, in spec order (Section 2.4)."""
     config_dir = _resolve_config_dir(args.config_dir)
     config = _load_config_or_exit(config_dir, remaining, logger)
     if config is None:
@@ -1349,8 +1338,7 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
 def _parse_cli(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[_Args | None, list[str]]:
     """Parse argv into (_Args, remaining).
 
-    Returns ``(None, remaining)`` when ``--non-interactive`` alone was
-    passed, which is the §2.5 "print help, exit 0" case.
+    Returns ``(None, remaining)`` when ``--non-interactive`` alone was passed, which is the Section 2.5 "print help, exit 0" case.
     """
     ns, remaining = parser.parse_known_args(argv)
     args = _Args(
@@ -1375,7 +1363,10 @@ def _parse_cli(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[_Args 
 
 
 def _validate_cli(args: _Args, parser: argparse.ArgumentParser, remaining: list[str]) -> int | None:
-    """Run the §2.5 exit-2 checks. Returns 2 on failure, None on success."""
+    """Run the Section 2.5 exit-2 checks.
+
+    Returns 2 on failure, None on success.
+    """
     try:
         _validate_args(args, parser)
         _validate_passthrough_flags(remaining)
@@ -1387,7 +1378,7 @@ def _validate_cli(args: _Args, parser: argparse.ArgumentParser, remaining: list[
 
 
 def _dispatch_audit_mods(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
-    """§2.7: standalone Textual audit UI."""
+    """Section 2.7: standalone Textual audit UI."""
     if not getattr(prompt_ui, "HAS_TEXTUAL", False):
         print("error: --audit-mods requires the textual package", file=sys.stderr)
         return 1
@@ -1400,7 +1391,10 @@ def _dispatch_audit_mods(args: _Args, config_dir: Path, remaining: list[str], lo
 
 
 def _dispatch_debug_deps_only(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
-    """§2.5: --debug-deps without a scope. Optional --notify fires diagnostic."""
+    """Section 2.5: --debug-deps without a scope.
+
+    Optional --notify fires diagnostic.
+    """
     config = _load_config_or_exit(config_dir, remaining, logger)
     if config is None:
         return 3
@@ -1414,7 +1408,7 @@ def _dispatch_debug_deps_only(args: _Args, config_dir: Path, remaining: list[str
 
 
 def _dispatch_diagnostic_only(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
-    """§2.5: --notify without a scope attempts the diagnostic message."""
+    """Section 2.5: --notify without a scope attempts the diagnostic message."""
     config = _load_config_or_exit(config_dir, remaining, logger)
     if config is None:
         return 3
@@ -1442,7 +1436,10 @@ def _dispatch_no_scope(
 
 
 def _run(argv: list[str]) -> int:
-    """Top-level entrypoint. Returns the process exit code."""
+    """Top-level entrypoint.
+
+    Returns the process exit code.
+    """
     parser = _build_parser()
     if not argv:
         parser.print_help()
@@ -1471,12 +1468,15 @@ def _run(argv: list[str]) -> int:
 
 
 # ===========================================================================
-# §12  Entry point
+# Section 12  Entry point
 # ===========================================================================
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Process entrypoint. Maps exceptions to §2.4's exit codes."""
+    """Process entrypoint.
+
+    Maps exceptions to Section 2.4's exit codes.
+    """
     if argv is None:
         argv = sys.argv[1:]
     try:

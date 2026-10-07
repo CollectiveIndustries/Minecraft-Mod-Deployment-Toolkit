@@ -1,32 +1,32 @@
 # src/minecraft/deploy_pack/scope_client.py
 
-"""Client scope: ZIP, changelog HTML, and @www shared-item publication (Project_Specs.md §1.1, §2.1, §4.2, §7.1, §7.5, §7.6, §9.2).
+"""Client scope: ZIP, changelog HTML, and @www shared-item publication (Project_Specs.md Section 1.1, Section 2.1, Section 4.2, Section 7.1, Section 7.5, Section 7.6, Section 9.2).
 
 Responsibilities:
-  * assemble the client staging tree (§7.1 ZIP contents)
-  * find the changelog baseline (§7.1)
-  * build the diff report via common/changelog.py (§1.1)
-  * create the client ZIP atomically (§4.10)
-  * publish the changelog HTML atomically (§4.10)
-  * publish @www/* shared items from sync_mapping (§2.1)
+  * assemble the client staging tree (Section 7.1 ZIP contents)
+  * find the changelog baseline (Section 7.1)
+  * build the diff report via common/changelog.py (Section 1.1)
+  * create the client ZIP atomically (Section 4.10)
+  * publish the changelog HTML atomically (Section 4.10)
+  * publish @www/* shared items from sync_mapping (Section 2.1)
 
 Non-responsibilities:
   * Resource-pack ZIP publication and server.properties updates.
     scope_resource_pack.
   * Discord notification. notifications.py.
   * Preflight checks (source existence, filename validity). preflight.
-  * Unmarked-mod handling (§6.3). The audit tool (prompt_ui.py) or the
+  * Unmarked-mod handling (Section 6.3). The audit tool (prompt_ui.py) or the
     caller decides; this scope filters unmarked entries defensively.
 
-Staging interpretation (§7.1)
+Staging interpretation (Section 7.1)
 -----------------------------
 
-§7.1 says "no staging" but §1.1 freezes common/changelog.py, whose
+Section 7.1 says "no staging" but Section 1.1 freezes common/changelog.py, whose
 public API takes a staging_dir. The reconciliation: server-scope writes
-go directly to instance dirs (§7.2 semantics, no swap). The client ZIP
+go directly to instance dirs (Section 7.2 semantics, no swap). The client ZIP
 is a single artifact; assembling its contents in a temp dir and
-publishing it atomically via files.create_zip satisfies §4.10 without
-violating §7.1's intent. The temp dir is not a deployment staging tree;
+publishing it atomically via files.create_zip satisfies Section 4.10 without
+violating Section 7.1's intent. The temp dir is not a deployment staging tree;
 it is never swapped into place.
 
 Structure
@@ -36,12 +36,12 @@ The module is organised into six sections with explicit banner
 comments. Each section corresponds to one concern and its helpers are
 only called from within that section or from the public entry point.
 
-    §1  Result dataclass
-    §2  Output filename resolution + baseline (§7.1)
-    §3  Client mod source resolution
-    §4  Staging assembly
-    §5  @www shared-item publication (§2.1)
-    §6  Entry point
+    Section 1  Result dataclass
+    Section 2  Output filename resolution + baseline (Section 7.1)
+    Section 3  Client mod source resolution
+    Section 4  Staging assembly
+    Section 5  @www shared-item publication (Section 2.1)
+    Section 6  Entry point
 
 The orchestrator :func:`deploy_client_scope` runs five independent
 phases. Each phase mutates ``result`` in place and returns either
@@ -99,7 +99,7 @@ __all__ = [
 
 
 # ===========================================================================
-# §1  Result dataclass
+# Section 1  Result dataclass
 # ===========================================================================
 
 
@@ -127,7 +127,7 @@ class ClientScopeResult:
 
 
 # ===========================================================================
-# §2  Output filename resolution + baseline (§7.1)
+# Section 2  Output filename resolution + baseline (Section 7.1)
 # ===========================================================================
 
 
@@ -137,10 +137,8 @@ _DATE_TOKEN = "{date}"  # nosec
 def _resolve_output_name(template: str, logger: Any = None) -> tuple[str, str]:
     """Return ``(resolved_filename, date_str)``.
 
-    ``{date}`` is replaced with today's UTC date in YYYYMMDD form. A
-    template without the token is returned unchanged (per §7.1's
-    "same-date re-run when output_filename does not contain {date}"
-    clause).
+    ``{date}`` is replaced with today's UTC date in YYYYMMDD form. A template without the token is returned unchanged (per Section 7.1's "same-date re-run
+    when output_filename does not contain {date}" clause).
     """
     if logger is None:
         logger = _log
@@ -151,7 +149,7 @@ def _resolve_output_name(template: str, logger: Any = None) -> tuple[str, str]:
 
 
 def _changelog_name(resolved_zip_name: str, logger: Any = None) -> str:
-    """§7.1: replace the trailing ``.zip`` with ``.html``."""
+    """Section 7.1: replace the trailing ``.zip`` with ``.html``."""
     if logger is None:
         logger = _log
     if resolved_zip_name.endswith(".zip"):
@@ -163,7 +161,7 @@ def _changelog_name(resolved_zip_name: str, logger: Any = None) -> str:
 
 
 def _baseline_without_date_token(output_dir: Path, template: str, logger: Any) -> Path | None:
-    """Case 1 of §7.1: no ``{date}`` in the template.
+    """Case 1 of Section 7.1: no ``{date}`` in the template.
 
     The baseline is the existing file at the resolved name, or None.
     """
@@ -183,9 +181,8 @@ def _glob_baseline_candidates(
 ) -> list[tuple[str, Path]]:
     """Glob ``<prefix>*<suffix>`` under ``output_dir``; return ``(middle, path)`` pairs.
 
-    ``middle`` is the substring between the two affixes, which for a
-    well-formed filename is the date. Entries whose middle is empty or
-    which are not regular files are skipped.
+    ``middle`` is the substring between the two affixes, which for a well-formed filename is the date. Entries whose middle is empty or which are
+    not regular files are skipped.
     """
     pattern = f"{prefix}*{suffix}"
     candidates: list[tuple[str, Path]] = []
@@ -222,7 +219,7 @@ def _pick_same_date_or_latest(
 
 
 def _find_baseline(output_dir: Path, template: str, date_str: str, logger: Any = None) -> Path | None:
-    """Find the changelog baseline ZIP per §7.1.
+    """Find the changelog baseline ZIP per Section 7.1.
 
     Cases:
 
@@ -251,15 +248,14 @@ def _find_baseline(output_dir: Path, template: str, date_str: str, logger: Any =
 
 
 # ===========================================================================
-# §3  Client mod source resolution
+# Section 3  Client mod source resolution
 # ===========================================================================
 
 
 def _is_unmarked(entry: dict) -> bool:
-    """§6.3: an entry whose declared ``side`` is outside the valid set.
+    """Section 6.3: an entry whose declared ``side`` is outside the valid set.
 
-    ``side_raw is None`` (no ``side`` key in the .pw.toml) is treated as
-    marked, matching the parser's default of ``"both"``.
+    ``side_raw is None`` (no ``side`` key in the .pw.toml) is treated as marked, matching the parser's default of ``"both"``.
     """
     raw = entry.get("side_raw")
     if raw is None:
@@ -268,7 +264,7 @@ def _is_unmarked(entry: dict) -> bool:
 
 
 def _has_override(entry: dict, overrides: Any) -> bool:
-    """Return True if any override section matches this entry (§3.11)."""
+    """Return True if any override section matches this entry (Section 3.11)."""
     mid = str(entry.get("id", ""))
     fname = str(entry.get("file", ""))
     if mid and mid in overrides.by_id:
@@ -306,9 +302,8 @@ def _collect_existing_mod_paths(entries: list[dict], modpack_dir: Path, logger: 
 def _resolve_client_mod_sources(config: DeploymentConfig, logger: Any) -> dict[str, Path]:
     """Return ``{filename: source_path}`` for the client-side mod set.
 
-    Applies overrides, drops unmarked entries (unless overridden), runs
-    the client side filter, and expands the dependency closure. Files
-    missing from disk are skipped with a warning.
+    Applies overrides, drops unmarked entries (unless overridden), runs the client side filter, and expands the dependency closure. Files missing
+    from disk are skipped with a warning.
     """
     index_dir = config.modpack_dir / ".index"
     if not index_dir.is_dir():
@@ -339,7 +334,7 @@ def _resolve_client_mod_sources(config: DeploymentConfig, logger: Any) -> dict[s
 
 
 # ===========================================================================
-# §4  Staging assembly
+# Section 4  Staging assembly
 # ===========================================================================
 
 
@@ -367,8 +362,7 @@ def _stage_one_sync_key(
 ) -> None:
     """Copy one non-shared, non-resourcepack sync item into staging.
 
-    Skips keys excluded on the client side and keys whose destination is
-    a shared (``@www/...``) location; those are published separately, not
+    Skips keys excluded on the client side and keys whose destination is a shared (``@www/...``) location; those are published separately, not
     embedded in the ZIP.
     """
     dest_rel = resolve_mapping_for_side(mapping_value, "client")
@@ -400,7 +394,7 @@ def _stage_sync_mapping(config: DeploymentConfig, staging_dir: Path, logger: Any
 
 
 def _collect_rp_filenames(config: DeploymentConfig) -> list[str]:
-    """Return deduplicated ``[resource_pack.X].filename`` values (§7.6)."""
+    """Return deduplicated ``[resource_pack.X].filename`` values (Section 7.6)."""
     filenames: list[str] = []
     seen: set[str] = set()
     for rp in config.resource_packs.values():
@@ -436,11 +430,11 @@ def _copy_rp_files(
 
 
 def _stage_resource_packs(config: DeploymentConfig, staging_dir: Path, logger: Any) -> None:
-    """Stage the union of ``[resource_pack.X].filename`` values (§7.6).
+    """Stage the union of ``[resource_pack.X].filename`` values (Section 7.6).
 
     Source path resolution: ``sync_root / resourcepacks.client``. Only
     files that exist on disk are staged; preflight validates existence
-    (§7.8) so a missing source at this point is a defensive warning.
+    (Section 7.8) so a missing source at this point is a defensive warning.
     """
     rp_mapping = config.sync_mapping.get("resourcepacks")
     if not isinstance(rp_mapping, dict):
@@ -480,15 +474,14 @@ def _build_staging(
 
 
 # ===========================================================================
-# §5  @www shared-item publication (§2.1)
+# Section 5  @www shared-item publication (Section 2.1)
 # ===========================================================================
 
 
 def _shared_dest_of(value: Any) -> str | None:
     """Return the ``@www/...`` destination of a sync-mapping value, if any.
 
-    Only plain string values are considered. A dict value with a
-    ``resource_pack`` key is scope_resource_pack's concern (§4.9).
+    Only plain string values are considered. A dict value with a ``resource_pack`` key is scope_resource_pack's concern (Section 4.9).
     """
     if isinstance(value, str) and value.startswith("@www/"):
         return value
@@ -503,8 +496,7 @@ def _publish_one_shared_item(
 ) -> tuple[Path, CopyResult] | None:
     """Publish one ``@www/...`` entry.
 
-    Returns ``(dest_dir, result)`` on success, or None when the source
-    is absent or the destination is malformed. Source: ``sync_root/key``.
+    Returns ``(dest_dir, result)`` on success, or None when the source is absent or the destination is malformed. Source: ``sync_root/key``.
     """
     src = config.sync_root / key
     if not src.is_dir():
@@ -551,7 +543,7 @@ def _publish_shared_items(
 
 
 # ===========================================================================
-# §6  Entry point
+# Section 6  Entry point
 # ===========================================================================
 
 
@@ -709,7 +701,7 @@ def deploy_client_scope(
     protect_patterns: list[str],
     logger: Any = None,
 ) -> ClientScopeResult:
-    """Execute the client scope write phase (§4.2, §7.1).
+    """Execute the client scope write phase (Section 4.2, Section 7.1).
 
     Halts on the first runtime failure. Returns a result describing
     what was written. Never raises on a write failure; the caller

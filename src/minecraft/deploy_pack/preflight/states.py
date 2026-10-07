@@ -1,13 +1,13 @@
 # src/minecraft/deploy_pack/preflight/states.py
 
-"""Container-state classification and RCON availability checks (§4.12, §8.4).
+"""Container-state classification and RCON availability checks (Section 4.12, Section 8.4).
 
 Structure
 ---------
 
-    §1  Imports
-    §2  State classification        (§4.12)
-    §3  RCON availability check     (§8.4)
+    Section 1  Imports
+    Section 2  State classification        (Section 4.12)
+    Section 3  RCON availability check     (Section 8.4)
 
 Logging
 -------
@@ -43,12 +43,12 @@ _log = get_logger(__name__)
 
 
 # ===========================================================================
-# §2  State classification (§4.12)
+# Section 2  State classification (Section 4.12)
 # ===========================================================================
 
 
 def classify_state(state: ContainerState, container: str) -> str | None:
-    """Return a failure message if this state is fatal (§4.12), else None.
+    """Return a failure message if this state is fatal (Section 4.12), else None.
 
     No logging: called once per partition member by
     ``runner._classify_states``, which logs the non-fatal branches at
@@ -57,23 +57,23 @@ def classify_state(state: ContainerState, container: str) -> str | None:
     every fatal classification.
     """
     if not state.exists:
-        return f"container {container!r} is missing (§8.9)"
+        return f"container {container!r} is missing (Section 8.9)"
     status = state.status
     if status == "running":
         if state.health is None:
-            return f"container {container!r}: running without .State.Health; the healthcheck may not have been created with the container (§3.17, §4.12)"
+            return f"container {container!r}: running without .State.Health; the healthcheck may not have been created with the container (Section 3.17, Section 4.12)"
         return None
     if status in ("exited", "created", "stopped"):
         return None
     if status in ("paused", "removing", "dead"):
-        return f"container {container!r} is in state {status!r} (§4.12)"
+        return f"container {container!r} is in state {status!r} (Section 4.12)"
     if status == "restarting":
-        return f"container {container!r} is still restarting after the bounded wait (§4.12)"
+        return f"container {container!r} is still restarting after the bounded wait (Section 4.12)"
     return f"container {container!r} has unexpected status {status!r}"
 
 
 # ===========================================================================
-# §3  RCON availability check (§8.4)
+# Section 3  RCON availability check (Section 8.4)
 # ===========================================================================
 
 
@@ -121,7 +121,7 @@ def _check_one_member_rcon(
       * Transport selected       -> ``tally.checked++``, return.
 
     A ``DockerUnavailableError`` from ``select_rcon_transport`` is not
-    caught here: preflight lets it propagate per §2.4.
+    caught here: preflight lets it propagate per Section 2.4.
     """
     state = container_states.get(member)
     if not _is_running_or_none(state):
@@ -141,7 +141,7 @@ def _check_one_member_rcon(
         logger.debug(f"check_rcon_available: [{member}] transport selection failed: {exc}")
         failures.append(
             PreflightFailure(
-                f"§8.4 [{member}]",
+                f"Section 8.4 [{member}]",
                 f"RCON required for restart notice but unavailable: {exc}",
             )
         )
@@ -154,10 +154,8 @@ def _check_one_member_rcon(
 def _log_rcon_summary(tally: _RconCheckTally, failures: list[PreflightFailure], logger: Any) -> None:
     """Emit the closing INFO/WARN line for the RCON check.
 
-    WARN when at least one member lacked RCON; INFO otherwise. The
-    checked denominator counts only members that cleared the two skip
-    gates (running + has service), so it matches the set of members a
-    transport was actually attempted for.
+    WARN when at least one member lacked RCON; INFO otherwise. The checked denominator counts only members that cleared the two skip gates (running
+    + has service), so it matches the set of members a transport was actually attempted for.
     """
     if failures:
         affected = [f.source for f in failures]
@@ -176,19 +174,17 @@ def check_rcon_available(
     container_states: dict[str, ContainerState],
     logger: Any = None,
 ) -> list[PreflightFailure]:
-    """§8.4: any running restart_set member must have a selectable RCON transport.
+    """Section 8.4: any running restart_set member must have a selectable RCON transport.
 
-    The per-member failure reason is logged at ERROR by
-    :func:`select_rcon_transport`; this function logs at DEBUG per
-    member and emits a single INFO or WARN summary so the operator sees
-    the aggregate count without counting ERROR lines.
+    The per-member failure reason is logged at ERROR by :func:`select_rcon_transport`; this function logs at DEBUG per member and emits a single
+    INFO or WARN summary so the operator sees the aggregate count without counting ERROR lines.
     """
     if logger is None:
         logger = _log
     logger.debug(f"check_rcon_available: restart_set={restart_set} container_states={list(container_states.keys())}")
     compose = config.compose.file if config.compose.ok else None
     if compose is None:
-        logger.debug("check_rcon_available: compose not loaded; skipping (per §8.4 scope)")
+        logger.debug("check_rcon_available: compose not loaded; skipping (per Section 8.4 scope)")
         return []
 
     tally = _RconCheckTally()

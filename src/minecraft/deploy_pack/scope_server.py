@@ -1,23 +1,23 @@
 # src/minecraft/deploy_pack/scope_server.py
 
-"""Server scope: write phase (Project_Specs.md §4.2, §4.7, §4.11, §6.3, §7.2, §9.2).
+"""Server scope: write phase (Project_Specs.md Section 4.2, Section 4.7, Section 4.11, Section 6.3, Section 7.2, Section 9.2).
 
 Responsibilities:
-  * deploy shared mods into ``mods_dir`` (skip when targeted, §2.9)
-  * deploy per-instance ``config`` and ``kubejs`` per §7.2
+  * deploy shared mods into ``mods_dir`` (skip when targeted, Section 2.9)
+  * deploy per-instance ``config`` and ``kubejs`` per Section 7.2
   * deploy any other non-shared sync-mapping key with merge semantics
-  * collect a structured result so the caller can apply §4.7's failure
+  * collect a structured result so the caller can apply Section 4.7's failure
     handling (which needs to know what was and wasn't written)
 
 Non-responsibilities:
-  * §4.7's failure handling itself. That decision requires knowledge of
+  * Section 4.7's failure handling itself. That decision requires knowledge of
     which containers were stopped, which is main's concern.
-  * Lifecycle (§8). hooks.py.
+  * Lifecycle (Section 8). hooks.py.
   * Client ZIP assembly. scope_client.
   * Resource-pack publication. scope_resource_pack.
   * Building the deploy plan. preflight.
 
-Write ordering (§4.2, "halt on first runtime failure"):
+Write ordering (Section 4.2, "halt on first runtime failure"):
 
     1. mods_dir (shared, once)
     2. per-instance config/kubejs, in partition order
@@ -28,11 +28,11 @@ distinguish "mods failed" from "member X's config failed."
 
 Mods are computed from the Prism index, not from a directory. The
 source-set logic mirrors preflight's and scope_client's: overrides are
-applied, unmarked entries (§6.3) are dropped unless an override marks
+applied, unmarked entries (Section 6.3) are dropped unless an override marks
 them, the server side filter runs, and the dependency closure expands
 the seed.
 
-Unmarked handling (§6.3)
+Unmarked handling (Section 6.3)
 ------------------------
 
 An entry is unmarked when its ``.pw.toml`` declares a ``side`` outside
@@ -106,10 +106,8 @@ class MemberWriteResult:
 class ServerScopeResult:
     """Outcome of the server scope write phase.
 
-    On failure, ``success`` is False, ``failure_phase`` identifies the
-    stage that failed (``"mods"`` or ``"config"`` or the sync-mapping
-    key), and ``failure_member`` is set when the failure was per-member.
-    ``member_results`` contains only members processed before the halt.
+    On failure, ``success`` is False, ``failure_phase`` identifies the stage that failed (``"mods"`` or ``"config"`` or the sync-mapping key), and
+    ``failure_member`` is set when the failure was per-member. ``member_results`` contains only members processed before the halt.
     """
 
     success: bool = True
@@ -152,7 +150,7 @@ class ServerScopeResult:
 
 
 def _is_unmarked(entry: dict) -> bool:
-    """§6.3: an entry whose declared ``side`` is outside ``{client, server, both}`` is unmarked.
+    """Section 6.3: an entry whose declared ``side`` is outside ``{client, server, both}`` is unmarked.
 
     ``side_raw is None`` means the ``.pw.toml`` had no ``side`` key at
     all, which the parser defaults to ``"both"`` - that is *marked*.
@@ -170,10 +168,10 @@ def _resolve_mods_source(
 ) -> dict[str, Path]:
     """Return ``{filename: source_path}`` for the server-side mod set.
 
-    Pipeline (§3.11, §6.3, §6):
+    Pipeline (Section 3.11, Section 6.3, Section 6):
 
       1. Load every ``.pw.toml`` entry from the Prism index.
-      2. Drop unmarked entries (§6.3) unless an override marks them.
+      2. Drop unmarked entries (Section 6.3) unless an override marks them.
       3. Apply overrides. An override's value replaces ``side`` and is
          what the subsequent filter sees.
       4. Run the server side filter on the marked set.
@@ -230,11 +228,10 @@ def _resolve_mods_source(
 
 
 def _mode_for_key(key: str, inst: InstanceConfig) -> str:
-    """Return the §7.2 clean mode for a sync-mapping key on this instance.
+    """Return the Section 7.2 clean mode for a sync-mapping key on this instance.
 
-    ``config`` → the instance's ``config_mode``.
-    ``kubejs`` → the instance's ``kubejs_mode`` (always ``"delete"``).
-    Anything else → ``"merge"``.
+    ``config`` -> the instance's ``config_mode``. ``kubejs`` -> the instance's ``kubejs_mode`` (always ``"delete"``). Anything else ->
+    ``"merge"``.
     """
     if key == "config":
         return inst.config_mode
@@ -252,8 +249,7 @@ def _deploy_member(
 ) -> None:
     """Deploy every non-shared sync-mapping key for one member.
 
-    Shared destinations (``@www/...``) are skipped; the client scope
-    publishes those. Keys whose source directory is absent are skipped.
+    Shared destinations (``@www/...``) are skipped; the client scope publishes those. Keys whose source directory is absent are skipped.
     """
     assert inst.instance_root is not None
     logger.debug(f"[{inst.name}] deploying sync-mapping keys to {inst.instance_root}")
@@ -301,13 +297,13 @@ def deploy_server_scope(
     protect_patterns: list[str],
     logger: Any = None,
 ) -> ServerScopeResult:
-    """Execute the server scope write phase (§4.2, §7.2).
+    """Execute the server scope write phase (Section 4.2, Section 7.2).
 
     ``protect_patterns`` is loaded by the caller once via
     ``files.load_protect_patterns`` - main owns that read so it can be
     logged once and shared across scopes.
 
-    Halts on first runtime failure (§4.2). Returns a result describing
+    Halts on first runtime failure (Section 4.2). Returns a result describing
     what was written and, on failure, what was and wasn't attempted.
     Never raises on a write failure.
 

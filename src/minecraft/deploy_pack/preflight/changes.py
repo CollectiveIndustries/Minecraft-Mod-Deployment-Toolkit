@@ -1,7 +1,8 @@
 # src/minecraft/deploy_pack/preflight/changes.py
 
-"""Effective-change computation (§4.4, §4.6.6). Pure read-only I/O.
+"""Effective-change computation (Section 4.4, Section 4.6.6).
 
+Pure read-only I/O.
 Logging
 -------
 
@@ -54,7 +55,7 @@ _log = get_logger(__name__)
 
 
 def compute_mods_change(config: DeploymentConfig, mods_dir: Path | None) -> ModsChange | None:
-    """Diff the server-side mod set against the current mods_dir (flat, §4.11)."""
+    """Diff the server-side mod set against the current mods_dir (flat, Section 4.11)."""
     if mods_dir is None:
         _log.debug("compute_mods_change: mods_dir is None; no diff computed")
         return None
@@ -118,7 +119,7 @@ def compute_instance_server_change(config: DeploymentConfig, member: str) -> Ins
 
 
 def compute_resource_pack_change(config: DeploymentConfig, member: str) -> ResourcePackChange:
-    """Server.properties target values and RP publish decision (§4.6.6, §7.5)."""
+    """Server.properties target values and RP publish decision (Section 4.6.6, Section 7.5)."""
     change = ResourcePackChange(member=member)
     rp = config.resource_packs.get(member)
     if rp is None:

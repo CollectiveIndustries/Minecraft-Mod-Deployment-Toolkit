@@ -1,6 +1,6 @@
 # src/minecraft/deploy_pack/deps.py
 
-"""Prism index loading, dependency closure, and unmarked detection (§9.2).
+"""Prism index loading, dependency closure, and unmarked detection (Section 9.2).
 
 Three responsibilities, in dependency order:
 
@@ -11,16 +11,16 @@ Three responsibilities, in dependency order:
      ``index_file`` (the ``.pw.toml`` filename, for the audit UI).
 
   2. **Dependency closure** - expand a side-filtered seed with its
-     transitive mandatory dependencies (§``common/deps.py``). Reads
+     transitive mandatory dependencies (Section ``common/deps.py``). Reads
      both the index's ``[[x-prismlauncher-dependencies]]`` blocks
      (project-id namespace) and each jar's ``META-INF/mods.toml``
      (modId namespace). The two namespaces are bridged by scanning
      every jar once for its declared modIds.
 
-  3. **Unmarked detection** (§6.3) - report jars that have no
+  3. **Unmarked detection** (Section 6.3) - report jars that have no
      ``.pw.toml`` or whose ``side`` is outside ``{client, server, both}``.
      The caller decides what to do: prompt (interactive) or skip
-     (``--non-interactive``, §6.2).
+     (``--non-interactive``, Section 6.2).
 
 Non-responsibilities:
   * Side overrides (``side_overrides.toml``) are loaded and applied by
@@ -41,12 +41,12 @@ comments. Each section corresponds to one responsibility and its
 helpers are only called from within that section or from the top-level
 public API.
 
-    §1  Entry model + constants
-    §2  Prism index parsing          (§3.11 source model)
-    §3  Jar manifest scanning        (§6.3 + closure input)
-    §4  Dependency closure           (§4.4 change detection input)
-    §5  Diagnostic formatting        (--debug-deps)
-    §6  Unmarked detection + mod source resolution (§6.3, §9.2)
+    Section 1  Entry model + constants
+    Section 2  Prism index parsing          (Section 3.11 source model)
+    Section 3  Jar manifest scanning        (Section 6.3 + closure input)
+    Section 4  Dependency closure           (Section 4.4 change detection input)
+    Section 5  Diagnostic formatting        (--debug-deps)
+    Section 6  Unmarked detection + mod source resolution (Section 6.3, Section 9.2)
 
 Aggressive decomposition: every function does exactly one thing. The
 helpers below the public entry points are deliberately small and
@@ -96,23 +96,26 @@ _log = get_logger(__name__)
 
 
 # ===========================================================================
-# §1  Entry model + constants
+# Section 1  Entry model + constants
 # ===========================================================================
 
 
 _VALID_SIDES = frozenset({"client", "server", "both"})
 
-# Tried in order; the first one that parses wins (§3.11 source model).
+# Tried in order; the first one that parses wins (Section 3.11 source model).
 _MANIFEST_CANDIDATES = ("META-INF/mods.toml", "META-INF/neoforge.mods.toml")
 
 
 # ===========================================================================
-# §2  Prism index parsing
+# Section 2  Prism index parsing
 # ===========================================================================
 
 
 def _read_prism_toml_file(toml_path: Path, logger: Any) -> dict | None:
-    """Open and TOML-parse a ``.pw.toml``. Returns None on any read/parse failure."""
+    """Open and TOML-parse a ``.pw.toml``.
+
+    Returns None on any read/parse failure.
+    """
     try:
         with open(toml_path, "rb") as f:
             return tomllib.load(f)
@@ -127,10 +130,8 @@ def _read_prism_toml_file(toml_path: Path, logger: Any) -> dict | None:
 def _normalize_side(raw_side: Any, toml_path: Path, logger: Any) -> tuple[str, str | None]:
     """Return ``(coerced_side, side_raw)``.
 
-    ``side_raw`` is the lowercased original, or None if the key was
-    absent. ``coerced_side`` is inside ``_VALID_SIDES``; anything
-    outside is coerced to ``"both"`` while ``side_raw`` is preserved
-    for §6.3's unmarked check.
+    ``side_raw`` is the lowercased original, or None if the key was absent. ``coerced_side`` is inside ``_VALID_SIDES``; anything outside is coerced
+    to ``"both"`` while ``side_raw`` is preserved for Section 6.3's unmarked check.
     """
     if raw_side is None:
         return ("both", None)
@@ -144,9 +145,8 @@ def _normalize_side(raw_side: Any, toml_path: Path, logger: Any) -> tuple[str, s
 def _parse_update_block(data: dict) -> tuple[int | str | None, int | str | None, str]:
     """Return ``(project_id, file_id, source)`` from the update block.
 
-    CurseForge wins over Modrinth when both are present (matches the
-    original ``if/elif`` order). ``source`` is one of ``curseforge``,
-    ``modrinth``, ``unknown``.
+    CurseForge wins over Modrinth when both are present (matches the original ``if/elif`` order). ``source`` is one of ``curseforge``, ``modrinth``,
+    ``unknown``.
     """
     cf_update = data.get("update", {}).get("curseforge")
     if cf_update:
@@ -189,10 +189,10 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
       * ``side``         - coerced to ``client`` / ``server`` / ``both``
                            (invalid values become ``both``).
       * ``side_raw``     - the original ``side`` value, lowercased, or
-                           ``None`` if the key was absent. §6.3 uses
+                           ``None`` if the key was absent. Section 6.3 uses
                            this to detect unmarked entries.
       * ``index_file``   - the ``.pw.toml`` filename, for the audit UI
-                           (§6.1).
+                           (Section 6.1).
       * ``project_id``   - CF project id (int) or Modrinth mod-id (str),
                            or None.
       * ``file_id``      - CF file-id (int) or Modrinth version id (str),
@@ -249,9 +249,8 @@ def parse_prism_toml(toml_path: Path) -> dict | None:
 def load_prism_index(index_dir: Path) -> list[dict]:
     """Load all ``.pw.toml`` files from ``index_dir``.
 
-    Returns entries in filesystem-glob order, which is stable for a
-    given filesystem. A missing index directory logs at WARN and
-    returns an empty list.
+    Returns entries in filesystem-glob order, which is stable for a given filesystem. A missing index directory logs at WARN and returns an empty
+    list.
     """
     entries: list[dict] = []
     if not index_dir.is_dir():
@@ -273,7 +272,7 @@ def filter_prism_entries_by_side(entries: list[dict], target_side: str) -> list[
     ``target_side`` must be ``"client"`` or ``"server"``. Entries with a
     coerced ``side`` of ``both`` are always included. Entries whose
     *raw* side was invalid were coerced to ``both`` by the parser, so
-    they appear on both sides - unmarked detection (§6.3) is what
+    they appear on both sides - unmarked detection (Section 6.3) is what
     filters them out, before this function is called.
     """
     if target_side not in ("client", "server"):
@@ -284,7 +283,7 @@ def filter_prism_entries_by_side(entries: list[dict], target_side: str) -> list[
 
 
 # ===========================================================================
-# §3  Jar manifest scanning
+# Section 3  Jar manifest scanning
 # ===========================================================================
 
 
@@ -304,16 +303,18 @@ _MANIFEST_CACHE: dict[Path, dict[str, JarManifest]] = {}
 def clear_manifest_cache() -> None:
     """Clear the per-modpack manifest cache.
 
-    The cache is process-lifetime and keyed by ``modpack_dir.resolve()``.
-    Tests should call this between runs; production code does not need
-    to, because one deploy uses one modpack_dir for its lifetime.
+    The cache is process-lifetime and keyed by ``modpack_dir.resolve()``. Tests should call this between runs; production code does not need to,
+    because one deploy uses one modpack_dir for its lifetime.
     """
     _MANIFEST_CACHE.clear()
     _log.debug("manifest cache cleared")
 
 
 def _try_read_manifest_bytes(zf: zipfile.ZipFile, candidate: str, jar_path: Path, logger: Any) -> bytes | None:
-    """Read ``candidate`` from the zip. Returns None if the entry is absent."""
+    """Read ``candidate`` from the zip.
+
+    Returns None if the entry is absent.
+    """
     try:
         return zf.read(candidate)
     except KeyError:
@@ -321,7 +322,10 @@ def _try_read_manifest_bytes(zf: zipfile.ZipFile, candidate: str, jar_path: Path
 
 
 def _parse_manifest_bytes(raw: bytes, candidate: str, jar_path: Path, logger: Any) -> dict | None:
-    """Decode+parse manifest bytes. Returns None on decode/parse failure."""
+    """Decode+parse manifest bytes.
+
+    Returns None on decode/parse failure.
+    """
     try:
         return tomllib.loads(raw.decode("utf-8"))
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
@@ -332,9 +336,8 @@ def _parse_manifest_bytes(raw: bytes, candidate: str, jar_path: Path, logger: An
 def _read_any_manifest(zf: zipfile.ZipFile, jar_path: Path, logger: Any) -> dict | None:
     """Try each known manifest path; return the first that parses.
 
-    A parse failure short-circuits without the "no mods.toml found"
-    log (matches the original): that message is only emitted when the
-    loop completes naturally, i.e. no candidate was parsable.
+    A parse failure short-circuits without the "no mods.toml found" log (matches the original): that message is only emitted when the loop completes
+    naturally, i.e. no candidate was parsable.
     """
     for candidate in _MANIFEST_CANDIDATES:
         raw = _try_read_manifest_bytes(zf, candidate, jar_path, logger)
@@ -392,7 +395,10 @@ def _collect_required_by_side(data: dict) -> tuple[set[str], set[str]]:
 
 
 def _read_jar_manifest(jar_path: Path, logger: Any) -> JarManifest | None:
-    """Parse ``META-INF/mods.toml`` from a jar. Never raises."""
+    """Parse ``META-INF/mods.toml`` from a jar.
+
+    Never raises.
+    """
     if not jar_path.is_file():
         logger.debug(f"jar not present: {jar_path.name}")
         return None
@@ -424,9 +430,8 @@ def _read_jar_manifest(jar_path: Path, logger: Any) -> JarManifest | None:
 def scan_manifests(entries: list[dict], modpack_dir: Path, logger: Any = None) -> dict[str, JarManifest]:
     """Read every entry's jar manifest, keyed by filename.
 
-    Cached per ``modpack_dir`` for the lifetime of the process. The
-    multiple ``load_mod_list``-style calls in one deploy therefore only
-    pay the scan cost once. Call ``clear_manifest_cache`` to reset.
+    Cached per ``modpack_dir`` for the lifetime of the process. The multiple ``load_mod_list``-style calls in one deploy therefore only pay the scan
+    cost once. Call ``clear_manifest_cache`` to reset.
     """
     if logger is None:
         logger = _log
@@ -450,7 +455,7 @@ def scan_manifests(entries: list[dict], modpack_dir: Path, logger: Any = None) -
 
 
 # ===========================================================================
-# §4  Dependency closure
+# Section 4  Dependency closure
 # ===========================================================================
 
 
@@ -486,9 +491,8 @@ def _index_entry_modids(
 ) -> None:
     """Index one entry's jar manifest modIds into ``by_modid`` (first wins).
 
-    Called once per entry that has an ``id``; entries without an ``id``
-    are skipped by :func:`_build_lookup` before this runs, matching the
-    original single-pass behavior.
+    Called once per entry that has an ``id``; entries without an ``id`` are skipped by :func:`_build_lookup` before this runs, matching the original
+    single-pass behavior.
     """
     filename = entry.get("file")
     manifest = manifests.get(filename) if filename else None
@@ -509,8 +513,7 @@ def _build_lookup(
 ) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
     """Return ``(by_id, by_project, by_modid)``.
 
-    Single pass over ``entries`` so that an entry without an ``id`` is
-    skipped from the modId index too (the original behavior).
+    Single pass over ``entries`` so that an entry without an ``id`` is skipped from the modId index too (the original behavior).
     """
     entry_by_id: dict[str, dict] = {}
     entry_by_project: dict[str, dict] = {}
@@ -554,8 +557,7 @@ def _jar_deps(entry: dict, manifests: dict[str, JarManifest], target_side: str) 
 class _DepNamespace:
     """Describes one dependency namespace for :func:`_force_include`.
 
-    ``label`` and ``reason_prefix`` are the two hard-coded variations
-    between the index-addonId and jar-modId namespaces.
+    ``label`` and ``reason_prefix`` are the two hard-coded variations between the index-addonId and jar-modId namespaces.
     """
 
     lookup: dict[str, dict]
@@ -575,10 +577,8 @@ def _force_include(
 ) -> None:
     """Look up ``key`` in ``ns.lookup``; force-include it if not already closed.
 
-    The tail (dedup, append to closure + worklist, record the reason)
-    is identical between the index and jar namespaces; only the missing-
-    entry log and the reason text differ, and those are supplied by
-    ``ns``.
+    The tail (dedup, append to closure + worklist, record the reason) is identical between the index and jar namespaces; only the missing- entry log
+    and the reason text differ, and those are supplied by ``ns``.
     """
     dep_entry = ns.lookup.get(key)
     if dep_entry is None:
@@ -603,12 +603,10 @@ def expand_with_required(
 ) -> ClosureResult:
     """Expand a side-filtered seed with its transitive mandatory deps.
 
-    ``target_side`` must be ``"client"`` or ``"server"``. Entries whose
-    own ``side`` excludes them from the seed are still pulled in if
-    something already in the set requires them.
+    ``target_side`` must be ``"client"`` or ``"server"``. Entries whose own ``side`` excludes them from the seed are still pulled in if something
+    already in the set requires them.
 
-    The returned list preserves ``all_entries`` order so output is
-    deterministic across builds.
+    The returned list preserves ``all_entries`` order so output is deterministic across builds.
     """
     if logger is None:
         logger = _log
@@ -645,7 +643,7 @@ def expand_with_required(
 
 
 # ===========================================================================
-# §5  Diagnostic formatting (--debug-deps)
+# Section 5  Diagnostic formatting (--debug-deps)
 # ===========================================================================
 
 
@@ -698,9 +696,8 @@ def format_diagnostic(
 ) -> str:
     """Multi-section human-readable diagnostic for ``--debug-deps``.
 
-    ``seeds`` maps ``"client"`` / ``"server"`` to a side-filtered entry
-    list. For each side, prints the seed count, closure count, and every
-    force-included entry with its dependents.
+    ``seeds`` maps ``"client"`` / ``"server"`` to a side-filtered entry list. For each side, prints the seed count, closure count, and every force-
+    included entry with its dependents.
     """
     if logger is None:
         logger = _log
@@ -719,20 +716,20 @@ def format_diagnostic(
 
 
 # ===========================================================================
-# §6  Unmarked detection + mod source resolution (§6.3, §9.2)
+# Section 6  Unmarked detection + mod source resolution (Section 6.3, Section 9.2)
 # ===========================================================================
 
 
 @dataclass
 class UnmarkedJar:
-    """A jar that §6.3 classifies as unmarked."""
+    """A jar that Section 6.3 classifies as unmarked."""
 
     filename: str
     reason: str
 
 
 def _find_unindexed_jars(modpack_dir: Path, indexed_files: set[str]) -> dict[str, UnmarkedJar]:
-    """§6.3 rule 1: ``*.jar`` on disk with no matching index entry."""
+    """Section 6.3 rule 1: ``*.jar`` on disk with no matching index entry."""
     out: dict[str, UnmarkedJar] = {}
     for jar in modpack_dir.glob("*.jar"):
         if jar.name not in indexed_files:
@@ -741,7 +738,7 @@ def _find_unindexed_jars(modpack_dir: Path, indexed_files: set[str]) -> dict[str
 
 
 def _find_invalid_side_entries(entries: list[dict]) -> dict[str, UnmarkedJar]:
-    """§6.3 rule 2: entries whose ``side_raw`` is present but outside the valid set."""
+    """Section 6.3 rule 2: entries whose ``side_raw`` is present but outside the valid set."""
     out: dict[str, UnmarkedJar] = {}
     for entry in entries:
         raw = entry.get("side_raw")
@@ -758,7 +755,7 @@ def _find_invalid_side_entries(entries: list[dict]) -> dict[str, UnmarkedJar]:
 
 
 def find_unmarked(modpack_dir: Path, entries: list[dict], logger: Any = None) -> list[UnmarkedJar]:
-    """Return jars that are unmarked per §6.3.
+    """Return jars that are unmarked per Section 6.3.
 
     Two sources, both reported:
 
@@ -796,10 +793,8 @@ def find_unmarked(modpack_dir: Path, entries: list[dict], logger: Any = None) ->
 def remove_unmarked(entries: list[dict], unmarked: list[UnmarkedJar], logger: Any = None) -> list[dict]:
     """Return ``entries`` with every unmarked filename removed.
 
-    Used by ``--non-interactive`` (§6.2): unmarked mods are not
-    deployed, not written, and remain unmarked. Interactive callers
-    instead prompt for each unmarked entry and splice the decisions
-    back in via ``overrides.py``.
+    Used by ``--non-interactive`` (Section 6.2): unmarked mods are not deployed, not written, and remain unmarked. Interactive callers instead prompt for
+    each unmarked entry and splice the decisions back in via ``overrides.py``.
     """
     if logger is None:
         logger = _log
@@ -814,10 +809,9 @@ _UNMARKED_VALID_SIDES = frozenset({"client", "server", "both"})
 
 
 def is_unmarked(entry: dict) -> bool:
-    """§6.3: an entry whose declared side is outside {client, server, both}.
+    """Section 6.3: an entry whose declared side is outside {client, server, both}.
 
-    ``side_raw is None`` means the ``.pw.toml`` had no ``side`` key at all;
-    the parser defaults that to ``"both"``, so such an entry is marked.
+    ``side_raw is None`` means the ``.pw.toml`` had no ``side`` key at all; the parser defaults that to ``"both"``, so such an entry is marked.
     """
     raw = entry.get("side_raw")
     if raw is None:
@@ -833,8 +827,7 @@ def _load_marked_entries(
 ) -> list[dict]:
     """Load the Prism index and filter it: drop unmarked, apply overrides.
 
-    Returns the marked set. Empty when the index is missing or empty;
-    the caller treats both as "no sources".
+    Returns the marked set. Empty when the index is missing or empty; the caller treats both as "no sources".
     """
     index_dir = modpack_dir / ".index"
     if not index_dir.is_dir():
@@ -862,8 +855,7 @@ def _collect_existing_sources(
 ) -> dict[str, Path]:
     """Return ``{filename: path}`` for every entry present on disk.
 
-    Missing files are logged at WARN and skipped. Emits the closing
-    INFO line with the source-set size.
+    Missing files are logged at WARN and skipped. Emits the closing INFO line with the source-set size.
     """
     out: dict[str, Path] = {}
     missing = 0

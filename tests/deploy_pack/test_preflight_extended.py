@@ -2,17 +2,12 @@
 
 """Extended tests for deploy_pack.preflight.
 
-Complements test_preflight.py with the branches that file does not
-reach: the www_dir candidates warning (§3.19), the pack_required
-warning suppression when --client is in scope (§4.6.9), resource-pack
-source validation failures (§7.5, §7.7, §7.8), the restarting-container
-settle path (§4.12), per-instance compose errors (§3.2, §3.6, §3.8),
-the mods_dir/compose mismatch warning (§3.7), the unhealthy and starting
-container logs (§4.12), the mods-drift warning on targeted deploys
-(§2.9), and the ScopeSet bitmask (§5.3).
+Complements test_preflight.py with the branches that file does not reach: the www_dir candidates warning (Section 3.19), the pack_required warning suppression when
+--client is in scope (Section 4.6.9), resource-pack source validation failures (Section 7.5, Section 7.7, Section 7.8), the restarting-container settle path (Section 4.12), per-instance compose
+errors (Section 3.2, Section 3.6, Section 3.8), the mods_dir/compose mismatch warning (Section 3.7), the unhealthy and starting container logs (Section 4.12), the mods-drift warning on targeted
+deploys (Section 2.9), and the ScopeSet bitmask (Section 5.3).
 
-Every test drives the public ``run_preflight`` entry point against a
-real DeploymentConfig and a fake Docker SDK client.
+Every test drives the public ``run_preflight`` entry point against a real DeploymentConfig and a fake Docker SDK client.
 """
 
 from __future__ import annotations
@@ -50,8 +45,7 @@ from minecraft.deploy_pack.preflight import PreflightError, ScopeSet, run_prefli
 class _FakeRuntime:
     """Minimal stand-in for DockerRuntime.
 
-    ``list_mounts`` mirrors the compose service's binds so the §3.17
-    drift check sees a matching set when the compose file is well-formed.
+    ``list_mounts`` mirrors the compose service's binds so the Section 3.17 drift check sees a matching set when the compose file is well-formed.
     """
 
     states: dict[str, ContainerState] = field(default_factory=dict)
@@ -277,23 +271,23 @@ def _basic_instance(tmp_path: Path) -> tuple[dict[str, InstanceConfig], list[str
 
 
 # ---------------------------------------------------------------------------
-# §5.3: ScopeSet bitmask and names
+# Section 5.3: ScopeSet bitmask and names
 # ---------------------------------------------------------------------------
 
 
 def test_scope_set_names_are_empty_when_no_scope() -> None:
-    """§5.4: no scope is an empty names list."""
+    """Section 5.4: no scope is an empty names list."""
     assert ScopeSet().names() == []
 
 
 def test_scope_set_names_are_in_fixed_order() -> None:
-    """§5.4: names come out server, client, resource-pack."""
+    """Section 5.4: names come out server, client, resource-pack."""
     assert ScopeSet(server=True, client=True, resource_pack=True).names() == ["server", "client", "resource-pack"]
     assert ScopeSet(client=True, resource_pack=True).names() == ["client", "resource-pack"]
 
 
 def test_scope_set_bitmask_follows_the_spec() -> None:
-    """§5.3: server=1, client=2, resource-pack=4."""
+    """Section 5.3: server=1, client=2, resource-pack=4."""
     assert ScopeSet().bitmask() == 0
     assert ScopeSet(server=True).bitmask() == 1
     assert ScopeSet(client=True).bitmask() == 2
@@ -303,12 +297,12 @@ def test_scope_set_bitmask_follows_the_spec() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.19: www_dir candidates are logged at WARN before the fatal raise
+# Section 3.19: www_dir candidates are logged at WARN before the fatal raise
 # ---------------------------------------------------------------------------
 
 
 def test_www_dir_candidates_are_warned_before_the_fatal_raise(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """§3.19: every candidate is logged at WARN, then the preflight failure is raised."""
+    """Section 3.19: every candidate is logged at WARN, then the preflight failure is raised."""
     instances, partition = _basic_instance(tmp_path)
     cfg = _config(
         tmp_path,
@@ -324,12 +318,12 @@ def test_www_dir_candidates_are_warned_before_the_fatal_raise(tmp_path: Path, ca
 
 
 # ---------------------------------------------------------------------------
-# §4.6.9: pack_required warning suppression
+# Section 4.6.9: pack_required warning suppression
 # ---------------------------------------------------------------------------
 
 
 def test_pack_required_warning_is_suppressed_when_client_scope_is_active(tmp_path: Path) -> None:
-    """§4.6.9: pack_required without --client in scope emits a warning; with --client, it does not."""
+    """Section 4.6.9: pack_required without --client in scope emits a warning; with --client, it does not."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"startup_scripts/block.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances)
@@ -339,7 +333,7 @@ def test_pack_required_warning_is_suppressed_when_client_scope_is_active(tmp_pat
 
 
 def test_pack_required_warning_is_emitted_when_client_scope_is_absent(tmp_path: Path) -> None:
-    """§4.6.9: pack_required without --client in scope emits the staleness warning."""
+    """Section 4.6.9: pack_required without --client in scope emits the staleness warning."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"startup_scripts/block.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances)
@@ -349,12 +343,12 @@ def test_pack_required_warning_is_emitted_when_client_scope_is_absent(tmp_path: 
 
 
 # ---------------------------------------------------------------------------
-# §7.5 / §7.7 / §7.8: resource-pack validation failures
+# Section 7.5 / Section 7.7 / Section 7.8: resource-pack validation failures
 # ---------------------------------------------------------------------------
 
 
 def test_invalid_rp_filename_is_a_preflight_failure(tmp_path: Path) -> None:
-    """§7.5: an invalid resource-pack filename is exit 3."""
+    """Section 7.5: an invalid resource-pack filename is exit 3."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "resourcepacks").mkdir(parents=True)
     (tmp_path / "sync" / "resourcepacks" / "pack.zip").write_bytes(b"x")
@@ -366,11 +360,11 @@ def test_invalid_rp_filename_is_a_preflight_failure(tmp_path: Path) -> None:
     )
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(resource_pack=True), False, False, False, _runtime(cfg))
-    assert any(f.source.startswith("§7.5") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 7.5") for f in ei.value.failures)
 
 
 def test_missing_rp_source_is_a_preflight_failure(tmp_path: Path) -> None:
-    """§7.8: a missing resource-pack source is exit 3."""
+    """Section 7.8: a missing resource-pack source is exit 3."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "resourcepacks").mkdir(parents=True)
     cfg = _config(
@@ -381,11 +375,11 @@ def test_missing_rp_source_is_a_preflight_failure(tmp_path: Path) -> None:
     )
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(resource_pack=True), False, False, False, _runtime(cfg))
-    assert any(f.source.startswith("§7.8") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 7.8") for f in ei.value.failures)
 
 
 def test_missing_resourcepacks_client_mapping_is_a_preflight_failure(tmp_path: Path) -> None:
-    """§7.7: a configured pack without sync_mapping.resourcepacks.client is exit 3."""
+    """Section 7.7: a configured pack without sync_mapping.resourcepacks.client is exit 3."""
     instances, partition = _basic_instance(tmp_path)
     cfg = _config(
         tmp_path,
@@ -396,16 +390,16 @@ def test_missing_resourcepacks_client_mapping_is_a_preflight_failure(tmp_path: P
     )
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(resource_pack=True), False, False, False, _runtime(cfg))
-    assert any(f.source.startswith("§7.7") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 7.7") for f in ei.value.failures)
 
 
 # ---------------------------------------------------------------------------
-# §4.12: restarting container that settles to running passes
+# Section 4.12: restarting container that settles to running passes
 # ---------------------------------------------------------------------------
 
 
 def test_restarting_container_that_settles_to_running_passes_preflight(tmp_path: Path) -> None:
-    """§4.12: a container that stops restarting within the bounded wait is eligible."""
+    """Section 4.12: a container that stops restarting within the bounded wait is eligible."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -418,49 +412,49 @@ def test_restarting_container_that_settles_to_running_passes_preflight(tmp_path:
 
 
 # ---------------------------------------------------------------------------
-# §3.2 / §3.6 / §3.8: per-instance compose errors
+# Section 3.2 / Section 3.6 / Section 3.8: per-instance compose errors
 # ---------------------------------------------------------------------------
 
 
 def test_service_match_error_is_reported(tmp_path: Path) -> None:
-    """§3.6: a container_name with no matching service is exit 3."""
+    """Section 3.6: a container_name with no matching service is exit 3."""
     inst = _instance("survival", "mc-survival", tmp_path / "survival")
     inst.service_match_error = "no service matches"
     cfg = _config(tmp_path, partition=["survival"], instances={"survival": inst})
     cfg.instances["survival"].service = None
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(server=True), False, False, False, _runtime(cfg))
-    assert any(f.source.startswith("§3.6") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 3.6") for f in ei.value.failures)
 
 
 def test_stop_grace_parse_error_is_reported(tmp_path: Path) -> None:
-    """§3.2: an unparseable stop_grace_period is exit 3."""
+    """Section 3.2: an unparseable stop_grace_period is exit 3."""
     instances, partition = _basic_instance(tmp_path)
     cfg = _config(tmp_path, partition=partition, instances=instances)
     cfg.instances["survival"].stop_grace_parse_error = "garbage"
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(server=True), False, False, False, _runtime(cfg))
-    assert any(f.source.startswith("§3.2") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 3.2") for f in ei.value.failures)
 
 
 def test_no_healthcheck_is_reported(tmp_path: Path) -> None:
-    """§3.8: a compose service with no healthcheck is exit 3."""
+    """Section 3.8: a compose service with no healthcheck is exit 3."""
     instances, partition = _basic_instance(tmp_path)
     cfg = _config(tmp_path, partition=partition, instances=instances)
     assert cfg.instances["survival"].service is not None
     cfg.instances["survival"].service.has_healthcheck = False
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(server=True), False, False, False, _runtime(cfg))
-    assert any(f.source.startswith("§3.8") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 3.8") for f in ei.value.failures)
 
 
 # ---------------------------------------------------------------------------
-# §3.7: mods_dir mismatch between TOML and compose logs a warning
+# Section 3.7: mods_dir mismatch between TOML and compose logs a warning
 # ---------------------------------------------------------------------------
 
 
 def test_mods_dir_toml_mismatch_logs_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """§3.4: compose is authoritative for mods_dir; a TOML disagreement is a WARN."""
+    """Section 3.4: compose is authoritative for mods_dir; a TOML disagreement is a WARN."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -471,12 +465,12 @@ def test_mods_dir_toml_mismatch_logs_a_warning(tmp_path: Path, caplog: pytest.Lo
 
 
 # ---------------------------------------------------------------------------
-# §4.12: unhealthy and starting containers log at the correct levels
+# Section 4.12: unhealthy and starting containers log at the correct levels
 # ---------------------------------------------------------------------------
 
 
 def test_unhealthy_container_logs_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """§4.12: an unhealthy running container produces a WARN at preflight."""
+    """Section 4.12: an unhealthy running container produces a WARN at preflight."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -489,7 +483,7 @@ def test_unhealthy_container_logs_a_warning(tmp_path: Path, caplog: pytest.LogCa
 
 
 def test_starting_container_logs_at_info(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """§4.12: a starting container produces an INFO log."""
+    """Section 4.12: a starting container produces an INFO log."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -502,12 +496,12 @@ def test_starting_container_logs_at_info(tmp_path: Path, caplog: pytest.LogCaptu
 
 
 # ---------------------------------------------------------------------------
-# §2.9: mods drift on targeted deploys
+# Section 2.9: mods drift on targeted deploys
 # ---------------------------------------------------------------------------
 
 
 def test_targeted_deploy_warns_when_mods_dir_drifts(tmp_path: Path) -> None:
-    """§2.9: a targeted server deploy warns when mods_dir diverges from the full source set."""
+    """Section 2.9: a targeted server deploy warns when mods_dir diverges from the full source set."""
     _write_index(tmp_path, {"a.jar": "server"})
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)

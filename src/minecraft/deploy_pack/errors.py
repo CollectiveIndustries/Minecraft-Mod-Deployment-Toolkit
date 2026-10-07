@@ -1,12 +1,12 @@
 # src/minecraft/deploy_pack/errors.py
 
-"""Exception hierarchy mapped to the exit codes in Project_Specs.md §2.4, §11.1.
+"""Exception hierarchy mapped to the exit codes in Project_Specs.md Section 2.4, Section 11.1.
 
 The entrypoint catches DeployPackError and exits with .exit_code. Anything
 that escapes those handlers is a bug and exits 1 via the generic
 traceback path.
 
-Daemon-loss classification (§2.4)
+Daemon-loss classification (Section 2.4)
 ---------------------------------
 
 DockerUnavailableError and DockerRuntimeError are the two halves of the
@@ -31,25 +31,37 @@ from __future__ import annotations
 
 
 class DeployPackError(Exception):
-    """Base class. Subclasses carry the exit code the entrypoint should use."""
+    """Base class.
+
+    Subclasses carry the exit code the entrypoint should use.
+    """
 
     exit_code: int = 1
 
 
 class UsageError(DeployPackError):
-    """CLI usage / argument error. Exit 2 (§2.4)."""
+    """CLI usage / argument error.
+
+    Exit 2 (Section 2.4).
+    """
 
     exit_code = 2
 
 
 class ConfigError(DeployPackError):
-    """Configuration or preflight failure. Exit 3 (§2.4)."""
+    """Configuration or preflight failure.
+
+    Exit 3 (Section 2.4).
+    """
 
     exit_code = 3
 
 
 class RuntimeDeployError(DeployPackError):
-    """Runtime deployment failure after preflight. Exit 1 (§2.4)."""
+    """Runtime deployment failure after preflight.
+
+    Exit 1 (Section 2.4).
+    """
 
     exit_code = 1
 
@@ -57,16 +69,13 @@ class RuntimeDeployError(DeployPackError):
 class DockerUnavailableError(ConfigError):
     """The Docker daemon cannot be reached.
 
-    Raised by docker_runtime when the SDK cannot connect or a mid-flight
-    API call fails with a connection error. Preflight lets this propagate
-    (exit 3). Runtime code (hooks) catches it and re-raises as
-    DockerRuntimeError so a daemon that drops mid-deployment becomes
-    exit 1 (§2.4).
+    Raised by docker_runtime when the SDK cannot connect or a mid-flight API call fails with a connection error. Preflight lets this propagate (exit
+    3). Runtime code (hooks) catches it and re-raises as DockerRuntimeError so a daemon that drops mid-deployment becomes exit 1 (Section 2.4).
     """
 
 
 class DockerRuntimeError(RuntimeDeployError):
-    """The Docker daemon dropped mid-deployment. Exit 1 (§2.4).
+    """The Docker daemon dropped mid-deployment.
 
-    Wraps a DockerUnavailableError that occurred outside preflight.
+    Exit 1 (Section 2.4).     Wraps a DockerUnavailableError that occurred outside preflight.
     """

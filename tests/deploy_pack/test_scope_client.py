@@ -1,16 +1,16 @@
 # tests/deploy_pack/test_scope_client.py
 
-"""Tests for deploy_pack.scope_client, Project_Specs.md §1.1, §2.1, §7.1, §7.5, §7.6.
+"""Tests for deploy_pack.scope_client, Project_Specs.md Section 1.1, Section 2.1, Section 7.1, Section 7.5, Section 7.6.
 
 Coverage:
 
-  * §7.1 - output filename resolution; changelog HTML name; ZIP layout
-  * §7.1 - baseline selection: no-{date}, same-date, most-recent-
+  * Section 7.1 - output filename resolution; changelog HTML name; ZIP layout
+  * Section 7.1 - baseline selection: no-{date}, same-date, most-recent-
            different-date, initial build
-  * §7.6 - --with-resources stages the union of [resource_pack.X]
+  * Section 7.6 - --with-resources stages the union of [resource_pack.X]
            filenames
-  * §2.1 - @www/* shared items are published separately from the ZIP
-  * §1.1 - the changelog HTML is produced by common/changelog.py
+  * Section 2.1 - @www/* shared items are published separately from the ZIP
+  * Section 1.1 - the changelog HTML is produced by common/changelog.py
 
 Every test drives the scope through :func:`deploy_client_scope`. The
 baseline logic and output filename resolution are spec-defined but
@@ -117,12 +117,12 @@ def _zip_names(zip_path: Path) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# §7.1: output filename and changelog name
+# Section 7.1: output filename and changelog name
 # ---------------------------------------------------------------------------
 
 
 def test_output_filename_with_date_token_is_resolved(tmp_path: Path) -> None:
-    """§7.1: {date} is replaced with today's UTC date in YYYYMMDD form."""
+    """Section 7.1: {date} is replaced with today's UTC date in YYYYMMDD form."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _config(tmp_path, output_filename="minecraft_client_{date}.zip")
@@ -135,7 +135,7 @@ def test_output_filename_with_date_token_is_resolved(tmp_path: Path) -> None:
 
 
 def test_output_filename_without_date_token_is_used_verbatim(tmp_path: Path) -> None:
-    """§7.1: a template without {date} produces the same filename every run."""
+    """Section 7.1: a template without {date} produces the same filename every run."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _config(tmp_path, output_filename="pack.zip")
@@ -144,7 +144,7 @@ def test_output_filename_without_date_token_is_used_verbatim(tmp_path: Path) -> 
 
 
 def test_changelog_name_replaces_zip_suffix_with_html(tmp_path: Path) -> None:
-    """§7.1: the changelog HTML filename is the ZIP name with .zip replaced by .html."""
+    """Section 7.1: the changelog HTML filename is the ZIP name with .zip replaced by .html."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _config(tmp_path, output_filename="pack.zip")
@@ -154,12 +154,12 @@ def test_changelog_name_replaces_zip_suffix_with_html(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7.1: ZIP contents
+# Section 7.1: ZIP contents
 # ---------------------------------------------------------------------------
 
 
 def test_zip_is_built_when_source_dirs_are_empty(tmp_path: Path) -> None:
-    """§7.1: an empty staging tree produces an empty ZIP; the ZIP is still built."""
+    """Section 7.1: an empty staging tree produces an empty ZIP; the ZIP is still built."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _config(tmp_path)
@@ -169,7 +169,7 @@ def test_zip_is_built_when_source_dirs_are_empty(tmp_path: Path) -> None:
 
 
 def test_zip_contains_config_and_kubejs_files(tmp_path: Path) -> None:
-    """§7.1: config/** and kubejs/** from sync_root are staged into the ZIP."""
+    """Section 7.1: config/** and kubejs/** from sync_root are staged into the ZIP."""
     _write_tree(
         tmp_path / "sync",
         {
@@ -185,7 +185,7 @@ def test_zip_contains_config_and_kubejs_files(tmp_path: Path) -> None:
 
 
 def test_zip_contains_client_side_mods_only(tmp_path: Path) -> None:
-    """§7.1: only client-side and both-side mods are staged into the ZIP."""
+    """Section 7.1: only client-side and both-side mods are staged into the ZIP."""
     _write_index(tmp_path, {"client.jar": "client", "server.jar": "server", "both.jar": "both"})
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
@@ -198,7 +198,7 @@ def test_zip_contains_client_side_mods_only(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7.6: --with-resources stages resource packs
+# Section 7.6: --with-resources stages resource packs
 # ---------------------------------------------------------------------------
 
 
@@ -220,7 +220,7 @@ def _rp_config(tmp_path: Path, filenames: list[str]) -> DeploymentConfig:
 
 
 def test_with_resources_includes_named_resource_packs(tmp_path: Path) -> None:
-    """§7.6: --with-resources stages the union of [resource_pack.X].filename values."""
+    """Section 7.6: --with-resources stages the union of [resource_pack.X].filename values."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _rp_config(tmp_path, ["pack.zip"])
@@ -230,7 +230,7 @@ def test_with_resources_includes_named_resource_packs(tmp_path: Path) -> None:
 
 
 def test_without_resources_excludes_resource_packs(tmp_path: Path) -> None:
-    """§7.6: without --with-resources, no resource packs are staged."""
+    """Section 7.6: without --with-resources, no resource packs are staged."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _rp_config(tmp_path, ["pack.zip"])
@@ -240,7 +240,7 @@ def test_without_resources_excludes_resource_packs(tmp_path: Path) -> None:
 
 
 def test_with_resources_deduplicates_identical_filenames(tmp_path: Path) -> None:
-    """§7.6: duplicate filenames appear once in the ZIP."""
+    """Section 7.6: duplicate filenames appear once in the ZIP."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     _write_tree(tmp_path / "sync" / "resourcepacks", {"shared.zip": b"X"})
@@ -262,12 +262,12 @@ def test_with_resources_deduplicates_identical_filenames(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# §2.1: @www shared-item publication
+# Section 2.1: @www shared-item publication
 # ---------------------------------------------------------------------------
 
 
 def test_shared_item_published_to_www_dir(tmp_path: Path) -> None:
-    """§2.1: sync-mapping entries whose value starts with @www/ are copied to www_dir."""
+    """Section 2.1: sync-mapping entries whose value starts with @www/ are copied to www_dir."""
     _write_tree(tmp_path / "sync", {"shared/foo.txt": "hello", "shared/sub/bar.txt": "world"})
     cfg = _config(
         tmp_path,
@@ -280,7 +280,7 @@ def test_shared_item_published_to_www_dir(tmp_path: Path) -> None:
 
 
 def test_shared_item_is_not_embedded_in_the_zip(tmp_path: Path) -> None:
-    """§2.1: @www/* items are published separately; they do not appear in the client ZIP."""
+    """Section 2.1: @www/* items are published separately; they do not appear in the client ZIP."""
     _write_tree(tmp_path / "sync", {"shared/foo.txt": "x"})
     cfg = _config(
         tmp_path,
@@ -292,7 +292,7 @@ def test_shared_item_is_not_embedded_in_the_zip(tmp_path: Path) -> None:
 
 
 def test_resourcepacks_dict_value_is_not_published_by_client_scope(tmp_path: Path) -> None:
-    """§4.9: dict-valued resourcepacks entries are the resource-pack scope's concern."""
+    """Section 4.9: dict-valued resourcepacks entries are the resource-pack scope's concern."""
     _write_tree(tmp_path / "sync", {"resourcepacks/pack.zip": b"x"})
     cfg = _config(
         tmp_path,
@@ -307,7 +307,7 @@ def test_resourcepacks_dict_value_is_not_published_by_client_scope(tmp_path: Pat
 
 
 # ---------------------------------------------------------------------------
-# §7.1: baseline selection
+# Section 7.1: baseline selection
 # ---------------------------------------------------------------------------
 
 
@@ -317,7 +317,7 @@ def _read_changelog(html_path: Path) -> str:
 
 
 def test_first_build_reports_initial_build(tmp_path: Path) -> None:
-    """§7.1: with no prior ZIP, the changelog reports an initial build."""
+    """Section 7.1: with no prior ZIP, the changelog reports an initial build."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _config(tmp_path)
@@ -327,7 +327,7 @@ def test_first_build_reports_initial_build(tmp_path: Path) -> None:
 
 
 def test_same_date_rerun_uses_the_existing_zip_as_baseline(tmp_path: Path) -> None:
-    """§7.1: a same-date ZIP is the baseline for a re-run."""
+    """Section 7.1: a same-date ZIP is the baseline for a re-run."""
     _write_index(tmp_path, {"a.jar": "client"})
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
@@ -340,7 +340,7 @@ def test_same_date_rerun_uses_the_existing_zip_as_baseline(tmp_path: Path) -> No
 
 
 def test_new_date_uses_most_recent_prior_zip_as_baseline(tmp_path: Path) -> None:
-    """§7.1: when no same-date ZIP exists, the baseline is the most recent prior dated ZIP."""
+    """Section 7.1: when no same-date ZIP exists, the baseline is the most recent prior dated ZIP."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     www = tmp_path / "www"
@@ -356,7 +356,7 @@ def test_new_date_uses_most_recent_prior_zip_as_baseline(tmp_path: Path) -> None
 
 
 def test_no_date_token_uses_the_existing_file_as_baseline(tmp_path: Path) -> None:
-    """§7.1: a template without {date} uses the existing file at the resolved path."""
+    """Section 7.1: a template without {date} uses the existing file at the resolved path."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     www = tmp_path / "www"
@@ -369,7 +369,7 @@ def test_no_date_token_uses_the_existing_file_as_baseline(tmp_path: Path) -> Non
 
 
 def test_changelog_lists_added_mods_when_a_diff_exists(tmp_path: Path) -> None:
-    """§1.1: added mods are listed in the changelog HTML after a second run."""
+    """Section 1.1: added mods are listed in the changelog HTML after a second run."""
     _write_index(tmp_path, {"a.jar": "client"})
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
@@ -383,12 +383,12 @@ def test_changelog_lists_added_mods_when_a_diff_exists(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §2.6 / §7.1: no www_dir is a failure
+# Section 2.6 / Section 7.1: no www_dir is a failure
 # ---------------------------------------------------------------------------
 
 
 def test_missing_www_dir_is_a_failure(tmp_path: Path) -> None:
-    """§7.1: the client scope requires www_dir; without it, deployment cannot proceed."""
+    """Section 7.1: the client scope requires www_dir; without it, deployment cannot proceed."""
     cfg = _config(tmp_path)
     cfg = DeploymentConfig(**{**cfg.__dict__, "www_dir": None})
     result = deploy_client_scope(cfg, False, [], None)
@@ -398,12 +398,12 @@ def test_missing_www_dir_is_a_failure(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7.1: atomic publication
+# Section 7.1: atomic publication
 # ---------------------------------------------------------------------------
 
 
 def test_zip_is_replaced_atomically_on_second_run(tmp_path: Path) -> None:
-    """§4.10: a second run replaces the ZIP without leaving a partial artifact behind."""
+    """Section 4.10: a second run replaces the ZIP without leaving a partial artifact behind."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _config(tmp_path)
@@ -416,7 +416,7 @@ def test_zip_is_replaced_atomically_on_second_run(tmp_path: Path) -> None:
 
 
 def test_zip_sha256_is_recorded(tmp_path: Path) -> None:
-    """§5.4: the ZIP's SHA-256 is recorded on the result so it can be advertised."""
+    """Section 5.4: the ZIP's SHA-256 is recorded on the result so it can be advertised."""
     _write_tree(tmp_path / "sync" / "config", {})
     _write_tree(tmp_path / "sync" / "kubejs", {})
     cfg = _config(tmp_path)

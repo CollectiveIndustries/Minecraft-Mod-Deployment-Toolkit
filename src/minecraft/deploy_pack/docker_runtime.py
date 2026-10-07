@@ -1,28 +1,28 @@
 # src/minecraft/deploy_pack/docker_runtime.py
 
-"""Docker SDK wrapper, health polling, and RCON transport (Project_Specs.md §8).
+"""Docker SDK wrapper, health polling, and RCON transport (Project_Specs.md Section 8).
 
-Responsibilities (§9.2):
-  * wrap the official docker SDK (§8.1 - no subprocess)
-  * capture container state per the §4.12 state table
-  * inspect mounts for the §3.17 drift check
-  * perform the §4.12 bounded wait on ``restarting`` containers
-  * poll ``.State.Health.Status`` until healthy or timeout (§8.3)
-  * stop / start containers (§8.10, §4.13)
-  * resolve the RCON transport for an instance (§8.4) and execute
+Responsibilities (Section 9.2):
+  * wrap the official docker SDK (Section 8.1 - no subprocess)
+  * capture container state per the Section 4.12 state table
+  * inspect mounts for the Section 3.17 drift check
+  * perform the Section 4.12 bounded wait on ``restarting`` containers
+  * poll ``.State.Health.Status`` until healthy or timeout (Section 8.3)
+  * stop / start containers (Section 8.10, Section 4.13)
+  * resolve the RCON transport for an instance (Section 8.4) and execute
     commands over it
 
 Non-responsibilities:
-  * Deciding whether a state is fatal. §4.12 says ``paused``,
+  * Deciding whether a state is fatal. Section 4.12 says ``paused``,
     ``removing``, ``dead``, ``missing``, and running-without-health
     are exit 3, but that decision is preflight's. This module reports
     state faithfully and raises only on daemon-unavailability, which
     is a different failure mode.
   * Retry policy, batching, and recovery sequencing. Those live in
-    hooks.py (§4.7, §4.8, §4.13).
-  * Rendering state for Discord. The §5.8 vocabulary is notifications.py.
+    hooks.py (Section 4.7, Section 4.8, Section 4.13).
+  * Rendering state for Discord. The Section 5.8 vocabulary is notifications.py.
 
-Daemon-availability policy (§2.4)
+Daemon-availability policy (Section 2.4)
 ----------------------------------
 
 ``DockerUnavailableError`` is raised whenever the daemon cannot be
@@ -40,18 +40,18 @@ Structure
 The module is organised into twelve sections with explicit banner
 comments. Each section is self-contained.
 
-    §1   Imports, dataclasses, Clock
-    §2   Error classification            (§2.4)
-    §3   State extraction                (§4.12)
-    §4   DockerRuntime                   (§8.1-§8.3, §8.10)
-    §5   Mount drift                     (§3.17)
-    §6   env_file helper                 (§8.4)
-    §7   RCON port resolution            (§8.4)
-    §8   RCON password                   (§8.4)
-    §9   RconTransport ABC + Option A
-    §10  TcpRconTransport (Option B)     (§8.4)
-    §11  Transport selection             (§8.4)
-    §12  _RconConnection wire protocol
+    Section 1   Imports, dataclasses, Clock
+    Section 2   Error classification            (Section 2.4)
+    Section 3   State extraction                (Section 4.12)
+    Section 4   DockerRuntime                   (Section 8.1-Section 8.3, Section 8.10)
+    Section 5   Mount drift                     (Section 3.17)
+    Section 6   env_file helper                 (Section 8.4)
+    Section 7   RCON port resolution            (Section 8.4)
+    Section 8   RCON password                   (Section 8.4)
+    Section 9   RconTransport ABC + Option A
+    Section 10  TcpRconTransport (Option B)     (Section 8.4)
+    Section 11  Transport selection             (Section 8.4)
+    Section 12  _RconConnection wire protocol
 
 Aggressive decomposition: every public method is a thin orchestrator
 delegating to small single-purpose helpers. Where the SDK exposes
@@ -124,24 +124,24 @@ __all__ = [
 
 
 # ===========================================================================
-# §1  Imports, dataclasses, Clock
+# Section 1  Imports, dataclasses, Clock
 # ===========================================================================
 
 
 class StopOutcome(Enum):
-    """Result of a ``docker stop`` call (§8.10)."""
+    """Result of a ``docker stop`` call (Section 8.10)."""
 
     STOPPED = "stopped"
     "A real stop was performed."
     EXITED_BEFORE_STOP = "exited_before_stop"
-    'The container had already exited; the stop was a no-op.\n\n    Per §4.5 the container is not "actually stopped by this deployment",\n    is not lifecycle-touched, and is not an actual restart. It is only\n    reported in the CLI as ``exited before stop``.\n    '
+    'The container had already exited; the stop was a no-op.\n\n    Per Section 4.5 the container is not "actually stopped by this deployment",\n    is not lifecycle-touched, and is not an actual restart. It is only\n    reported in the CLI as ``exited before stop``.\n    '
     FAILED = "failed"
-    "The stop raised a real error. Caller decides per §8.8."
+    "The stop raised a real error. Caller decides per Section 8.8."
 
 
 @dataclass
 class ContainerState:
-    """Snapshot of a container's state (§4.12)."""
+    """Snapshot of a container's state (Section 4.12)."""
 
     name: str
     exists: bool
@@ -210,7 +210,10 @@ class HealthResult:
 
 
 class Clock:
-    """Wall clock plus sleep. Injected so polls are testable without sleeping."""
+    """Wall clock plus sleep.
+
+    Injected so polls are testable without sleeping.
+    """
 
     def now(self) -> float:
         """Returns the current monotonic clock time in seconds."""
@@ -227,7 +230,7 @@ class Clock:
 
 
 # ===========================================================================
-# §2  Error classification (§2.4)
+# Section 2  Error classification (Section 2.4)
 # ===========================================================================
 
 
@@ -245,10 +248,8 @@ _CONNECTION_NEEDLES = (
 def _cause_indicates_connection_loss(cause: BaseException | None) -> bool:
     """Return True when the exception's ``__cause__`` is a requests-level connection error.
 
-    The docker SDK wraps the underlying ``requests`` exception as
-    ``__cause__`` when the transport cannot reach the daemon; the
-    exception type alone (``DockerException``) is not enough to tell a
-    connection failure from a 404 or a permission error.
+    The docker SDK wraps the underlying ``requests`` exception as ``__cause__`` when the transport cannot reach the daemon; the exception type alone
+    (``DockerException``) is not enough to tell a connection failure from a 404 or a permission error.
     """
     if cause is None:
         return False
@@ -280,12 +281,9 @@ def _is_not_running_error(exc: BaseException) -> bool:
 def _raise_if_connection(exc: BaseException) -> None:
     """Translate a connection error into DockerUnavailableError.
 
-    This is the single convergence point for "daemon unreachable" across
-    every SDK call. Logging at ERROR here gives one diagnostic per
-    connection failure regardless of which operation tripped it, and
-    guarantees the message lands in the sink even though some callers
-    (hooks.py) translate the exception further before it reaches the
-    operator.
+    This is the single convergence point for "daemon unreachable" across every SDK call. Logging at ERROR here gives one diagnostic per connection
+    failure regardless of which operation tripped it, and guarantees the message lands in the sink even though some callers (hooks.py) translate the
+    exception further before it reaches the operator.
     """
     if _is_connection_error(exc):
         _log.error(f"docker daemon unreachable: {exc}")
@@ -293,7 +291,7 @@ def _raise_if_connection(exc: BaseException) -> None:
 
 
 # ===========================================================================
-# §3  State extraction (§4.12)
+# Section 3  State extraction (Section 4.12)
 # ===========================================================================
 
 
@@ -313,7 +311,7 @@ def _missing_state(name: str) -> ContainerState:
 
 
 # ===========================================================================
-# §4  DockerRuntime (§8.1-§8.3, §8.10)
+# Section 4  DockerRuntime (Section 8.1-Section 8.3, Section 8.10)
 # ===========================================================================
 
 
@@ -330,11 +328,9 @@ def _build_default_client() -> Any:
 class DockerRuntime:
     """Thin wrapper around the Docker SDK.
 
-    Constructed with an existing client in tests, or with ``None`` to
-    build one from the environment. Constructing from the environment
-    does not contact the daemon; call :meth:`ping` explicitly at
-    preflight to distinguish "daemon unreachable at preflight" (exit 3)
-    from "daemon lost at runtime" (exit 1).
+    Constructed with an existing client in tests, or with ``None`` to build one from the environment. Constructing from the environment does not
+    contact the daemon; call :meth:`ping` explicitly at preflight to distinguish "daemon unreachable at preflight" (exit 3) from "daemon lost at
+    runtime" (exit 1).
     """
 
     def __init__(self, client: Any = None, clock: Clock | None = None) -> None:
@@ -350,7 +346,10 @@ class DockerRuntime:
     # ------------------------------------------------------------------
 
     def ping(self) -> None:
-        """Ping the daemon. Raises DockerUnavailableError on failure."""
+        """Ping the daemon.
+
+        Raises DockerUnavailableError on failure.
+        """
         _log.debug("docker ping: sending")
         try:
             self._client.ping()
@@ -446,9 +445,9 @@ class DockerRuntime:
     # ------------------------------------------------------------------
 
     def exec_run(self, name: str, args: list[str]) -> tuple[int, str]:
-        """Run ``args`` in a container. Returns (exit_code, decoded output).
+        """Run ``args`` in a container.
 
-        Raises DockerUnavailableError if the daemon cannot be reached.
+        Returns (exit_code, decoded output).         Raises DockerUnavailableError if the daemon cannot be reached.
         """
         _log.debug(f"docker exec_run: {name} args={args}")
         container = _exec_get_container(self._client, name)
@@ -465,10 +464,10 @@ class DockerRuntime:
     # ------------------------------------------------------------------
 
     def start(self, name: str) -> StartResult:
-        """Start a container. Never raises on a start failure.
+        """Start a container.
 
-        A start failure is reported in the returned StartResult; the
-        caller collects them all (§4.13).
+        Never raises on a start failure.         A start failure is reported in the returned StartResult; the         caller collects them all
+        (Section 4.13).
         """
         _log.debug(f"docker start: {name}")
         container, err = _start_get_container(self._client, name)
@@ -485,10 +484,10 @@ class DockerRuntime:
     # ------------------------------------------------------------------
 
     def stop(self, name: str, timeout: int) -> StopResult:
-        """Stop a container. Distinguishes real stop from no-op (§8.10).
+        """Stop a container.
 
-        Raises DockerUnavailableError on daemon loss; that is a runtime
-        failure and the caller decides (hooks converts to exit 1).
+        Distinguishes real stop from no-op (Section 8.10).         Raises DockerUnavailableError on daemon loss; that is a runtime         failure and the
+        caller decides (hooks converts to exit 1).
         """
         _log.debug(f"docker stop: {name} timeout={timeout}s")
         container, err = _stop_get_container(self._client, name)
@@ -508,12 +507,10 @@ class DockerRuntime:
     # ------------------------------------------------------------------
 
     def wait_for_restarting_settle(self, names: list[str], total_timeout: float, poll_interval: float) -> dict[str, ContainerState]:
-        """Bounded wait on a set of ``restarting`` containers (§4.12).
+        """Bounded wait on a set of ``restarting`` containers (Section 4.12).
 
-        All names are inspected once per iteration; the wait exits as
-        soon as none are still ``restarting``, or the total timeout
-        elapses. ``total_timeout <= 0`` disables the wait: states are
-        captured once and returned.
+        All names are inspected once per iteration; the wait exits as soon as none are still ``restarting``, or the total timeout elapses.
+        ``total_timeout <= 0`` disables the wait: states are captured once and returned.
         """
         if not names:
             return {}
@@ -540,13 +537,10 @@ class DockerRuntime:
     # ------------------------------------------------------------------
 
     def wait_healthy(self, name: str, timeout: float, poll_interval: float, preexisting_unhealthy: bool = False) -> HealthResult:
-        """Poll ``.State.Health.Status`` until ``healthy`` or timeout (§8.3).
+        """Poll ``.State.Health.Status`` until ``healthy`` or timeout (Section 8.3).
 
-        A missing ``.State.Health`` block on a running container is a
-        health failure with a distinct message. If the container was
-        observed ``unhealthy`` at preflight and this poll times out,
-        the returned error is prefixed with a note about the
-        pre-existing state.
+        A missing ``.State.Health`` block on a running container is a health failure with a distinct message. If the container was observed
+        ``unhealthy`` at preflight and this poll times out, the returned error is prefixed with a note about the pre-existing state.
         """
         _log.debug(f"wait_healthy: {name} timeout={timeout:g}s poll_interval={poll_interval:g}s preexisting_unhealthy={preexisting_unhealthy}")
         deadline = self._clock.now() + timeout
@@ -567,7 +561,7 @@ class DockerRuntime:
 
 
 # ---------------------------------------------------------------------------
-# §4 helpers (module-level so they can be unit-tested without a runtime)
+# Section 4 helpers (module-level so they can be unit-tested without a runtime)
 # ---------------------------------------------------------------------------
 
 
@@ -710,8 +704,7 @@ def _still_restarting(states: dict[str, ContainerState]) -> list[str]:
 def _wait_healthy_early_failure(name: str, state: ContainerState) -> HealthResult | None:
     """Return a HealthResult for a definitively-failed state, else None.
 
-    Covers the three "this will never become healthy" cases: container
-    is missing, is not running, or is running without ``.State.Health``.
+    Covers the three "this will never become healthy" cases: container is missing, is not running, or is running without ``.State.Health``.
     """
     if not state.exists:
         _log.debug(f"wait_healthy: {name} is missing")
@@ -744,15 +737,14 @@ def _wait_healthy_timeout_result(
 
 
 # ===========================================================================
-# §5  Mount drift (§3.17)
+# Section 5  Mount drift (Section 3.17)
 # ===========================================================================
 
 
 def _realpath_pair(a: Path | str, b: Path | str, container_name: str, target: str, logger: Any) -> tuple[str, str]:
     """Return the pair of realpath'd, trailing-slash-stripped paths.
 
-    Raises ConfigError when realpath fails on either side (broken
-    symlink, permission denied) per §3.17.
+    Raises ConfigError when realpath fails on either side (broken symlink, permission denied) per Section 3.17.
     """
     try:
         ra = os.path.realpath(str(a), strict=True).rstrip("/")
@@ -769,14 +761,14 @@ def check_mount_drift(
     expected: list[tuple[Path, str]],
     logger: Any = None,
 ) -> None:
-    """Raise ConfigError if a required mount is missing or drifted (§3.17).
+    """Raise ConfigError if a required mount is missing or drifted (Section 3.17).
 
     ``expected`` is a list of (resolved_host_source, container_target).
     Callers decide which targets to check: ``/data`` always, ``/data/mods``
     only when the server scope will touch ``mods_dir``. Extra mounts on
     the container are permitted and ignored - the check is one-directional.
 
-    Realpath failures on either side raise ConfigError, per §3.17.
+    Realpath failures on either side raise ConfigError, per Section 3.17.
     """
     if logger is None:
         logger = _log
@@ -799,7 +791,7 @@ def check_mount_drift(
 
 
 # ===========================================================================
-# §6  env_file helper (§8.4)
+# Section 6  env_file helper (Section 8.4)
 # ===========================================================================
 
 
@@ -823,7 +815,7 @@ def _read_env_file_value(path: Path, key: str) -> str | None:
 
 
 # ===========================================================================
-# §7  RCON port resolution (§8.4)
+# Section 7  RCON port resolution (Section 8.4)
 # ===========================================================================
 
 
@@ -847,8 +839,7 @@ def _resolve_port_from_environment(service: ComposeService, logger: Any) -> int 
 def _find_port_in_env_files(service: ComposeService, logger: Any) -> str | None:
     """Scan ``env_file`` entries left-to-right for ``RCON_PORT``; last wins.
 
-    A missing env_file is an error only when ``RCON_PORT`` has not yet
-    been found (per §8.4).
+    A missing env_file is an error only when ``RCON_PORT`` has not yet been found (per Section 8.4).
     """
     found: str | None = None
     for env_file in service.env_files:
@@ -875,7 +866,7 @@ def _resolve_port_from_env_files_result(service: ComposeService, found: str, log
 
 
 def resolve_rcon_port(service: ComposeService, compose: ComposeFile, logger: Any = None) -> int:
-    """Resolve ``RCON_PORT`` for a service (§8.4).
+    """Resolve ``RCON_PORT`` for a service (Section 8.4).
 
     Priority: ``services.<svc>.environment.RCON_PORT``, then the
     service's ``env_file`` entries left-to-right (last wins), then 25575.
@@ -896,7 +887,7 @@ def resolve_rcon_port(service: ComposeService, compose: ComposeFile, logger: Any
 
 
 # ===========================================================================
-# §8  RCON password (§8.4)
+# Section 8  RCON password (Section 8.4)
 # ===========================================================================
 
 
@@ -933,14 +924,12 @@ def _read_secret_file(path: Path, logger: Any) -> str:
 
 
 def load_rcon_password(compose: ComposeFile, service: ComposeService, logger: Any = None) -> str:
-    """Read the RCON password from ``secrets.rcon_password.file`` (§8.4).
+    """Read the RCON password from ``secrets.rcon_password.file`` (Section 8.4).
 
-    Raises ConfigError if the service doesn't reference ``rcon_password``,
-    if the compose file doesn't declare ``secrets.rcon_password.file``,
-    or if the file cannot be read.
+    Raises ConfigError if the service doesn't reference ``rcon_password``, if the compose file doesn't declare ``secrets.rcon_password.file``, or if
+    the file cannot be read.
 
-    The password content is never logged; only the resolved path and the
-    character count.
+    The password content is never logged; only the resolved path and the character count.
     """
     if logger is None:
         logger = _log
@@ -953,20 +942,18 @@ def load_rcon_password(compose: ComposeFile, service: ComposeService, logger: An
 
 
 # ===========================================================================
-# §9  RconTransport ABC + ExecRconTransport (Option A)
+# Section 9  RconTransport ABC + ExecRconTransport (Option A)
 # ===========================================================================
 
 
 class RconTransport(ABC):
     """Executes RCON commands against an instance.
 
-    ``command`` is a single space-separated string: ``"say hello world"``,
-    ``"list"``, ``"reload"``. The transport is responsible for turning
-    that into whatever the underlying mechanism needs.
+    ``command`` is a single space-separated string: ``"say hello world"``, ``"list"``, ``"reload"``. The transport is responsible for turning that
+    into whatever the underlying mechanism needs.
 
-    ``execute`` returns ``(success, response_text)``. It never raises on
-    an RCON-level failure; only DockerUnavailableError can escape, and
-    only from the exec-backed implementation.
+    ``execute`` returns ``(success, response_text)``. It never raises on an RCON-level failure; only DockerUnavailableError can escape, and only
+    from the exec- backed implementation.
     """
 
     @abstractmethod
@@ -989,7 +976,7 @@ class RconTransport(ABC):
 
 
 class ExecRconTransport(RconTransport):
-    """Option A: ``container.exec_run(["rcon-cli", ...])`` (§8.4)."""
+    """Option A: ``container.exec_run(["rcon-cli", ...])`` (Section 8.4)."""
 
     def __init__(self, runtime: DockerRuntime, container_name: str) -> None:
         self._runtime = runtime
@@ -1016,7 +1003,7 @@ class ExecRconTransport(RconTransport):
 
 
 # ===========================================================================
-# §10  TcpRconTransport (Option B)
+# Section 10  TcpRconTransport (Option B)
 # ===========================================================================
 
 
@@ -1058,7 +1045,7 @@ def _tcp_command(conn: _RconConnection, command: str, host: str, port: int) -> t
 
 
 class TcpRconTransport(RconTransport):
-    """Option B: direct TCP RCON (§8.4)."""
+    """Option B: direct TCP RCON (Section 8.4)."""
 
     def __init__(self, host: str, port: int, password: str, sock_factory: Callable[[str, int, float], Any] | None = None) -> None:
         self.host = host
@@ -1094,7 +1081,7 @@ class TcpRconTransport(RconTransport):
 
 
 # ===========================================================================
-# §11  Transport selection (§8.4)
+# Section 11  Transport selection (Section 8.4)
 # ===========================================================================
 
 
@@ -1131,7 +1118,7 @@ def _select_local_transport(
     mappings: list[tuple[str, int]],
     logger: Any,
 ) -> RconTransport:
-    """Same-host path: one published mapping → TCP; zero → exec; >1 → error."""
+    """Same-host path: one published mapping -> TCP; zero -> exec; >1 -> error."""
     if len(mappings) == 1:
         _ip, host_port = mappings[0]
         password = load_rcon_password(compose, service, logger)
@@ -1154,11 +1141,10 @@ def select_rcon_transport(
     rcon_host: str | None,
     logger: Any = None,
 ) -> RconTransport:
-    """Choose Option A or Option B per §8.4.
+    """Choose Option A or Option B per Section 8.4.
 
-    Raises ConfigError on any configuration problem (missing secret file,
-    multiple published mappings, remote rcon_host without a published
-    mapping, etc.). No automatic fallback between transports.
+    Raises ConfigError on any configuration problem (missing secret file, multiple published mappings, remote rcon_host without a published mapping,
+    etc.). No automatic fallback between transports.
     """
     if logger is None:
         logger = _log
@@ -1173,7 +1159,7 @@ def select_rcon_transport(
 
 
 # ===========================================================================
-# §12  _RconConnection wire protocol
+# Section 12  _RconConnection wire protocol
 # ===========================================================================
 
 

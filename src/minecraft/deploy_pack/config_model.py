@@ -1,34 +1,34 @@
 # src/minecraft/deploy_pack/config_model.py
 
-"""Configuration loading, merging, and validation (Project_Specs.md §3).
+"""Configuration loading, merging, and validation (Project_Specs.md Section 3).
 
-Responsibilities (§9.2):
+Responsibilities (Section 9.2):
   * load config.d/.env and config.d/deploy_pack.{toml,yaml,yml} via ConfigCore
-  * read docker-compose.yml as an enrichment source (§3.2)
-  * resolve project-relative paths against the project root (§3.15)
-  * derive www_dir from compose when not set in TOML (§3.19)
-  * derive per-instance roots from compose (§3.18)
-  * resolve the deployment partition from the requested instance set (§2.9)
-  * parse stop_grace_period Go duration strings (§3.2)
-  * validate in-game templates (§5.11), output_filename (§7.1),
-    download_base_url (§7.5), docker timing keys (§3.9)
+  * read docker-compose.yml as an enrichment source (Section 3.2)
+  * resolve project-relative paths against the project root (Section 3.15)
+  * derive www_dir from compose when not set in TOML (Section 3.19)
+  * derive per-instance roots from compose (Section 3.18)
+  * resolve the deployment partition from the requested instance set (Section 2.9)
+  * parse stop_grace_period Go duration strings (Section 3.2)
+  * validate in-game templates (Section 5.11), output_filename (Section 7.1),
+    download_base_url (Section 7.5), docker timing keys (Section 3.9)
 
 Explicit non-responsibilities:
-  * No os.environ access (§9.2). The environment-variable config source
-    was removed in v3.0 (§3.14, §3.16). config.d/.env is a flat file
-    source only; keys are used verbatim (§3.12).
-  * Partition-scoped checks (mods_dir bind agreement §3.7, healthcheck
-    declaration §3.8, compose-vs-container drift §3.17) are preflight's
+  * No os.environ access (Section 9.2). The environment-variable config source
+    was removed in v3.0 (Section 3.14, Section 3.16). config.d/.env is a flat file
+    source only; keys are used verbatim (Section 3.12).
+  * Partition-scoped checks (mods_dir bind agreement Section 3.7, healthcheck
+    declaration Section 3.8, compose-vs-container drift Section 3.17) are preflight's
     job. This module does not raise on their behalf.
-  * Discord template validation belongs to notifications.py (§5.11:
+  * Discord template validation belongs to notifications.py (Section 5.11:
     validated only when --notify is active).
   * side_overrides.toml loading belongs to overrides.py.
 
 Non-raising compose handling:
   load_compose and derive_www_dir never raise on missing / malformed /
   ambiguous input. They return structured results carrying a diagnostic
-  string. Preflight applies §3.5's per-scope decision table and
-  aggregates. This preserves §4.3 ("all independently detectable
+  string. Preflight applies Section 3.5's per-scope decision table and
+  aggregates. This preserves Section 4.3 ("all independently detectable
   failures collected before any write") - a broken compose must not
   short-circuit a run that also has, say, an orphan [resource_pack.X]
   section.
@@ -40,17 +40,17 @@ The module is organised into eleven sections with explicit banner
 comments. Each section corresponds to one concern and its helpers are
 only called from within that section or from the public API.
 
-    §1   Data model
-    §2   Primitive validators and parsers       (§3.2, §3.9, §5.11, §7.1, §7.5)
-    §3   Compose parsing                        (§3.2, §3.5)
-    §4   Service matching and path resolution   (§3.6, §3.15)
-    §5   Instance root derivation               (§3.18)
-    §6   www_dir derivation                     (§3.19)
-    §7   Partition resolution                   (§2.9)
-    §8   Config file loading                    (§3.1, §3.12)
-    §9   CLI override merge                     (§3.1)
-    §10  Schema section builders                (§3.9)
-    §11  Top-level assembly                     (§3.1, §3.15, §3.19)
+    Section 1   Data model
+    Section 2   Primitive validators and parsers       (Section 3.2, Section 3.9, Section 5.11, Section 7.1, Section 7.5)
+    Section 3   Compose parsing                        (Section 3.2, Section 3.5)
+    Section 4   Service matching and path resolution   (Section 3.6, Section 3.15)
+    Section 5   Instance root derivation               (Section 3.18)
+    Section 6   www_dir derivation                     (Section 3.19)
+    Section 7   Partition resolution                   (Section 2.9)
+    Section 8   Config file loading                    (Section 3.1, Section 3.12)
+    Section 9   CLI override merge                     (Section 3.1)
+    Section 10  Schema section builders                (Section 3.9)
+    Section 11  Top-level assembly                     (Section 3.1, Section 3.15, Section 3.19)
 
 Aggressive decomposition: every public entry point is a thin
 orchestrator delegating to single-purpose helpers. Multi-step
@@ -96,7 +96,7 @@ DEFAULT_STOP_GRACE_SECONDS = 10
 
 
 # ===========================================================================
-# §1  Data model
+# Section 1  Data model
 # ===========================================================================
 
 
@@ -159,13 +159,14 @@ class ComposeFile:
 
 @dataclass
 class ComposeLoadResult:
-    """Result of loading the compose file. Never raises (§3.5, §4.3).
+    """Result of loading the compose file.
 
-    ``file`` is None if the file could not be read or parsed; ``error``
-    holds a human-readable diagnostic in that case. Preflight applies
-    §3.5's per-scope decision table to ``error``. ``file`` is None and
-    ``error`` is None only if the compose file path was never provided
-    (which is not currently reachable - compose_file always has a default).
+    Never raises (Section 3.5, Section 4.3).
+        ``file`` is None if the file could not be read or parsed; ``error``
+        holds a human-readable diagnostic in that case. Preflight applies
+        Section 3.5's per-scope decision table to ``error``. ``file`` is None and
+        ``error`` is None only if the compose file path was never provided
+        (which is not currently reachable - compose_file always has a default).
     """
 
     file: ComposeFile | None
@@ -179,7 +180,10 @@ class ComposeLoadResult:
 
 @dataclass
 class WwwDirResult:
-    """Result of deriving www_dir from compose (§3.19). Never raises."""
+    """Result of deriving www_dir from compose (Section 3.19).
+
+    Never raises.
+    """
 
     path: Path | None
     error: str | None
@@ -190,10 +194,8 @@ class WwwDirResult:
 class InstanceConfig:
     """Configuration for one Minecraft server instance.
 
-    Combines TOML-declared fields with compose-derived data. Compose-
-    derived attributes are populated only when a compose file loaded and
-    the container lookup succeeded; otherwise the corresponding error
-    fields carry the diagnostic for preflight to evaluate.
+    Combines TOML-declared fields with compose-derived data. Compose- derived attributes are populated only when a compose file loaded and the
+    container lookup succeeded; otherwise the corresponding error fields carry the diagnostic for preflight to evaluate.
     """
 
     name: str
@@ -216,8 +218,7 @@ class InstanceConfig:
 class ResourcePackConfig:
     """A single resource pack entry advertised to clients.
 
-    Describes the downloadable filename, whether clients are required to
-    accept it, and an optional prompt shown to players.
+    Describes the downloadable filename, whether clients are required to accept it, and an optional prompt shown to players.
     """
 
     filename: str
@@ -229,10 +230,8 @@ class ResourcePackConfig:
 class DockerConfig:
     """Docker and compose runtime settings for the deployment.
 
-    Captures the compose file location, restart and health timing
-    thresholds, in-game notice requirements, restart notice templates, and
-    the optional RCON host. Defaults match the shipped behavior and may be
-    overridden from TOML.
+    Captures the compose file location, restart and health timing thresholds, in-game notice requirements, restart notice templates, and the
+    optional RCON host. Defaults match the shipped behavior and may be overridden from TOML.
     """
 
     compose_file: Path
@@ -251,10 +250,8 @@ class DockerConfig:
 class DiscordConfig:
     """Discord role and template configuration for webhook notifications.
 
-    Holds the role names permitted to issue privileged commands and the
-    optional message templates used for live, online, failure, and
-    diagnostic notifications. Templates left as None fall back to the
-    implementations' built-in defaults.
+    Holds the role names permitted to issue privileged commands and the optional message templates used for live, online, failure, and diagnostic
+    notifications. Templates left as None fall back to the implementations' built-in defaults.
     """
 
     player_roles: list[str] = field(default_factory=list)
@@ -276,7 +273,7 @@ class DeploymentConfig:
     candidate channels so preflight can decide fatality per the relevant
     section of the spec.
 
-    Partition targeting (§2.9, §9.2):
+    Partition targeting (Section 2.9, Section 9.2):
       * ``partition`` - lexicographically sorted, deduplicated member names.
       * ``partition_unknown`` - requested names that are not configured.
       * ``requested_instances`` - the raw set of names passed via
@@ -312,11 +309,11 @@ class DeploymentConfig:
 
 
 # ===========================================================================
-# §2  Primitive validators and parsers
+# Section 2  Primitive validators and parsers
 # ===========================================================================
 
 
-# ----- §3.2  Go-duration parsing --------------------------------------
+# ----- Section 3.2  Go-duration parsing --------------------------------------
 
 
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600}
@@ -351,10 +348,8 @@ def _consume_duration_tokens(s: str) -> int:
 def parse_go_duration(value: str) -> int:
     """Parse a Go duration string ('30s', '1m30s', '2h') to integer seconds.
 
-    Raises ValueError on any input that is not a sequence of <int><unit>
-    tokens covering the entire string. Sub-second units are rejected:
-    the spec's examples are whole-second, and silently truncating
-    '1.5s' to 1s is worse than refusing it.
+    Raises ValueError on any input that is not a sequence of <int><unit> tokens covering the entire string. Sub-second units are rejected: the
+    spec's examples are whole-second, and silently truncating '1.5s' to 1s is worse than refusing it.
     """
     s = value.strip()
     if not s:
@@ -365,14 +360,14 @@ def parse_go_duration(value: str) -> int:
     return total
 
 
-# ----- §5.11  In-game templates ---------------------------------------
+# ----- Section 5.11  In-game templates ---------------------------------------
 
 
 _PLACEHOLDER_RE = re.compile("\\{([^{}]*)\\}")
 
 
 def _validate_restart_notice_template(template: str) -> None:
-    """§5.11: non-empty; only ``{time}`` permitted."""
+    """Section 5.11: non-empty; only ``{time}`` permitted."""
     if not template:
         _log.error("validate_in_game_templates: [docker].restart_notice_template is empty")
         raise ConfigError("[docker].restart_notice_template must be non-empty")
@@ -383,7 +378,7 @@ def _validate_restart_notice_template(template: str) -> None:
 
 
 def _validate_restart_cancel_notice_template(template: str) -> None:
-    """§5.11: non-empty; no placeholders at all."""
+    """Section 5.11: non-empty; no placeholders at all."""
     if not template:
         _log.error("validate_in_game_templates: [docker].restart_cancel_notice_template is empty")
         raise ConfigError("[docker].restart_cancel_notice_template must be non-empty")
@@ -393,7 +388,7 @@ def _validate_restart_cancel_notice_template(template: str) -> None:
 
 
 def validate_in_game_templates(docker: DockerConfig) -> None:
-    """Validate the two in-game templates at config load time (§5.11).
+    """Validate the two in-game templates at config load time (Section 5.11).
 
     In-game templates are validated unconditionally, regardless of
     --notify. Discord templates are validated by notifications.py.
@@ -403,14 +398,13 @@ def validate_in_game_templates(docker: DockerConfig) -> None:
     _log.debug("validate_in_game_templates: both in-game templates valid")
 
 
-# ----- §7.1  Output filename ------------------------------------------
+# ----- Section 7.1  Output filename ------------------------------------------
 
 
 def _filename_check_messages(name: str) -> list[tuple[bool, str]]:
     """Return ``(violated, message)`` pairs in the order checks must run.
 
-    Centralising the checks keeps :func:`validate_output_filename` a
-    two-line loop; the first violated check raises.
+    Centralising the checks keeps :func:`validate_output_filename` a two-line loop; the first violated check raises.
     """
     return [
         (not name, "output_filename must be non-empty"),
@@ -438,7 +432,7 @@ def validate_output_filename(name: str) -> None:
     _log.debug(f"validate_output_filename: {name!r} OK")
 
 
-# ----- §7.5  download_base_url ----------------------------------------
+# ----- Section 7.5  download_base_url ----------------------------------------
 
 
 def validate_download_base_url(url: str) -> None:
@@ -453,7 +447,7 @@ def validate_download_base_url(url: str) -> None:
     _log.debug(f"validate_download_base_url: {url!r} OK")
 
 
-# ----- §3.9  Docker timing keys ---------------------------------------
+# ----- Section 3.9  Docker timing keys ---------------------------------------
 
 
 _NON_NEGATIVE_KEYS = (
@@ -487,12 +481,15 @@ def _validate_docker_timings(docker: DockerConfig) -> None:
 
 
 # ===========================================================================
-# §3  Compose parsing
+# Section 3  Compose parsing
 # ===========================================================================
 
 
 def _parse_short_form_bind(spec: str) -> BindMount | None:
-    """Parse ``host:target`` string form. Returns None for named volumes / malformed."""
+    """Parse ``host:target`` string form.
+
+    Returns None for named volumes / malformed.
+    """
     parts = spec.split(":")
     if len(parts) < 2:
         return None
@@ -503,7 +500,10 @@ def _parse_short_form_bind(spec: str) -> BindMount | None:
 
 
 def _parse_long_form_bind(spec: dict) -> BindMount | None:
-    """Parse the ``{type: bind, source, target}`` mapping form. None for volumes."""
+    """Parse the ``{type: bind, source, target}`` mapping form.
+
+    None for volumes.
+    """
     if spec.get("type") != "bind":
         return None
     src = spec.get("source")
@@ -514,7 +514,10 @@ def _parse_long_form_bind(spec: dict) -> BindMount | None:
 
 
 def _parse_binds(volumes: Any) -> list[BindMount]:
-    """Return bind mounts only. Named and anonymous volumes are ignored."""
+    """Return bind mounts only.
+
+    Named and anonymous volumes are ignored.
+    """
     result: list[BindMount] = []
     if not isinstance(volumes, list):
         _log.debug("_parse_binds: volumes is not a list; no binds parsed")
@@ -618,7 +621,10 @@ def _parse_service(name: str, raw: dict, base_dir: Path) -> ComposeService:
 
 
 def _read_compose_text(path: Path, logger: Any) -> tuple[str | None, str | None]:
-    """Read the compose file as UTF-8 text. Returns (text, error_message)."""
+    """Read the compose file as UTF-8 text.
+
+    Returns (text, error_message).
+    """
     logger.debug(f"load_compose: reading {path}")
     if not path.is_file():
         logger.warning(f"load_compose: compose file not found: {path}")
@@ -631,7 +637,10 @@ def _read_compose_text(path: Path, logger: Any) -> tuple[str | None, str | None]
 
 
 def _parse_compose_yaml(text: str, path: Path, logger: Any) -> tuple[dict | None, str | None]:
-    """Parse YAML into a top-level mapping. Returns (raw_dict, error_message)."""
+    """Parse YAML into a top-level mapping.
+
+    Returns (raw_dict, error_message).
+    """
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -647,7 +656,10 @@ def _parse_compose_yaml(text: str, path: Path, logger: Any) -> tuple[dict | None
 
 
 def _parse_compose_services(raw: dict, base_dir: Path, path: Path, logger: Any) -> tuple[dict[str, ComposeService] | None, str | None]:
-    """Build the services mapping. Returns (services, error_message)."""
+    """Build the services mapping.
+
+    Returns (services, error_message).
+    """
     services_raw = raw.get("services") or {}
     if not isinstance(services_raw, dict):
         logger.warning(f"load_compose: {path}: 'services' is not a mapping")
@@ -686,13 +698,14 @@ def _parse_compose_secrets(raw: dict, base_dir: Path) -> dict[str, Path]:
 
 
 def load_compose(path: Path) -> ComposeLoadResult:
-    """Load a compose file. Never raises (§3.5).
+    """Load a compose file.
 
-    Returns a ComposeLoadResult. On any failure, ``file`` is None and
-    ``error`` carries a human-readable diagnostic. Preflight owns the
-    per-scope decision table (§3.5): a broken compose is fatal for
-    --server and (conditionally) --resource-pack, but only a warning for
-    --client unless www_dir becomes undeterminable.
+    Never raises (Section 3.5).
+        Returns a ComposeLoadResult. On any failure, ``file`` is None and
+        ``error`` carries a human-readable diagnostic. Preflight owns the
+        per-scope decision table (Section 3.5): a broken compose is fatal for
+        --server and (conditionally) --resource-pack, but only a warning for
+        --client unless www_dir becomes undeterminable.
     """
     text, err = _read_compose_text(path, _log)
     if err is not None:
@@ -716,24 +729,22 @@ def load_compose(path: Path) -> ComposeLoadResult:
 
 
 # ===========================================================================
-# §4  Service matching and path resolution
+# Section 4  Service matching and path resolution
 # ===========================================================================
 
 
 class ServiceMatchError(ConfigError):
     """Raised by match_service_by_container on zero or multiple matches.
 
-    Callers in _build_deployment_config catch it and store the message on
-    InstanceConfig.service_match_error so that preflight can aggregate
-    (§4.3, §3.6). Public callers may treat it as a normal ConfigError.
+    Callers in _build_deployment_config catch it and store the message on InstanceConfig.service_match_error so that preflight can aggregate (Section 4.3,
+    Section 3.6). Public callers may treat it as a normal ConfigError.
     """
 
 
 def match_service_by_container(compose: ComposeFile, container_name: str) -> ComposeService:
-    """Return the single service whose container_name matches (§3.6).
+    """Return the single service whose container_name matches (Section 3.6).
 
-    Raises ServiceMatchError (a ConfigError subclass) on zero or multiple
-    matches. This is the config-layer API; preflight is responsible for
+    Raises ServiceMatchError (a ConfigError subclass) on zero or multiple matches. This is the config-layer API; preflight is responsible for
     deciding what to do with the failure.
     """
     _log.debug(f"match_service_by_container: looking up container_name={container_name!r} in {len(compose.services)} service(s)")
@@ -752,10 +763,8 @@ def match_service_by_container(compose: ComposeFile, container_name: str) -> Com
 def _resolve_compose_path(p: Path, base_dir: Path) -> Path:
     """Resolve a compose-derived host path against the compose base dir.
 
-    Compose file source paths are relative to the compose file's
-    directory (that is Docker Compose semantics). Project TOML paths are
-    resolved against the project root elsewhere; these are different
-    bases and must not be conflated.
+    Compose file source paths are relative to the compose file's directory (that is Docker Compose semantics). Project TOML paths are resolved
+    against the project root elsewhere; these are different bases and must not be conflated.
     """
     if not p.is_absolute():
         p = base_dir / p
@@ -768,11 +777,8 @@ def _resolve_compose_path(p: Path, base_dir: Path) -> Path:
 def resolve_compose_path(p: Path, base_dir: Path) -> Path:
     """Public alias for :func:`_resolve_compose_path`.
 
-    Exposed so preflight's drift check (§3.17) can resolve compose bind
-    sources consistently with the config layer. Compose file source
-    paths are relative to the compose file's directory; this is a
-    different base than project-root TOML paths and must not be
-    conflated.
+    Exposed so preflight's drift check (Section 3.17) can resolve compose bind sources consistently with the config layer. Compose file source paths are
+    relative to the compose file's directory; this is a different base than project-root TOML paths and must not be conflated.
     """
     resolved = _resolve_compose_path(p, base_dir)
     _log.debug(f"resolve_compose_path: {p} (base={base_dir}) -> {resolved}")
@@ -780,7 +786,7 @@ def resolve_compose_path(p: Path, base_dir: Path) -> Path:
 
 
 # ===========================================================================
-# §5  Instance root derivation (§3.18)
+# Section 5  Instance root derivation (Section 3.18)
 # ===========================================================================
 
 
@@ -796,8 +802,7 @@ def _find_canonical_data_bind(svc: ComposeService) -> Path | None:
 def _candidate_root_from_bind(bind: BindMount) -> str | None:
     """Return the implied root for one ``/data/<subpath>`` bind, or None.
 
-    ``/data/mods`` and any bind not under ``/data/`` are excluded: mods
-    is a shared bind derived separately by :func:`derive_mods_dir`.
+    ``/data/mods`` and any bind not under ``/data/`` are excluded: mods is a shared bind derived separately by :func:`derive_mods_dir`.
     """
     target = bind.container_target
     if not target.startswith("/data/") or target == "/data/mods":
@@ -845,7 +850,7 @@ def _pick_root_candidate(implied_counts: dict[str, int], svc: ComposeService) ->
 
 
 def derive_instance_root(svc: ComposeService) -> Path | None:
-    """Derive the instance root directory from a compose service (§3.18).
+    """Derive the instance root directory from a compose service (Section 3.18).
 
     Three shapes are supported:
 
@@ -886,7 +891,7 @@ def derive_mods_dir(svc: ComposeService) -> Path | None:
 
 
 # ===========================================================================
-# §6  www_dir derivation (§3.19)
+# Section 6  www_dir derivation (Section 3.19)
 # ===========================================================================
 
 
@@ -916,9 +921,8 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
 def derive_www_dir(compose: ComposeFile) -> WwwDirResult:
     """Find the unique bind source with a target starting /usr/share/nginx/.
 
-    Never raises. Exact target '/usr/share/nginx' (no subpath) is
-    ignored, per §3.19. On zero or multiple candidates, ``path`` is
-    None and ``error`` explains why.
+    Never raises. Exact target '/usr/share/nginx' (no subpath) is ignored, per Section 3.19. On zero or multiple candidates, ``path`` is None and ``error``
+    explains why.
     """
     unique = _dedupe_paths(_collect_nginx_candidates(compose))
     if not unique:
@@ -936,24 +940,21 @@ def derive_www_dir(compose: ComposeFile) -> WwwDirResult:
 
 
 # ===========================================================================
-# §7  Partition resolution (§2.9)
+# Section 7  Partition resolution (Section 2.9)
 # ===========================================================================
 
 
 def resolve_partition(instances: Mapping[str, InstanceConfig], requested: Iterable[str] | None) -> tuple[list[str], list[str]]:
-    """Resolve the deployment partition (§2.9).
+    """Resolve the deployment partition (Section 2.9).
 
-    Returns (partition, unknown). ``partition`` is the sorted, deduplicated
-    set of member names; ``unknown`` is the sorted set of requested names
+    Returns (partition, unknown). ``partition`` is the sorted, deduplicated set of member names; ``unknown`` is the sorted set of requested names
     that are not configured.
 
-    ``requested`` is None when --instance was absent; in that case the
-    partition is every configured instance. Requested names are deduplicated
-    and sorted lexicographically, per §2.9.
+    ``requested`` is None when --instance was absent; in that case the partition is every configured instance. Requested names are deduplicated and
+    sorted lexicographically, per Section 2.9.
 
-    Does not raise. Preflight raises exit 3 if ``unknown`` is non-empty
-    (§2.5: "``--instance X`` where X not configured → Preflight error,
-    exit 3"). This keeps §4.3 aggregation intact.
+    Does not raise. Preflight raises exit 3 if ``unknown`` is non-empty (Section 2.5: "``--instance X`` where X not configured -> Preflight error, exit 3").
+    This keeps Section 4.3 aggregation intact.
     """
     configured = set(instances.keys())
     if requested is None:
@@ -968,7 +969,7 @@ def resolve_partition(instances: Mapping[str, InstanceConfig], requested: Iterab
 
 
 # ===========================================================================
-# §8  Config file loading (§3.1, §3.12)
+# Section 8  Config file loading (Section 3.1, Section 3.12)
 # ===========================================================================
 
 
@@ -983,10 +984,9 @@ def _find_config_file(config_dir: Path) -> Path | None:
 
 
 def _configure_sources(mgr: ConfigManager, env_file: Path, toml_path: Path | None) -> None:
-    """Register the file sources on a ConfigManager in priority order (§3.1).
+    """Register the file sources on a ConfigManager in priority order (Section 3.1).
 
-    Lower-priority sources are registered first; ConfigCore's merge
-    rules give later-registered sources higher priority.
+    Lower-priority sources are registered first; ConfigCore's merge rules give later-registered sources higher priority.
     """
     if env_file.is_file():
         _log.debug(f"_load_config_files: loading .env {env_file}")
@@ -999,13 +999,11 @@ def _configure_sources(mgr: ConfigManager, env_file: Path, toml_path: Path | Non
 def _load_config_files(config_dir: Path) -> dict[str, Any]:
     """Load config.d/.env and config.d/deploy_pack.{toml,yaml,yml}.
 
-    Priority (§3.1, increasing): .env < TOML file < CLI arguments.
+    Priority (Section 3.1, increasing): .env < TOML file < CLI arguments.
 
-    Both files are fed to ConfigCore as file sources. The .env is loaded
-    as a flat key-value source with literal keys (§3.12, §3.16): no
-    prefix stripping, no separator expansion, no case folding. Malformed
-    lines (no '=') are silently skipped by ConfigCore's parser; that is
-    the required behavior per §3.12.
+    Both files are fed to ConfigCore as file sources. The .env is loaded as a flat key-value source with literal keys (Section 3.12, Section 3.16): no prefix
+    stripping, no separator expansion, no case folding. Malformed lines (no '=') are silently skipped by ConfigCore's parser; that is the required
+    behavior per Section 3.12.
     """
     env_file = config_dir / ".env"
     toml_path = _find_config_file(config_dir)
@@ -1021,7 +1019,7 @@ def _load_config_files(config_dir: Path) -> dict[str, Any]:
 
 
 # ===========================================================================
-# §9  CLI override merge (§3.1)
+# Section 9  CLI override merge (Section 3.1)
 # ===========================================================================
 
 
@@ -1037,10 +1035,8 @@ def _split_cli_token(token: str) -> tuple[str, str | None]:
 def _parse_cli_overrides(args: list[str]) -> dict[str, Any]:
     """Convert ['--foo-bar', 'v', '--baz=1'] to {'foo_bar': 'v', 'baz': '1'}.
 
-    §2.8: CLI flags are kebab-case; TOML keys are snake_case. argparse
-    has already consumed the flags it owns, so anything left here is a
-    config override. Hyphens are normalised to underscores so the
-    overlay lands on the same TOML keys.
+    Section 2.8: CLI flags are kebab-case; TOML keys are snake_case. argparse has already consumed the flags it owns, so anything left here is a config
+    override. Hyphens are normalised to underscores so the overlay lands on the same TOML keys.
     """
     result: dict[str, Any] = {}
     i = 0
@@ -1071,7 +1067,7 @@ def _deep_merge(base: dict, overlay: dict) -> None:
 
 
 def _merge_cli_overrides(raw: dict[str, Any], cli_remaining: list[str] | None, logger: Any) -> None:
-    """Parse CLI overrides and merge them on top of the file sources (§3.1)."""
+    """Parse CLI overrides and merge them on top of the file sources (Section 3.1)."""
     if not cli_remaining:
         return
     cli_overlay = _parse_cli_overrides(cli_remaining)
@@ -1080,17 +1076,15 @@ def _merge_cli_overrides(raw: dict[str, Any], cli_remaining: list[str] | None, l
 
 
 # ===========================================================================
-# §10  Schema section builders (§3.9)
+# Section 10  Schema section builders (Section 3.9)
 # ===========================================================================
 
 
 def _resolve_project_path(value: Any, project_root: Path, default: Any = None) -> Path | None:
-    """Resolve a TOML/env path value against the project root (§3.15).
+    """Resolve a TOML/env path value against the project root (Section 3.15).
 
-    ``value`` and ``default`` may both be None; if so the result is None.
-    If ``value`` is not None it takes precedence over ``default``.
-    Relative paths resolve against ``project_root``; absolute paths are
-    returned as-is after realpath.
+    ``value`` and ``default`` may both be None; if so the result is None. If ``value`` is not None it takes precedence over ``default``. Relative
+    paths resolve against ``project_root``; absolute paths are returned as-is after realpath.
     """
     v = value if value is not None else default
     if v is None:
@@ -1114,7 +1108,7 @@ def _require_table(raw: dict, key: str, *, logger: Any) -> dict:
 
 
 def _validate_instance_discovery(raw: dict[str, Any], logger: Any) -> None:
-    """§3.6: only ``'explicit'`` is supported."""
+    """Section 3.6: only ``'explicit'`` is supported."""
     discovery = str(raw.get("instance_discovery", "explicit"))
     if discovery != "explicit":
         logger.error(f"config: instance_discovery must be 'explicit', got {discovery!r}")
@@ -1122,7 +1116,7 @@ def _validate_instance_discovery(raw: dict[str, Any], logger: Any) -> None:
 
 
 def _build_docker_config(raw: dict[str, Any], project_root: Path, logger: Any) -> DockerConfig:
-    """Build and validate the ``[docker]`` section (§3.9)."""
+    """Build and validate the ``[docker]`` section (Section 3.9)."""
     docker_raw = _require_table(raw, "docker", logger=logger)
     compose_file = _resolve_project_path(docker_raw.get("compose_file"), project_root, "./docker-compose.yml")
     docker = DockerConfig(
@@ -1144,10 +1138,10 @@ def _build_docker_config(raw: dict[str, Any], project_root: Path, logger: Any) -
 
 
 def _load_compose_or_warn(path: Path, logger: Any) -> ComposeLoadResult:
-    """Load compose; warn when unavailable but never raise (§3.5)."""
+    """Load compose; warn when unavailable but never raise (Section 3.5)."""
     result = load_compose(path)
     if not result.ok:
-        logger.warning(f"config: compose unavailable ({result.error}); preflight will apply §3.5")
+        logger.warning(f"config: compose unavailable ({result.error}); preflight will apply Section 3.5")
     return result
 
 
@@ -1178,10 +1172,8 @@ def _apply_stop_grace(inst: InstanceConfig, svc: ComposeService) -> None:
 def _enrich_instance_from_compose(inst: InstanceConfig, compose: ComposeFile, logger: Any) -> None:
     """Match the container against compose and populate derived fields.
 
-    On a service-match failure, records the diagnostic on
-    ``inst.service_match_error`` and returns without touching the
-    instance root. The remaining fields (root, stop grace) are derived
-    only when a service was found.
+    On a service-match failure, records the diagnostic on ``inst.service_match_error`` and returns without touching the instance root. The remaining
+    fields (root, stop grace) are derived only when a service was found.
     """
     try:
         svc = match_service_by_container(compose, inst.container)
@@ -1194,7 +1186,7 @@ def _enrich_instance_from_compose(inst: InstanceConfig, compose: ComposeFile, lo
 
 
 def _validate_instance_modes(name: str, config_mode: str, kubejs_mode: str, logger: Any) -> None:
-    """§3.9: ``config_mode`` in {merge, delete}; ``kubejs_mode`` must be 'delete'."""
+    """Section 3.9: ``config_mode`` in {merge, delete}; ``kubejs_mode`` must be 'delete'."""
     if config_mode not in ("merge", "delete"):
         logger.error(f"config: [instances.{name}].config_mode must be 'merge' or 'delete', got {config_mode!r}")
         raise ConfigError(f"[instances.{name}].config_mode must be 'merge' or 'delete'")
@@ -1233,7 +1225,7 @@ def _build_instance_config(name: str, body: Any, compose_result: ComposeLoadResu
 
 
 def _build_instances(raw: dict[str, Any], compose_result: ComposeLoadResult, logger: Any) -> dict[str, InstanceConfig]:
-    """Build the ``[instances]`` table (§3.2)."""
+    """Build the ``[instances]`` table (Section 3.2)."""
     instances_raw = _require_table(raw, "instances", logger=logger)
     instances: dict[str, InstanceConfig] = {}
     for name, body in instances_raw.items():
@@ -1244,7 +1236,7 @@ def _build_instances(raw: dict[str, Any], compose_result: ComposeLoadResult, log
 
 
 def _validate_resource_pack_required_keys(name: str, body: dict, logger: Any) -> None:
-    """§3.9: ``[resource_pack.X]`` requires ``filename`` and ``required``."""
+    """Section 3.9: ``[resource_pack.X]`` requires ``filename`` and ``required``."""
     if "filename" not in body:
         logger.error(f"config: [resource_pack.{name}].filename is required")
         raise ConfigError(f"[resource_pack.{name}].filename is required")
@@ -1254,14 +1246,14 @@ def _validate_resource_pack_required_keys(name: str, body: dict, logger: Any) ->
 
 
 def _validate_resource_pack_orphan(name: str, instances: Mapping[str, InstanceConfig], logger: Any) -> None:
-    """§7.9: every ``[resource_pack.X]`` must have a matching ``[instances.X]``."""
+    """Section 7.9: every ``[resource_pack.X]`` must have a matching ``[instances.X]``."""
     if name not in instances:
         logger.error(f"config: [resource_pack.{name}] has no matching [instances.{name}]")
         raise ConfigError(f"[resource_pack.{name}] has no matching [instances.{name}]")
 
 
 def _build_one_resource_pack(name: str, body: Any, instances: Mapping[str, InstanceConfig], logger: Any) -> ResourcePackConfig:
-    """Validate one ``[resource_pack.X]`` block (§3.9) and check for an orphan."""
+    """Validate one ``[resource_pack.X]`` block (Section 3.9) and check for an orphan."""
     if not isinstance(body, dict):
         logger.error(f"config: [resource_pack.{name}] is not a table")
         raise ConfigError(f"[resource_pack.{name}] must be a table")
@@ -1275,7 +1267,7 @@ def _build_one_resource_pack(name: str, body: Any, instances: Mapping[str, Insta
 
 
 def _build_resource_packs(raw: dict[str, Any], instances: Mapping[str, InstanceConfig], logger: Any) -> dict[str, ResourcePackConfig]:
-    """Build the ``[resource_pack]`` table and enforce §7.9 orphan rules."""
+    """Build the ``[resource_pack]`` table and enforce Section 7.9 orphan rules."""
     rp_raw = _require_table(raw, "resource_pack", logger=logger)
     resource_packs: dict[str, ResourcePackConfig] = {}
     for name, body in rp_raw.items():
@@ -1309,7 +1301,7 @@ def _extract_message_template(messages_raw: dict, name: str, logger: Any) -> str
 
 
 def _build_discord_config(raw: dict[str, Any], logger: Any) -> DiscordConfig:
-    """Build the ``[discord]`` section: roles and message templates (§3.9)."""
+    """Build the ``[discord]`` section: roles and message templates (Section 3.9)."""
     discord_raw = _require_table(raw, "discord", logger=logger)
     tags_raw = _require_table(discord_raw, "tags", logger=logger)
     messages_raw = _require_table(discord_raw, "messages", logger=logger)
@@ -1335,7 +1327,7 @@ def _resolve_webhook_url(raw: dict[str, Any]) -> str | None:
     return str(webhook_url_raw) if webhook_url_raw else None
 
 
-# ----- §3.4 / §3.19  www_dir resolution -------------------------------
+# ----- Section 3.4 / Section 3.19  www_dir resolution -------------------------------
 
 
 def _resolve_www_dir_from_toml(www_dir_toml: Path, compose_result: ComposeLoadResult, logger: Any) -> tuple[Path | None, str | None, list[Path]]:
@@ -1355,7 +1347,7 @@ def _resolve_www_dir_from_toml(www_dir_toml: Path, compose_result: ComposeLoadRe
 
 
 def _resolve_www_dir_from_compose(compose_result: ComposeLoadResult, logger: Any) -> tuple[Path | None, str | None, list[Path]]:
-    """Derive www_dir from the compose nginx bind (§3.19)."""
+    """Derive www_dir from the compose nginx bind (Section 3.19)."""
     compose = compose_result.file
     assert compose is not None
     derived = derive_www_dir(compose)
@@ -1377,7 +1369,10 @@ def _resolve_www_dir_unavailable(compose_result: ComposeLoadResult, logger: Any)
 
 
 def _resolve_www_dir(raw: dict[str, Any], project_root: Path, compose_result: ComposeLoadResult, logger: Any) -> tuple[Path | None, str | None, list[Path]]:
-    """Return (www_dir, error, candidates). TOML > compose > unavailable (§3.4)."""
+    """Return (www_dir, error, candidates).
+
+    TOML > compose > unavailable (Section 3.4).
+    """
     www_dir_toml = _resolve_project_path(raw.get("www_dir"), project_root)
     if www_dir_toml is not None:
         return _resolve_www_dir_from_toml(www_dir_toml, compose_result, logger)
@@ -1387,7 +1382,7 @@ def _resolve_www_dir(raw: dict[str, Any], project_root: Path, compose_result: Co
 
 
 # ===========================================================================
-# §11  Top-level assembly (§3.1, §3.15, §3.19)
+# Section 11  Top-level assembly (Section 3.1, Section 3.15, Section 3.19)
 # ===========================================================================
 
 
@@ -1402,7 +1397,7 @@ class _TopLevelScalars:
 
 
 def _resolve_top_level_paths(raw: dict[str, Any], project_root: Path, logger: Any) -> tuple[Path, Path, Path | None]:
-    """Resolve ``sync_root``, ``modpack_dir``, ``mods_dir_toml`` (§3.15)."""
+    """Resolve ``sync_root``, ``modpack_dir``, ``mods_dir_toml`` (Section 3.15)."""
     sync_root = _resolve_project_path(raw.get("sync_root"), project_root, "./sync")
     modpack_dir = _resolve_project_path(raw.get("modpack_dir"), project_root, "./sync/downloads")
     mods_dir_toml = _resolve_project_path(raw.get("mods_dir"), project_root)
@@ -1411,7 +1406,7 @@ def _resolve_top_level_paths(raw: dict[str, Any], project_root: Path, logger: An
 
 
 def _resolve_top_level_scalars(raw: dict[str, Any]) -> _TopLevelScalars:
-    """Read and validate the four top-level scalars (§7.1, §7.5)."""
+    """Read and validate the four top-level scalars (Section 7.1, Section 7.5)."""
     output_filename = str(raw.get("output_filename", "minecraft_client_{date}.zip"))
     download_base_url = str(raw.get("download_base_url", ""))
     validate_output_filename(output_filename)
@@ -1518,20 +1513,17 @@ def load_deployment_config(
     cli_remaining: list[str] | None = None,
     logger: Any = None,
 ) -> DeploymentConfig:
-    """Load, merge, and validate configuration. Raises ConfigError on failure.
+    """Load, merge, and validate configuration.
 
-    ``requested_instances`` is the set of names supplied via --instance,
-    or None if --instance was absent. Argparse parsing of --instance
-    happens in main; resolution (default-set expansion, existence check,
-    lexicographic sort, dedup) happens here (§2.9, §9.2).
+    Raises ConfigError on failure.     ``requested_instances`` is the set of names supplied via --instance,     or None if --instance was absent.
+    Argparse parsing of --instance     happens in main; resolution (default-set expansion, existence check,     lexicographic sort, dedup) happens
+    here (Section 2.9, Section 9.2).
 
-    ``cli_remaining`` are arguments argparse did not consume. They are
-    the highest-priority config source (§3.1).
+    ``cli_remaining`` are arguments argparse did not consume. They are the highest-priority config source (Section 3.1).
 
-    This function performs no os.environ access (§9.2).
+    This function performs no os.environ access (Section 9.2).
 
-    A broken compose file does NOT raise. The DeploymentConfig.compose
-    field carries the diagnostic; preflight applies §3.5.
+    A broken compose file does NOT raise. The DeploymentConfig.compose field carries the diagnostic; preflight applies Section 3.5.
     """
     if logger is None:
         logger = _log

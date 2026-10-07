@@ -52,8 +52,7 @@ _STDLIB_LEVELS: dict[str, int] = {
 class PytestLoggingCoreSink:
     """LoggingCore sink that records events and bridges them to stdlib logging.
 
-    Application code never sees this class; it exists only inside the pytest
-    process. See the module docstring for rationale.
+    Application code never sees this class; it exists only inside the pytest process. See the module docstring for rationale.
     """
 
     def __init__(self) -> None:
@@ -71,9 +70,8 @@ class PytestLoggingCoreSink:
 def logging_core_sink() -> Iterator[PytestLoggingCoreSink]:
     """Install a fresh LoggingCore test sink for every test.
 
-    The global LoggingCore is swapped out so each test sees a clean sink and
-    a clean event list. The previous core (and its logger cache) is restored
-    on teardown.
+    The global LoggingCore is swapped out so each test sees a clean sink and a clean event list. The previous core (and its logger cache) is restored on
+    teardown.
     """
     sink = PytestLoggingCoreSink()
     core = LoggingCore()

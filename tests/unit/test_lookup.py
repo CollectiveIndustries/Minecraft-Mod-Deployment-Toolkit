@@ -103,11 +103,7 @@ def test_parse_log_ignores_resourcekey():
     """Should skip entries with ResourceKey format."""
     log_file = Path("test.log")
     with patch("minecraft.lookup.LOG", log_file):
-        log_file.write_text("""
-[REGDUMP] REGISTRY DUMP START
-[REGDUMP] ITEM|ResourceKey[minecraft:apple]|Apple|minecraft|
-[REGDUMP] REGISTRY DUMP END
-""")
+        log_file.write_text("""[REGDUMP] REGISTRY DUMP START [REGDUMP] ITEM|ResourceKey[minecraft:apple]|Apple|minecraft| [REGDUMP] REGISTRY DUMP END.""")
         registry = lookup.parse_log()
         assert len(registry["item"]) == 0
         log_file.unlink()
@@ -182,7 +178,7 @@ def test_show_mod(capsys, sample_log):
 
 
 def test_main_help(capsys):
-    """main() should print usage for help."""
+    """Main() should print usage for help."""
     with patch("sys.argv", ["lookup", "help"]):
         lookup.main()
     captured = capsys.readouterr()
@@ -190,7 +186,7 @@ def test_main_help(capsys):
 
 
 def test_main_search(capsys, sample_log):
-    """main() should route search command."""
+    """Main() should route search command."""
     with (
         patch("sys.argv", ["lookup", "item", "apple"]),
         patch("minecraft.lookup.LOG", sample_log),
@@ -201,7 +197,7 @@ def test_main_search(capsys, sample_log):
 
 
 def test_main_tags(capsys, sample_log):
-    """main() should route tags command."""
+    """Main() should route tags command."""
     with (
         patch("sys.argv", ["lookup", "tags", "minecraft:apple"]),
         patch("minecraft.lookup.LOG", sample_log),
@@ -212,7 +208,7 @@ def test_main_tags(capsys, sample_log):
 
 
 def test_main_mod(capsys, sample_log):
-    """main() should route mod command."""
+    """Main() should route mod command."""
     with (
         patch("sys.argv", ["lookup", "mod", "minecraft"]),
         patch("minecraft.lookup.LOG", sample_log),
@@ -223,7 +219,7 @@ def test_main_mod(capsys, sample_log):
 
 
 def test_main_unknown_command(capsys):
-    """main() should print error for unknown command."""
+    """Main() should print error for unknown command."""
     with patch("sys.argv", ["lookup", "unknown"]):
         with pytest.raises(SystemExit) as exc:
             lookup.main()
@@ -233,7 +229,7 @@ def test_main_unknown_command(capsys):
 
 
 def test_main_missing_args(capsys):
-    """main() should print usage if no args."""
+    """Main() should print usage if no args."""
     with patch("sys.argv", ["lookup"]):
         with pytest.raises(SystemExit) as exc:
             lookup.main()
@@ -243,7 +239,7 @@ def test_main_missing_args(capsys):
 
 
 def test_main_item_missing_query(capsys):
-    """main() should exit if search query missing."""
+    """Main() should exit if search query missing."""
     with patch("sys.argv", ["lookup", "item"]):
         with pytest.raises(SystemExit) as exc:
             lookup.main()
@@ -253,7 +249,7 @@ def test_main_item_missing_query(capsys):
 
 
 def test_main_tags_missing_args(capsys):
-    """main() should exit if tags command missing args."""
+    """Main() should exit if tags command missing args."""
     with patch("sys.argv", ["lookup", "tags"]):
         with pytest.raises(SystemExit) as exc:
             lookup.main()
@@ -263,7 +259,7 @@ def test_main_tags_missing_args(capsys):
 
 
 def test_main_mod_missing_args(capsys):
-    """main() should exit if mod command missing args."""
+    """Main() should exit if mod command missing args."""
     with patch("sys.argv", ["lookup", "mod"]):
         with pytest.raises(SystemExit) as exc:
             lookup.main()

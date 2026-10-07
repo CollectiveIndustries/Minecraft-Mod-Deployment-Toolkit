@@ -2,18 +2,12 @@
 
 """Signature contracts between main.py and the modules it calls.
 
-The unit tests for main.py stub preflight and hooks with ``**kwargs``
-lambdas, so a renamed keyword, a missing argument, or a swapped positional
-slips through every test and only surfaces on the first live run. That is
-exactly what happened twice: first ``run_preflight() got an unexpected
-keyword argument 'scope_set'``, then ``execute_post_hook`` receiving
-``health_timeout`` where it expected ``preflight_states``.
+The unit tests for main.py stub preflight and hooks with ``**kwargs`` lambdas, so a renamed keyword, a missing argument, or a swapped positional slips through
+every test and only surfaces on the first live run. That is exactly what happened twice: first ``run_preflight() got an unexpected keyword argument
+'scope_set'``, then ``execute_post_hook`` receiving ``health_timeout`` where it expected ``preflight_states``.
 
-This module asserts call-site shape statically. Every call into a seam
-target must bind to the real signature, and no seam call may pass more
-than one positional argument. The first rule catches renames and count
-drift. The second catches swapped positionals, which bind fine but put
-values in the wrong slots.
+This module asserts call-site shape statically. Every call into a seam target must bind to the real signature, and no seam call may pass more than one
+positional argument. The first rule catches renames and count drift. The second catches swapped positionals, which bind fine but put values in the wrong slots.
 """
 
 from __future__ import annotations
@@ -48,7 +42,10 @@ _SEAM_TARGETS: dict[str, Callable[..., Any]] = {
 
 
 def _main_ast() -> ast.Module:
-    """Parse main.py to an AST. Source is read once; call sites are cached below."""
+    """Parse main.py to an AST.
+
+    Source is read once; call sites are cached below.
+    """
     src = pathlib.Path(main_mod.__file__).read_text(encoding="utf-8")
     return ast.parse(src)
 
@@ -59,8 +56,7 @@ _CALLS_BY_NAME: dict[str, list[ast.Call]] = {}
 def _calls_to(name: str) -> list[ast.Call]:
     """All Call nodes in main.py whose callee resolves to ``name``.
 
-    Matches both ``foo(...)`` and ``mod.foo(...)`` shapes. Result is
-    cached per process; the file does not change during a test run.
+    Matches both ``foo(...)`` and ``mod.foo(...)`` shapes. Result is cached per process; the file does not change during a test run.
     """
     if not _CALLS_BY_NAME:
         tree = _main_ast()
@@ -76,7 +72,10 @@ def _calls_to(name: str) -> list[ast.Call]:
 
 @pytest.mark.parametrize("seam_name", sorted(_SEAM_TARGETS))
 def test_seam_is_called_at_least_once(seam_name: str) -> None:
-    """Guard: the seam is actually invoked. If this fails the tests below are vacuous."""
+    """Guard: the seam is actually invoked.
+
+    If this fails the tests below are vacuous.
+    """
     assert _calls_to(seam_name), f"main.py no longer calls {seam_name}; remove it from _SEAM_TARGETS or restore the call site"
 
 
@@ -106,12 +105,9 @@ def test_seam_calls_bind_to_real_signature(seam_name: str) -> None:
 def test_seam_calls_use_keywords_past_first_positional(seam_name: str) -> None:
     """No seam call may pass more than one positional argument.
 
-    Rationale. ``execute_post_hook(runtime, to_stop, health_timeout, states)``
-    binds cleanly against ``(runtime, stopped_by_deployment, preflight_states,
-    health_timeout)``. All four arguments are consumed; two of them are in
-    the wrong slots, and the failure only surfaces when ``preflight_states.get``
-    runs on an int. A signature bind cannot detect this. Forcing named
-    arguments past the first positional eliminates the class statically.
+    Rationale. ``execute_post_hook(runtime, to_stop, health_timeout, states)`` binds cleanly against ``(runtime, stopped_by_deployment, preflight_states,
+    health_timeout)``. All four arguments are consumed; two of them are in the wrong slots, and the failure only surfaces when ``preflight_states.get`` runs on
+    an int. A signature bind cannot detect this. Forcing named arguments past the first positional eliminates the class statically.
     """
     for call in _calls_to(seam_name):
         if len(call.args) <= 1:

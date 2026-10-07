@@ -159,7 +159,10 @@ def _runtime(containers: dict[str, _FakeContainer]) -> DockerRuntime:
 
 
 def _container_of(instances: dict[str, str]) -> dict[str, str]:
-    """Return instance name -> container name. Mirrors main._run_deployment."""
+    """Return instance name -> container name.
+
+    Mirrors main._run_deployment.
+    """
     return dict(instances)
 
 
@@ -291,7 +294,7 @@ def _write_repo(
 
 
 def _running_container(name: str, *, data_dir: Path, mods_dir: Path) -> _FakeContainer:
-    """Return a fake container whose mounts satisfy §3.17 for the given dirs."""
+    """Return a fake container whose mounts satisfy Section 3.17 for the given dirs."""
     mounts = [
         {"Type": "bind", "Source": str(data_dir.resolve()), "Destination": "/data"},
         {"Type": "bind", "Source": str(mods_dir.resolve()), "Destination": "/data/mods"},
@@ -643,7 +646,7 @@ def test_deps_closure_pulls_required_dependency(tmp_path: Path) -> None:
 
 
 def test_main_server_dry_run_exits_0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """main() with --server --dry-run exercises the full preflight seam."""
+    """Main() with --server --dry-run exercises the full preflight seam."""
     config_dir = _write_repo(tmp_path)
 
     containers = {
@@ -661,7 +664,7 @@ def test_main_server_dry_run_exits_0(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 def test_main_debug_deps_exits_0(tmp_path: Path) -> None:
-    """main() with --debug-deps and no scope prints diagnostics and exits 0."""
+    """Main() with --debug-deps and no scope prints diagnostics and exits 0."""
     config_dir = _write_repo(tmp_path, mods={"a.jar": "client"})
     code = main_mod.main(["--debug-deps", "--config-dir", str(config_dir)])
     assert code == 0

@@ -1,26 +1,26 @@
 # tests/deploy_pack/test_preflight.py
 
-"""Tests for deploy_pack.preflight, Project_Specs.md §2.5, §3.5, §3.6, §3.7, §3.8, §4.6, §4.12, §8.4.
+"""Tests for deploy_pack.preflight, Project_Specs.md Section 2.5, Section 3.5, Section 3.6, Section 3.7, Section 3.8, Section 4.6, Section 4.12, Section 8.4.
 
 Coverage:
 
-  * §2.5  - unknown --instance name -> exit 3
-  * §3.5  - broken compose is fatal for --server, tolerated for --client
+  * Section 2.5  - unknown --instance name -> exit 3
+  * Section 3.5  - broken compose is fatal for --server, tolerated for --client
             when www_dir is set
-  * §4.6.1 - restart-policy matching: longest literal prefix; ties by
+  * Section 4.6.1 - restart-policy matching: longest literal prefix; ties by
              total pattern length then lexicographic; unlisted paths
              default to restart
-  * §4.6.2 - sticky-max: +pack sticks through the max
-  * §4.6.3 - reasons carry the contributing pattern and changed paths
-  * §4.6.4 - partitioning into none_set / reload_set / restart_set
-  * §4.12  - container state policy: missing, restarting past the
+  * Section 4.6.2 - sticky-max: +pack sticks through the max
+  * Section 4.6.3 - reasons carry the contributing pattern and changed paths
+  * Section 4.6.4 - partitioning into none_set / reload_set / restart_set
+  * Section 4.12  - container state policy: missing, restarting past the
              bounded wait, running without .State.Health
-  * §8.4   - RCON availability required for a running restart_set
+  * Section 8.4   - RCON availability required for a running restart_set
              member
 
 Every check is exercised through the public ``run_preflight`` entry
 point against a real ``DeploymentConfig`` and a fake Docker SDK client.
-The restart adapter is spec-defined behavior (§4.6) that currently
+The restart adapter is spec-defined behavior (Section 4.6) that currently
 lives behind underscore-prefixed helpers; the tests below drive it
 through ``run_preflight`` so they pin the plan the operator's pipeline
 actually consumes.
@@ -60,8 +60,7 @@ from minecraft.deploy_pack.preflight import PreflightError, PreflightPlan, Scope
 class _FakeRuntime:
     """Minimal stand-in for DockerRuntime.
 
-    ``list_mounts`` mirrors the compose service's binds so the §3.17
-    drift check sees a matching set when the compose file is well-formed.
+    ``list_mounts`` mirrors the compose service's binds so the Section 3.17 drift check sees a matching set when the compose file is well-formed.
     """
 
     states: dict[str, ContainerState] = field(default_factory=dict)
@@ -277,35 +276,35 @@ def _basic_instance(tmp_path: Path) -> tuple[dict[str, InstanceConfig], list[str
 
 
 # ---------------------------------------------------------------------------
-# §2.5: unknown --instance names
+# Section 2.5: unknown --instance names
 # ---------------------------------------------------------------------------
 
 
 def test_unknown_instance_name_is_exit_3(tmp_path: Path) -> None:
-    """§2.5: --instance X where X is not configured -> preflight error."""
+    """Section 2.5: --instance X where X is not configured -> preflight error."""
     instances, partition = _basic_instance(tmp_path)
     cfg = _config(tmp_path, partition=partition, instances=instances, partition_unknown=["nope"])
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(server=True), False, False, False, _runtime(cfg))
-    assert any(f.source == "§2.5" for f in ei.value.failures)
+    assert any(f.source == "Section 2.5" for f in ei.value.failures)
 
 
 # ---------------------------------------------------------------------------
-# §3.5: broken compose scoping
+# Section 3.5: broken compose scoping
 # ---------------------------------------------------------------------------
 
 
 def test_broken_compose_is_fatal_for_server_scope(tmp_path: Path) -> None:
-    """§3.5: a broken compose is exit 3 when --server is in scope."""
+    """Section 3.5: a broken compose is exit 3 when --server is in scope."""
     instances, partition = _basic_instance(tmp_path)
     cfg = _config(tmp_path, partition=partition, instances=instances, compose_ok=False)
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(server=True), False, False, False, _runtime(cfg))
-    assert any(f.source == "§3.5" for f in ei.value.failures)
+    assert any(f.source == "Section 3.5" for f in ei.value.failures)
 
 
 def test_broken_compose_is_tolerated_for_client_scope_when_www_dir_is_set(tmp_path: Path) -> None:
-    """§3.5: --client alone tolerates a broken compose as long as www_dir is known."""
+    """Section 3.5: --client alone tolerates a broken compose as long as www_dir is known."""
     instances, partition = _basic_instance(tmp_path)
     cfg = _config(tmp_path, partition=partition, instances=instances, compose_ok=False)
     plan = run_preflight(cfg, ScopeSet(client=True), False, False, False, _runtime(cfg))
@@ -314,12 +313,12 @@ def test_broken_compose_is_tolerated_for_client_scope_when_www_dir_is_set(tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# §4.6.1: restart-policy matching
+# Section 4.6.1: restart-policy matching
 # ---------------------------------------------------------------------------
 
 
 def test_restart_policy_longest_literal_prefix_wins(tmp_path: Path) -> None:
-    """§4.6.1: config/special/* beats config/* for a config/special path."""
+    """Section 4.6.1: config/special/* beats config/* for a config/special path."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "config", {"special/foo.toml": "new"})
     policy = {"config/*": "restart", "config/special/*": "none"}
@@ -329,7 +328,7 @@ def test_restart_policy_longest_literal_prefix_wins(tmp_path: Path) -> None:
 
 
 def test_restart_policy_tie_broken_by_total_pattern_length(tmp_path: Path) -> None:
-    """§4.6.1: same literal prefix -> longer total pattern wins."""
+    """Section 4.6.1: same literal prefix -> longer total pattern wins."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"assets/x.txt": "new"})
     policy = {"kubejs/*": "restart", "kubejs/assets/*": "none"}
@@ -339,7 +338,7 @@ def test_restart_policy_tie_broken_by_total_pattern_length(tmp_path: Path) -> No
 
 
 def test_restart_policy_unlisted_path_defaults_to_restart(tmp_path: Path) -> None:
-    """§4.6.1: an unlisted path defaults to restart."""
+    """Section 4.6.1: an unlisted path defaults to restart."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "config", {"unknown/thing.txt": "new"})
     policy = {"mods/*": "restart"}
@@ -349,12 +348,12 @@ def test_restart_policy_unlisted_path_defaults_to_restart(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# §4.6.2: sticky max
+# Section 4.6.2: sticky max
 # ---------------------------------------------------------------------------
 
 
 def test_sticky_max_promotes_reload_to_reload_pack_when_any_input_has_pack(tmp_path: Path) -> None:
-    """§4.6.2: +pack sticks through the max even when the max-ranked input does not carry it."""
+    """Section 4.6.2: +pack sticks through the max even when the max-ranked input does not carry it."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(
         tmp_path,
@@ -371,7 +370,7 @@ def test_sticky_max_promotes_reload_to_reload_pack_when_any_input_has_pack(tmp_p
 
 
 def test_sticky_max_restart_beats_reload(tmp_path: Path) -> None:
-    """§4.6.2: restart outranks reload when both fire on the same instance."""
+    """Section 4.6.2: restart outranks reload when both fire on the same instance."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(
         tmp_path,
@@ -388,12 +387,12 @@ def test_sticky_max_restart_beats_reload(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.6.4: partitioning into none_set / reload_set / restart_set
+# Section 4.6.4: partitioning into none_set / reload_set / restart_set
 # ---------------------------------------------------------------------------
 
 
 def test_no_changes_puts_member_into_none_set(tmp_path: Path) -> None:
-    """§4.6.4: with nothing to do, the member is in none_set."""
+    """Section 4.6.4: with nothing to do, the member is in none_set."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -405,7 +404,7 @@ def test_no_changes_puts_member_into_none_set(tmp_path: Path) -> None:
 
 
 def test_reload_path_puts_member_into_reload_set(tmp_path: Path) -> None:
-    """§4.6.4: kubejs/server_scripts/* -> reload -> reload_set."""
+    """Section 4.6.4: kubejs/server_scripts/* -> reload -> reload_set."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"server_scripts/craft.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances)
@@ -415,7 +414,7 @@ def test_reload_path_puts_member_into_reload_set(tmp_path: Path) -> None:
 
 
 def test_restart_path_puts_member_into_restart_set(tmp_path: Path) -> None:
-    """§4.6.4: a mods change -> restart -> restart_set."""
+    """Section 4.6.4: a mods change -> restart -> restart_set."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "config", {"file.toml": "new"})
     _write_index(tmp_path, {"a.jar": "server"})
@@ -425,7 +424,7 @@ def test_restart_path_puts_member_into_restart_set(tmp_path: Path) -> None:
 
 
 def test_pack_required_is_true_when_action_ends_in_pack(tmp_path: Path) -> None:
-    """§4.6.2: pack_required is derived from the effective action."""
+    """Section 4.6.2: pack_required is derived from the effective action."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"startup_scripts/block.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances)
@@ -434,12 +433,12 @@ def test_pack_required_is_true_when_action_ends_in_pack(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.6.3: reasons
+# Section 4.6.3: reasons
 # ---------------------------------------------------------------------------
 
 
 def test_reasons_carry_the_contributing_pattern(tmp_path: Path) -> None:
-    """§4.6.3: the reason entry names the pattern that produced the effective action."""
+    """Section 4.6.3: the reason entry names the pattern that produced the effective action."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"server_scripts/craft.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances)
@@ -449,12 +448,12 @@ def test_reasons_carry_the_contributing_pattern(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.12: container state policy
+# Section 4.12: container state policy
 # ---------------------------------------------------------------------------
 
 
 def test_missing_container_is_exit_3(tmp_path: Path) -> None:
-    """§4.12 / §8.9: a missing container is a fatal state."""
+    """Section 4.12 / Section 8.9: a missing container is a fatal state."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -467,7 +466,7 @@ def test_missing_container_is_exit_3(tmp_path: Path) -> None:
 
 
 def test_restarting_past_the_bounded_wait_is_exit_3(tmp_path: Path) -> None:
-    """§4.12: a container still restarting after the bounded wait is fatal."""
+    """Section 4.12: a container still restarting after the bounded wait is fatal."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -480,7 +479,7 @@ def test_restarting_past_the_bounded_wait_is_exit_3(tmp_path: Path) -> None:
 
 
 def test_running_without_health_block_is_exit_3(tmp_path: Path) -> None:
-    """§4.12: a running container without .State.Health is fatal."""
+    """Section 4.12: a running container without .State.Health is fatal."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -493,7 +492,7 @@ def test_running_without_health_block_is_exit_3(tmp_path: Path) -> None:
 
 
 def test_paused_container_is_exit_3(tmp_path: Path) -> None:
-    """§4.12: paused is fatal."""
+    """Section 4.12: paused is fatal."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -506,7 +505,7 @@ def test_paused_container_is_exit_3(tmp_path: Path) -> None:
 
 
 def test_exited_container_is_treated_as_stopped(tmp_path: Path) -> None:
-    """§4.12: exited containers pass preflight."""
+    """Section 4.12: exited containers pass preflight."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -518,34 +517,34 @@ def test_exited_container_is_treated_as_stopped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §8.4: RCON availability for running restart_set members
+# Section 8.4: RCON availability for running restart_set members
 # ---------------------------------------------------------------------------
 
 
 def test_rcon_missing_secret_is_exit_3_when_restart_member_is_running(tmp_path: Path) -> None:
-    """§8.4: a running restart_set member must have a selectable RCON transport."""
+    """Section 8.4: a running restart_set member must have a selectable RCON transport."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"startup_scripts/block.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances, secret_present=False)
     runtime = _runtime(cfg, published={"mc-survival": {"25575/tcp": [("0.0.0.0", 25575)]}})
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime)
-    assert any(f.source.startswith("§8.4") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 8.4") for f in ei.value.failures)
 
 
 def test_rcon_remote_host_without_published_port_is_exit_3(tmp_path: Path) -> None:
-    """§8.4: rcon_host set but the RCON port is not published -> exit 3."""
+    """Section 8.4: rcon_host set but the RCON port is not published -> exit 3."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"startup_scripts/block.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances, rcon_host="10.0.0.5")
     runtime = _runtime(cfg)
     with pytest.raises(PreflightError) as ei:
         run_preflight(cfg, ScopeSet(server=True), False, False, False, runtime)
-    assert any(f.source.startswith("§8.4") for f in ei.value.failures)
+    assert any(f.source.startswith("Section 8.4") for f in ei.value.failures)
 
 
 def test_rcon_check_is_skipped_when_restart_set_is_empty(tmp_path: Path) -> None:
-    """§8.4: no restart_set members means no RCON check is required."""
+    """Section 8.4: no restart_set members means no RCON check is required."""
     instances, partition = _basic_instance(tmp_path)
     (tmp_path / "sync" / "config").mkdir(parents=True)
     (tmp_path / "sync" / "kubejs").mkdir(parents=True)
@@ -555,7 +554,7 @@ def test_rcon_check_is_skipped_when_restart_set_is_empty(tmp_path: Path) -> None
 
 
 def test_rcon_check_is_skipped_under_dry_run(tmp_path: Path) -> None:
-    """§2.6: --dry-run performs no docker operations, including RCON selection."""
+    """Section 2.6: --dry-run performs no docker operations, including RCON selection."""
     instances, partition = _basic_instance(tmp_path)
     _write_sync_files(tmp_path, "kubejs", {"startup_scripts/block.js": "new"})
     cfg = _config(tmp_path, partition=partition, instances=instances, secret_present=False, rcon_host="10.0.0.5")

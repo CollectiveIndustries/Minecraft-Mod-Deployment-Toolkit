@@ -3,7 +3,7 @@
 """Extended tests for deploy_pack.main covering the runtime sequence.
 
 The sibling ``test_main.py`` exercises the outer shell: argument
-parsing, the §2.5 exit-2 matrix, scope resolution, and the top-level
+parsing, the Section 2.5 exit-2 matrix, scope resolution, and the top-level
 exit-code mapping. This module covers what that leaves unexercised:
 
   * pure helpers: :func:`_resolve_config_dir`, :func:`_setup_logging`,
@@ -19,7 +19,7 @@ exit-code mapping. This module covers what that leaves unexercised:
   * :class:`_RconSet` lazy transport selection, probing, dispatch
   * :func:`_prompt_for_unmarked` interactive prompt paths
   * :func:`_dispatch_restart_notices`, :func:`_dispatch_cancel_notice`
-  * :func:`_run_deployment` dry-run output and the §4.1 sequence
+  * :func:`_run_deployment` dry-run output and the Section 4.1 sequence
     failure exit paths (restart-notice failure, server write failure,
     client write failure) driven end-to-end with monkeypatched
     preflight, Docker runtime, and scope functions.
@@ -72,9 +72,8 @@ def _logger() -> logging.Logger:
 def _stub_plan(**overrides: object) -> SimpleNamespace:
     """Return a stub plan with every field ``_run_deployment`` reads.
 
-    Tests override only the fields they care about; the defaults
-    describe the smallest plan that can walk the runtime sequence
-    without touching Docker or the scopes.
+    Tests override only the fields they care about; the defaults describe the smallest plan that can walk the runtime sequence without touching Docker or the
+    scopes.
     """
     base: dict[str, object] = {
         "partition": [],
@@ -117,10 +116,8 @@ def _docker_stub(**overrides: object) -> SimpleNamespace:
 class _FakeRconSet:
     """Stand-in for :class:`_RconSet` used across the ``_run_deployment`` tests.
 
-    ``probe`` defaults to False so the recovery path treats every
-    container as unreachable; ``send`` defaults to True so the happy
-    path succeeds unless a test overrides ``send_results`` (or
-    subclasses to fail).
+    ``probe`` defaults to False so the recovery path treats every container as unreachable; ``send`` defaults to True so the happy path succeeds unless a test
+    overrides ``send_results`` (or subclasses to fail).
     """
 
     def __init__(self, *args: object, **kwargs: object) -> None:

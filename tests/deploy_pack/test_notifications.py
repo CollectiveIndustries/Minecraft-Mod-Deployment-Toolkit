@@ -1,22 +1,22 @@
 # tests/deploy_pack/test_notifications.py
 
-"""Tests for deploy_pack.notifications, Project_Specs.md §5.4-§5.16.
+"""Tests for deploy_pack.notifications, Project_Specs.md Section 5.4-Section 5.16.
 
 Coverage, in spec-section order:
 
-  * §5.4  - Live placeholders
-  * §5.5  - Online placeholders
-  * §5.6  - Failure placeholders
-  * §5.7  - Diagnostic placeholders
-  * §5.8  - the container_status vocabulary and its rendering scope
-  * §5.11 - template validation timing and the four failure modes
-  * §5.12 - notification is best-effort, never authoritative
-  * §5.13 - the 2000-character content guard
-  * §5.14 - allowed_mentions payload
-  * §5.16 - role-mention rendering
-  * §4.6.10 - server section adapter reasons
-  * §4.6.9  - pack_required informational note
-  * §7.7   - the resource-pack section's NOT CONFIGURED form
+  * Section 5.4  - Live placeholders
+  * Section 5.5  - Online placeholders
+  * Section 5.6  - Failure placeholders
+  * Section 5.7  - Diagnostic placeholders
+  * Section 5.8  - the container_status vocabulary and its rendering scope
+  * Section 5.11 - template validation timing and the four failure modes
+  * Section 5.12 - notification is best-effort, never authoritative
+  * Section 5.13 - the 2000-character content guard
+  * Section 5.14 - allowed_mentions payload
+  * Section 5.16 - role-mention rendering
+  * Section 4.6.10 - server section adapter reasons
+  * Section 4.6.9  - pack_required informational note
+  * Section 7.7   - the resource-pack section's NOT CONFIGURED form
 
 Rendering and validation are pure; notification dispatch is tested
 against a fake poster that stands in for the requests HTTP call at
@@ -90,12 +90,12 @@ def _live_ctx(**overrides: Any) -> LiveContext:
 
 
 # ---------------------------------------------------------------------------
-# §5.8: the container-status vocabulary
+# Section 5.8: the container-status vocabulary
 # ---------------------------------------------------------------------------
 
 
 def test_state_constants_match_the_spec_strings() -> None:
-    """§5.8: each state constant is the literal string the spec defines."""
+    """Section 5.8: each state constant is the literal string the spec defines."""
     assert STATE_ONLINE_HEALTHY == "online, healthy"
     assert STATE_ONLINE_STARTING == "online, starting"
     assert STATE_ONLINE_UNHEALTHY == "online, unhealthy"
@@ -112,7 +112,7 @@ def test_state_constants_match_the_spec_strings() -> None:
 
 
 def test_render_container_status_online_keeps_only_healthy() -> None:
-    """§5.8: the online scope renders only online, healthy entries."""
+    """Section 5.8: the online scope renders only online, healthy entries."""
     statuses = {"a": STATE_ONLINE_HEALTHY, "b": STATE_ONLINE_UNHEALTHY, "c": STATE_CANCELLED}
     out = render_container_status(statuses, "online")
     assert "a: online, healthy" in out
@@ -121,7 +121,7 @@ def test_render_container_status_online_keeps_only_healthy() -> None:
 
 
 def test_render_container_status_failure_excludes_internal_states() -> None:
-    """§5.8: cancelled and exited-before-stop are CLI-only."""
+    """Section 5.8: cancelled and exited-before-stop are CLI-only."""
     statuses = {
         "a": STATE_STOPPED_BY_DEPLOYMENT,
         "b": STATE_RECOVERY_START_FAILED,
@@ -138,19 +138,19 @@ def test_render_container_status_failure_excludes_internal_states() -> None:
 
 
 def test_render_container_status_empty_renders_none_placeholder() -> None:
-    """§5.8: an empty status renders '- (none)' so the header is not left dangling."""
+    """Section 5.8: an empty status renders '- (none)' so the header is not left dangling."""
     assert render_container_status({}, "online") == "- (none)"
     assert render_container_status({}, "failure") == "- (none)"
 
 
 def test_render_container_status_rejects_unknown_scope() -> None:
-    """§5.8: scope is 'online' or 'failure'."""
+    """Section 5.8: scope is 'online' or 'failure'."""
     with pytest.raises(ValueError):
         render_container_status({}, "invalid")
 
 
 def test_render_container_status_failure_covers_every_state() -> None:
-    """§5.8: the failure scope includes every non-internal state."""
+    """Section 5.8: the failure scope includes every non-internal state."""
     statuses = {
         "a": STATE_STOPPED,
         "b": STATE_STOPPED_BY_DEPLOYMENT,
@@ -167,117 +167,117 @@ def test_render_container_status_failure_covers_every_state() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5.16: role-mention rendering
+# Section 5.16: role-mention rendering
 # ---------------------------------------------------------------------------
 
 
 def test_render_player_tags_empty() -> None:
-    """§5.16: no roles renders an empty string."""
+    """Section 5.16: no roles renders an empty string."""
     assert render_player_tags([]) == ""
 
 
 def test_render_player_tags_single() -> None:
-    """§5.16: one role renders as a Discord role mention."""
+    """Section 5.16: one role renders as a Discord role mention."""
     assert render_player_tags(["1"]) == "<@&1>"
 
 
 def test_render_player_tags_multiple_space_separated() -> None:
-    """§5.16: multiple roles are space-separated."""
+    """Section 5.16: multiple roles are space-separated."""
     assert render_player_tags(["1", "2"]) == "<@&1> <@&2>"
 
 
 # ---------------------------------------------------------------------------
-# §5.11: template validation
+# Section 5.11: template validation
 # ---------------------------------------------------------------------------
 
 
 def test_validate_returns_nothing_when_notify_disabled() -> None:
-    """§5.11: validation runs only when --notify is active."""
+    """Section 5.11: validation runs only when --notify is active."""
     discord = DiscordConfig(live_template=None)
     assert validate_live_and_failure(discord, notify=False, dry_run=False, has_scope=True) == []
 
 
 def test_validate_missing_live_template_is_a_warning_not_a_failure() -> None:
-    """§5.11: a missing template warns and skips; it does not exit 3."""
+    """Section 5.11: a missing template warns and skips; it does not exit 3."""
     assert validate_live_and_failure(DiscordConfig(live_template=None), notify=True, dry_run=False, has_scope=True) == []
 
 
 def test_validate_empty_live_template_is_a_failure() -> None:
-    """§5.11: an empty template is exit 3."""
+    """Section 5.11: an empty template is exit 3."""
     failures = validate_live_and_failure(DiscordConfig(live_template=""), notify=True, dry_run=False, has_scope=True)
     assert len(failures) == 1
     assert "non-empty" in failures[0][1]
 
 
 def test_validate_unknown_placeholder_is_a_failure() -> None:
-    """§5.11: a placeholder in no template's set is malformed."""
+    """Section 5.11: a placeholder in no template's set is malformed."""
     failures = validate_live_and_failure(DiscordConfig(live_template="hello {nonexistent}"), notify=True, dry_run=False, has_scope=True)
     assert any("nonexistent" in m for _s, m in failures)
 
 
 def test_validate_invalid_everywhere_placeholder_is_a_failure() -> None:
-    """§5.11: a placeholder from the §11.3 'invalid everywhere' set is exit 3."""
+    """Section 5.11: a placeholder from the Section 11.3 'invalid everywhere' set is exit 3."""
     failures = validate_live_and_failure(DiscordConfig(live_template="hello {sha256sum}"), notify=True, dry_run=False, has_scope=True)
     assert any("invalid everywhere" in m for _s, m in failures)
 
 
 def test_validate_cross_template_placeholder_is_a_failure() -> None:
-    """§5.11: a placeholder valid in another template but not this one is exit 3."""
+    """Section 5.11: a placeholder valid in another template but not this one is exit 3."""
     failures = validate_live_and_failure(DiscordConfig(live_template="hello {failure_stage}"), notify=True, dry_run=False, has_scope=True)
     assert any("cross-template" in m for _s, m in failures)
 
 
 def test_validate_dry_run_validates_only_live() -> None:
-    """§5.11: under --dry-run, only the live template is reachable."""
+    """Section 5.11: under --dry-run, only the live template is reachable."""
     discord = DiscordConfig(live_template="ok {tool_version}", failure_template="{not_a_placeholder}")
     assert validate_live_and_failure(discord, notify=True, dry_run=True, has_scope=True) == []
 
 
 def test_validate_no_scope_validates_diagnostic() -> None:
-    """§5.11: with no scope, the diagnostic template is validated and live/failure are not."""
+    """Section 5.11: with no scope, the diagnostic template is validated and live/failure are not."""
     discord = DiscordConfig(diagnostic_template="ok {tool_version}", live_template="{bad}")
     assert validate_live_and_failure(discord, notify=True, dry_run=False, has_scope=False) == []
 
 
 def test_validate_no_scope_missing_diagnostic_is_skip() -> None:
-    """§5.11: a missing diagnostic template warns and skips."""
+    """Section 5.11: a missing diagnostic template warns and skips."""
     assert validate_live_and_failure(DiscordConfig(diagnostic_template=None), notify=True, dry_run=False, has_scope=False) == []
 
 
 def test_validate_online_missing_is_skip() -> None:
-    """§5.11: a missing online template warns and skips."""
+    """Section 5.11: a missing online template warns and skips."""
     assert validate_online(DiscordConfig(online_template=None)) == []
 
 
 def test_validate_online_valid() -> None:
-    """§5.11: the online placeholder set is accepted."""
+    """Section 5.11: the online placeholder set is accepted."""
     assert validate_online(DiscordConfig(online_template="{tool_version} {timestamp} {container_status}")) == []
 
 
 def test_validate_online_cross_template() -> None:
-    """§5.11: a failure-only placeholder in the online template is exit 3."""
+    """Section 5.11: a failure-only placeholder in the online template is exit 3."""
     failures = validate_online(DiscordConfig(online_template="{failure_stage}"))
     assert any("cross-template" in m for _s, m in failures)
 
 
 def test_validate_online_empty_is_error() -> None:
-    """§5.11: an empty online template is exit 3."""
+    """Section 5.11: an empty online template is exit 3."""
     failures = validate_online(DiscordConfig(online_template=""))
     assert any("non-empty" in m for _s, m in failures)
 
 
 def test_validate_diagnostic_accepts_only_its_own_placeholders() -> None:
-    """§5.7: only {tool_version} and {timestamp} are valid in the diagnostic template."""
+    """Section 5.7: only {tool_version} and {timestamp} are valid in the diagnostic template."""
     assert validate_diagnostic(DiscordConfig(diagnostic_template="test {tool_version} {timestamp}")) == []
 
 
 # ---------------------------------------------------------------------------
-# §5.4: render_live
+# Section 5.4: render_live
 # ---------------------------------------------------------------------------
 
 
 def test_render_live_substitutes_every_placeholder() -> None:
-    """§5.4: every live placeholder is substituted."""
+    """Section 5.4: every live placeholder is substituted."""
     template = (
         "{player_tags} **Minecraft Deployment**\n\n"
         "{section_server}\n{section_client}\n{section_resource_pack}\n\n"
@@ -294,38 +294,38 @@ def test_render_live_substitutes_every_placeholder() -> None:
 
 
 def test_render_live_dry_run_marker_is_the_spec_string_when_true() -> None:
-    """§5.4: the dry-run marker is 'DRY RUN - no changes applied' under --dry-run."""
+    """Section 5.4: the dry-run marker is 'DRY RUN - no changes applied' under --dry-run."""
     assert render_live("[{dry_run_marker}]", _live_ctx(dry_run=True)) == "[DRY RUN - no changes applied]"
 
 
 def test_render_live_dry_run_marker_is_empty_when_false() -> None:
-    """§5.4: the dry-run marker is empty under a normal deploy."""
+    """Section 5.4: the dry-run marker is empty under a normal deploy."""
     assert render_live("[{dry_run_marker}]", _live_ctx(dry_run=False)) == "[]"
 
 
 def test_render_live_instance_count_and_list() -> None:
-    """§5.4: instance_count is the integer count; instance_list is comma-and-space separated."""
+    """Section 5.4: instance_count is the integer count; instance_list is comma-and-space separated."""
     assert render_live("{instance_count}: {instance_list}", _live_ctx()) == "2: creative, survival"
 
 
 def test_render_live_requested_scopes_is_comma_and_space_separated() -> None:
-    """§5.4: requested_scopes follows the fixed order server, client, resource-pack."""
+    """Section 5.4: requested_scopes follows the fixed order server, client, resource-pack."""
     assert render_live("{requested_scopes}", _live_ctx()) == "server, client"
     assert render_live("{requested_scopes}", _live_ctx(requested_scopes=["server", "client", "resource-pack"])) == "server, client, resource-pack"
 
 
 def test_render_live_operator_tags_uses_operator_roles() -> None:
-    """§5.16: operator_tags is the operator role mention list."""
+    """Section 5.16: operator_tags is the operator role mention list."""
     assert render_live("{operator_tags}", _live_ctx(operator_roles=["9", "8"])) == "<@&9> <@&8>"
 
 
 # ---------------------------------------------------------------------------
-# §5.5 / §5.6 / §5.7: render_online / render_failure / render_diagnostic
+# Section 5.5 / Section 5.6 / Section 5.7: render_online / render_failure / render_diagnostic
 # ---------------------------------------------------------------------------
 
 
 def test_render_online_substitutes_its_placeholders() -> None:
-    """§5.5: online renders player_tags, container_status, tool_version, timestamp."""
+    """Section 5.5: online renders player_tags, container_status, tool_version, timestamp."""
     ctx = OnlineContext(
         tool_version="2.0.0",
         timestamp="2026-09-23T12:00:00Z",
@@ -338,7 +338,7 @@ def test_render_online_substitutes_its_placeholders() -> None:
 
 
 def test_render_failure_substitutes_its_placeholders() -> None:
-    """§5.6: failure renders failure_stage, error, container_status, operator_tags."""
+    """Section 5.6: failure renders failure_stage, error, container_status, operator_tags."""
     ctx = FailureContext(
         tool_version="2.0.0",
         timestamp="2026-09-23T12:00:00Z",
@@ -355,7 +355,7 @@ def test_render_failure_substitutes_its_placeholders() -> None:
 
 
 def test_render_diagnostic_substitutes_its_placeholders() -> None:
-    """§5.7: diagnostic renders tool_version and timestamp."""
+    """Section 5.7: diagnostic renders tool_version and timestamp."""
     ctx = DiagnosticContext(tool_version="2.0.0", timestamp="2026-09-23T12:00:00Z")
     out = render_diagnostic("test {tool_version} {timestamp}", ctx)
     assert "2.0.0" in out
@@ -363,22 +363,22 @@ def test_render_diagnostic_substitutes_its_placeholders() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5.4 / §5.13: timestamp format
+# Section 5.4 / Section 5.13: timestamp format
 # ---------------------------------------------------------------------------
 
 
 def test_render_timestamp_now_uses_iso_z_format() -> None:
-    """§5.4: the timestamp is RFC 3339 with a Z suffix: %Y-%m-%dT%H:%M:%SZ."""
+    """Section 5.4: the timestamp is RFC 3339 with a Z suffix: %Y-%m-%dT%H:%M:%SZ."""
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", render_timestamp_now())
 
 
 # ---------------------------------------------------------------------------
-# §4.6.10: build_server_section
+# Section 4.6.10: build_server_section
 # ---------------------------------------------------------------------------
 
 
 def test_build_server_section_standard_form() -> None:
-    """§4.6.10: the standard form lists mods, config/kubejs members, action, pack, and reasons."""
+    """Section 4.6.10: the standard form lists mods, config/kubejs members, action, pack, and reasons."""
     out = build_server_section(
         targeted=False,
         targeted_members=None,
@@ -400,7 +400,7 @@ def test_build_server_section_standard_form() -> None:
 
 
 def test_build_server_section_targeted_form() -> None:
-    """§4.6.10: the targeted form lists the target, notes mods are untouched, and counts config files."""
+    """Section 4.6.10: the targeted form lists the target, notes mods are untouched, and counts config files."""
     out = build_server_section(
         targeted=True,
         targeted_members=["mc-creative"],
@@ -421,7 +421,7 @@ def test_build_server_section_targeted_form() -> None:
 
 
 def test_build_server_section_pack_required_warning_renders_as_note() -> None:
-    """§4.6.9: the pack_required_warning renders as a '- Note:' line after '- Pack required:'."""
+    """Section 4.6.9: the pack_required_warning renders as a '- Note:' line after '- Pack required:'."""
     out = build_server_section(
         targeted=False,
         targeted_members=None,
@@ -440,7 +440,7 @@ def test_build_server_section_pack_required_warning_renders_as_note() -> None:
 
 
 def test_build_server_section_pack_required_warning_is_suppressed_by_default() -> None:
-    """§4.6.9: pack_required_warning=None suppresses the '- Note:' line."""
+    """Section 4.6.9: pack_required_warning=None suppresses the '- Note:' line."""
     out = build_server_section(
         targeted=False,
         targeted_members=None,
@@ -457,12 +457,12 @@ def test_build_server_section_pack_required_warning_is_suppressed_by_default() -
 
 
 # ---------------------------------------------------------------------------
-# §5.4: build_client_section
+# Section 5.4: build_client_section
 # ---------------------------------------------------------------------------
 
 
 def test_build_client_section_renders_zip_sha_and_changelog() -> None:
-    """§5.4: the client section carries the ZIP filename, hash, and changelog URL."""
+    """Section 5.4: the client section carries the ZIP filename, hash, and changelog URL."""
     out = build_client_section(
         zip_filename="minecraft_client_20260923.zip",
         sha256="abc123",
@@ -475,24 +475,24 @@ def test_build_client_section_renders_zip_sha_and_changelog() -> None:
 
 
 def test_build_client_section_dry_run_marks_status() -> None:
-    """§5.4 / §4.17: a dry-run client section indicates no ZIP was written."""
+    """Section 5.4 / Section 4.17: a dry-run client section indicates no ZIP was written."""
     out = build_client_section(zip_filename=None, sha256=None, changelog_url=None, dry_run=True)
     assert "dry-run" in out
 
 
 # ---------------------------------------------------------------------------
-# §7.7: build_resource_pack_section
+# Section 7.7: build_resource_pack_section
 # ---------------------------------------------------------------------------
 
 
 def test_build_resource_pack_section_not_configured() -> None:
-    """§7.7: the zero-pack form renders '- Status: NOT CONFIGURED'."""
+    """Section 7.7: the zero-pack form renders '- Status: NOT CONFIGURED'."""
     out = build_resource_pack_section(configured=False, published_filename=None, members=[], effective_action=None)
     assert "NOT CONFIGURED" in out
 
 
 def test_build_resource_pack_section_configured() -> None:
-    """§7.7: the configured form carries the filename, members, and effective action."""
+    """Section 7.7: the configured form carries the filename, members, and effective action."""
     out = build_resource_pack_section(configured=True, published_filename="pack.zip", members=["survival"], effective_action="restart")
     assert "Published: pack.zip" in out
     assert "Instances: survival" in out
@@ -500,7 +500,7 @@ def test_build_resource_pack_section_configured() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5.12 / §5.13 / §5.14: notification dispatch
+# Section 5.12 / Section 5.13 / Section 5.14: notification dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -519,7 +519,7 @@ class _FakePoster:
 
 
 def test_notify_live_posts_the_rendered_content() -> None:
-    """§5.4 + §5.12: notify_live posts the rendered content to the webhook."""
+    """Section 5.4 + Section 5.12: notify_live posts the rendered content to the webhook."""
     poster = _FakePoster()
     result = notify_live("{tool_version}", _live_ctx(), webhook_url="https://discord.example/webhook", all_role_ids=["111", "222"], poster=poster)
     assert result.success
@@ -529,7 +529,7 @@ def test_notify_live_posts_the_rendered_content() -> None:
 
 
 def test_notify_live_allowed_mentions_shape() -> None:
-    """§5.14: allowed_mentions is {'parse': [], 'roles': [...], 'users': []}."""
+    """Section 5.14: allowed_mentions is {'parse': [], 'roles': [...], 'users': []}."""
     poster = _FakePoster()
     notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=["a", "b"], poster=poster)
     am = poster.calls[0]["allowed_mentions"]
@@ -539,7 +539,7 @@ def test_notify_live_allowed_mentions_shape() -> None:
 
 
 def test_notify_live_missing_template_skips() -> None:
-    """§5.11: a missing template skips the notification without posting."""
+    """Section 5.11: a missing template skips the notification without posting."""
     poster = _FakePoster()
     result = notify_live(None, _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=poster)
     assert result.skipped
@@ -548,7 +548,7 @@ def test_notify_live_missing_template_skips() -> None:
 
 
 def test_notify_live_no_webhook_skips() -> None:
-    """§3.12: a missing webhook URL skips the notification without posting."""
+    """Section 3.12: a missing webhook URL skips the notification without posting."""
     poster = _FakePoster()
     result = notify_live("x", _live_ctx(), webhook_url=None, all_role_ids=[], poster=poster)
     assert result.skipped
@@ -556,7 +556,7 @@ def test_notify_live_no_webhook_skips() -> None:
 
 
 def test_notify_live_over_2000_chars_fails_without_posting() -> None:
-    """§5.13: content longer than 2000 characters is not posted."""
+    """Section 5.13: content longer than 2000 characters is not posted."""
     poster = _FakePoster()
     ctx = _live_ctx(tool_version="X" * (DISCORD_CONTENT_LIMIT + 1))
     result = notify_live("{tool_version}", ctx, webhook_url="https://x", all_role_ids=[], poster=poster)
@@ -566,7 +566,7 @@ def test_notify_live_over_2000_chars_fails_without_posting() -> None:
 
 
 def test_notify_live_at_exactly_2000_chars_is_posted() -> None:
-    """§5.13: content of exactly 2000 characters is within the limit."""
+    """Section 5.13: content of exactly 2000 characters is within the limit."""
     poster = _FakePoster()
     ctx = _live_ctx(tool_version="X" * DISCORD_CONTENT_LIMIT)
     result = notify_live("{tool_version}", ctx, webhook_url="https://x", all_role_ids=[], poster=poster)
@@ -575,7 +575,7 @@ def test_notify_live_at_exactly_2000_chars_is_posted() -> None:
 
 
 def test_notify_live_poster_failure_is_reported() -> None:
-    """§5.12: a poster failure returns a NotifyResult with the error, not a raise."""
+    """Section 5.12: a poster failure returns a NotifyResult with the error, not a raise."""
     poster = _FakePoster(ok=False, error="HTTP 500")
     result = notify_live("x", _live_ctx(), webhook_url="https://x", all_role_ids=[], poster=poster)
     assert not result.success
@@ -583,7 +583,7 @@ def test_notify_live_poster_failure_is_reported() -> None:
 
 
 def test_notify_live_poster_raising_is_caught() -> None:
-    """§5.12: a raising poster is caught and returned as a failed result."""
+    """Section 5.12: a raising poster is caught and returned as a failed result."""
 
     def boom(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("boom")
@@ -594,7 +594,7 @@ def test_notify_live_poster_raising_is_caught() -> None:
 
 
 def test_notify_online_failure_and_diagnostic_round_trip() -> None:
-    """§5.5-§5.7: each notify_* composes its context and dispatches through the poster."""
+    """Section 5.5-Section 5.7: each notify_* composes its context and dispatches through the poster."""
     poster = _FakePoster()
     online = notify_online(
         "up {container_status}",

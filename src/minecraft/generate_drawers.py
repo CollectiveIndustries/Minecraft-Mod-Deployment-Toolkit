@@ -248,8 +248,7 @@ def locate_vanilla_source_resources(archive: AssetArchive) -> dict[str, str]:
 def locate_vanilla_front_resources(archive: AssetArchive, shape: int) -> dict[str, str]:
     """Locate vanilla Storage Drawers front textures for one drawer shape.
 
-    Uses exact-path matching so that a short wood name such as ``oak``
-    cannot accidentally match a longer wood name such as ``dark_oak``.
+    Uses exact-path matching so that a short wood name such as ``oak`` cannot accidentally match a longer wood name such as ``dark_oak``.
     """
     resources: dict[str, str] = {}
     for wood in VANILLA_WOODS:
@@ -273,8 +272,7 @@ def locate_vanilla_front_resources(archive: AssetArchive, shape: int) -> dict[st
 def locate_wood_planks(archive: AssetArchive, namespace: str, wood: str) -> str:
     """Locate ``assets/<namespace>/textures/block/<wood>_planks.png``.
 
-    Case-insensitive. Raises FileNotFoundError if the resource is
-    missing, or if the found path does not have the expected shape.
+    Case-insensitive. Raises FileNotFoundError if the resource is missing, or if the found path does not have the expected shape.
     """
     expected = f"assets/{namespace}/textures/block/{wood}_planks.png"
     if expected in archive.names:
@@ -297,8 +295,7 @@ def locate_wood_planks(archive: AssetArchive, namespace: str, wood: str) -> str:
 def fit_channel_affine(xs: list[float], ys: list[float]) -> tuple[float, float]:
     """Fit y ~= slope * x + intercept by ordinary least squares.
 
-    Returns (slope, intercept). When the x values have zero variance,
-    returns (0.0, mean(y)) so the model degenerates to a constant.
+    Returns (slope, intercept). When the x values have zero variance, returns (0.0, mean(y)) so the model degenerates to a constant.
     """
     n = len(xs)
     sum_x = sum(xs)
@@ -797,8 +794,7 @@ def resolve_client_jar(arg: Path | None, repo_root: Path) -> Path:
 def resolve_storage_drawers_jar(arg: Path | None, repo_root: Path) -> Path:
     """Return the Storage Drawers jar path.
 
-    Accepts either a jar file, or a directory containing a
-    StorageDrawers-*.jar. Relative paths resolve against repo_root.
+    Accepts either a jar file, or a directory containing a StorageDrawers-*.jar. Relative paths resolve against repo_root.
     """
     if arg is None:
         candidate = repo_root / DEFAULT_STORAGE_DRAWERS_DIR
@@ -859,11 +855,9 @@ def parse_wood_type(spec: str | None) -> tuple[str, str]:
 def cmd_generate(args: argparse.Namespace) -> int:
     """Generate all assets and metadata for a new wood.
 
-    Reads the wood's plank texture from --input-jar, fits the template
-    model on the six vanilla woods, generates front_1/front_2/front_4
-    PNGs, writes the JSON metadata, then writes the KubeJS startup
-    script that registers the variant with StorageDrawersExtras. All
-    output lands under --output-root.
+    Reads the wood's plank texture from --input-jar, fits the template model on the six vanilla woods, generates front_1/front_2/front_4 PNGs,
+    writes the JSON metadata, then writes the KubeJS startup script that registers the variant with StorageDrawersExtras. All output lands under
+    --output-root.
     """
     repo_root = Path(args.repo_root).expanduser().resolve()
     client_jar = resolve_client_jar(args.client_jar, repo_root)

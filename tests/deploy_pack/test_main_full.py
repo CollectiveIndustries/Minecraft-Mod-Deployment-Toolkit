@@ -124,8 +124,7 @@ class _FakeRconSet:
 def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[tuple[tuple[object, ...], dict[str, object]]]]:
     """Stub the notification dispatchers and return per-kind call logs.
 
-    ``tool_version`` and ``render_timestamp_now`` are patched so the
-    ``_send_*`` bodies run without their real dependencies.
+    ``tool_version`` and ``render_timestamp_now`` are patched so the ``_send_*`` bodies run without their real dependencies.
     """
     monkeypatch.setattr(main_mod, "tool_version", lambda: "1.0")
     monkeypatch.setattr(main_mod.notifications, "render_timestamp_now", lambda: "ts")
@@ -139,10 +138,8 @@ def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[tuple[tuple
 def _patch_server_scope_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub ``deploy_server_scope`` to succeed without touching the plan.
 
-    The reload-skip tests only need ``_run_deployment`` to reach the
-    reload loop; running the real scope would require a fully-populated
-    plan (``mods_dir``, ``sync_dir``, etc.) that is orthogonal to the
-    branches under test.
+    The reload-skip tests only need ``_run_deployment`` to reach the reload loop; running the real scope would require a fully-populated plan (``mods_dir``,
+    ``sync_dir``, etc.) that is orthogonal to the branches under test.
     """
     monkeypatch.setattr(main_mod, "deploy_server_scope", lambda *a, **k: SimpleNamespace(success=True, failure_message=None))
 

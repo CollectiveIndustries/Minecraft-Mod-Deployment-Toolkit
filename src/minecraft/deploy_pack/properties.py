@@ -1,6 +1,6 @@
 # src/minecraft/deploy_pack/properties.py
 
-"""Surgical ``server.properties`` edits (Project_Specs.md §7.4).
+"""Surgical ``server.properties`` edits (Project_Specs.md Section 7.4).
 
 Four keys are managed by the resource-pack scope:
 
@@ -16,27 +16,27 @@ occurrence of a managed key is rewritten; the key and the ``=`` stay put.
 Design notes
 ------------
 
-* **Binary I/O.** §7.4 specifies binary read/write, and §10.1 requires
+* **Binary I/O.** Section 7.4 specifies binary read/write, and Section 10.1 requires
   that non-ASCII bytes survive an edit. So the file is treated as bytes
   throughout; keys are matched with a bytes regex and lines are split at
   byte level. Only the "before" value is decoded (for logging / diffs),
   with ``errors="replace"``.
 
 * **Value comparison.** A property is changed only when the effective
-  value differs from the target (§4.4). The effective value is the bytes
+  value differs from the target (Section 4.4). The effective value is the bytes
   after the first ``=``, stripped of surrounding whitespace - which is
   what Minecraft's parser sees. Target values are encoded as UTF-8;
   server.properties is UTF-8 by convention.
 
-* **Duplicate keys.** Last occurrence is authoritative (§7.4). Only the
+* **Duplicate keys.** Last occurrence is authoritative (Section 7.4). Only the
   last occurrence is rewritten; earlier ones are left alone. A single
   warning is emitted per duplicated key per public call.
 
 * **No-op writes.** If nothing would change, the file is not touched.
-  This preserves mtime and keeps §4.4's "not a change" property honest
+  This preserves mtime and keeps Section 4.4's "not a change" property honest
   at the filesystem level.
 
-* **Missing file.** ``ConfigError`` (exit 3). §7.4 classifies this as a
+* **Missing file.** ``ConfigError`` (exit 3). Section 7.4 classifies this as a
   preflight error; the scope code checks for the file before calling
   here, so this is defensive.
 
@@ -87,7 +87,10 @@ MANAGED_KEYS = frozenset({"require-resource-pack", "resource-pack", "resource-pa
 
 @dataclass
 class PropertyEdit:
-    """One managed property to write. ``value`` is the target string."""
+    """One managed property to write.
+
+    ``value`` is the target string.
+    """
 
     key: str
     value: str
@@ -143,7 +146,7 @@ def _split_lines(data: bytes) -> list[tuple[bytes, bytes]]:
 
     Terminators are ``b"\r\n"``, ``b"\n"``, or ``b""`` for the final
     line if the file does not end with a newline. A lone ``\r`` is not
-    a line boundary (§7.4).
+    a line boundary (Section 7.4).
 
     No logging: pure and called from both parses of every public call.
     """
@@ -168,7 +171,7 @@ def _split_lines(data: bytes) -> list[tuple[bytes, bytes]]:
 
 
 def _detect_eol(data: bytes) -> bytes:
-    r"""Return the file's line-ending style for appends (§7.4).
+    r"""Return the file's line-ending style for appends (Section 7.4).
 
     Uses the last ``\n`` in the file: if preceded by ``\r``, the style
     is CRLF; otherwise LF. An empty file (or one with no newlines) uses
@@ -185,8 +188,7 @@ def _detect_eol(data: bytes) -> bytes:
 def _read_or_error(path: Path, logger: Any = None) -> bytes:
     """Read ``path`` as bytes, or raise ConfigError.
 
-    Logs at ERROR immediately before each raise so the specific
-    diagnostic lands in the sink even when the caller aggregates.
+    Logs at ERROR immediately before each raise so the specific diagnostic lands in the sink even when the caller aggregates.
     """
     if logger is None:
         logger = _log
@@ -212,12 +214,9 @@ def _parse_existing(
 ) -> dict[str, tuple[int, bytes]]:
     """Return {key: (line_index_of_last_occurrence, stripped_value_bytes)}.
 
-    Only the given ``keys`` are considered. When ``warn_duplicates`` is
-    true, a single warning is emitted per key that appears more than
-    once. Callers that parse the same file twice in one public call
-    (``apply_edits`` parses via ``_compute_diff`` and again via
-    ``_apply``) pass ``warn_duplicates=False`` on the second parse so
-    §7.4's "one warning per duplicated key per call" holds.
+    Only the given ``keys`` are considered. When ``warn_duplicates`` is true, a single warning is emitted per key that appears more than once.
+    Callers that parse the same file twice in one public call (``apply_edits`` parses via ``_compute_diff`` and again via ``_apply``) pass
+    ``warn_duplicates=False`` on the second parse so Section 7.4's "one warning per duplicated key per call" holds.
     """
     if logger is None:
         logger = _log
@@ -235,7 +234,7 @@ def _parse_existing(
     if warn_duplicates:
         for key, count in seen_count.items():
             if count > 1:
-                logger.warning(f"{path}: duplicate key {key!r} ({count} occurrences); the last is authoritative (§7.4)")
+                logger.warning(f"{path}: duplicate key {key!r} ({count} occurrences); the last is authoritative (Section 7.4)")
     logger.debug(f"_parse_existing: {path}: matched {len(result)} of {len(keys)} managed key(s); warn_duplicates={warn_duplicates}")
     return result
 
@@ -318,9 +317,9 @@ def _apply(data: bytes, edits: list[PropertyEdit], path: Path, logger: Any = Non
 
 
 def compute_diff(path: Path, edits: list[PropertyEdit], logger: Any = None) -> PropertiesDiff:
-    """Return which edits would change the file. Read-only.
+    """Return which edits would change the file.
 
-    Raises ConfigError if the file is missing (§7.4).
+    Read-only.     Raises ConfigError if the file is missing (Section 7.4).
     """
     if logger is None:
         logger = _log
@@ -332,14 +331,12 @@ def compute_diff(path: Path, edits: list[PropertyEdit], logger: Any = None) -> P
 def apply_edits(path: Path, edits: list[PropertyEdit], logger: Any = None) -> PropertiesDiff:
     """Apply the edits atomically and return the diff that was applied.
 
-    If no effective change is needed, the file is not rewritten. Writes
-    go through :func:`files.atomic_write` (§4.10): same-directory temp
-    file, fsync, preserved mode and ownership, then ``os.replace``.
+    If no effective change is needed, the file is not rewritten. Writes go through :func:`files.atomic_write` (Section 4.10): same-directory temp file,
+    fsync, preserved mode and ownership, then ``os.replace``.
 
-    The duplicate-key warning (§7.4) is emitted once per public call:
-    the internal re-parse performed by :func:`_apply` suppresses it.
+    The duplicate-key warning (Section 7.4) is emitted once per public call: the internal re-parse performed by :func:`_apply` suppresses it.
 
-    Raises ConfigError if the file is missing (§7.4).
+    Raises ConfigError if the file is missing (Section 7.4).
     """
     if logger is None:
         logger = _log
