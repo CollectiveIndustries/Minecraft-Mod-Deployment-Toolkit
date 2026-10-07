@@ -1,6 +1,6 @@
 [project]
 name = "minecraft"
-version = "0.1.0"
+version = "0.2.1"
 description = "Minecraft Docker network"
 authors = [
     { name = "Andrew Malone", email = "admmorketh@gmail.com" },
