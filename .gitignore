@@ -103,3 +103,6 @@ htmlcov/
 
 datapacks/*
 *.pw.toml
+
+# Tool Storage
+.ToolCore/
