@@ -56,7 +56,7 @@ override via ``logger=`` for that call only.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -182,7 +182,7 @@ class PostHookResult:
 
 
 @contextmanager
-def _runtime_errors(context: str):
+def _runtime_errors(context: str) -> Iterator[None]:
     """Convert DockerUnavailableError into DockerRuntimeError (Section 2.4).
 
     Once preflight has passed, any loss of the daemon is a runtime failure (exit 1), not a configuration failure (exit 3). This wrapper encodes that

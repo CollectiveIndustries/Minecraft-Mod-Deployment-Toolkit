@@ -1,6 +1,8 @@
 # src/minecraft/lookup.py
 """Lookup utilities for mod metadata and search operations."""
 
+from __future__ import annotations
+
 import re
 import sys
 from pathlib import Path
@@ -8,14 +10,14 @@ from pathlib import Path
 LOG = Path("survival/logs/kubejs/server.log")
 
 
-def usage():
+def usage() -> None:
     """Prints the command-line usage guide and examples for the lookup tool."""
     print(
         "Usage:\n  lookup item <search>\n  lookup block <search>\n  lookup machine <search>\n  lookup entity <search>\n  lookup tags <item-id>\n  lookup mod <mod-id>\n\nExamples:\n  lookup item paper\n  lookup item sawdust\n  lookup item steel\n  lookup machine press\n  lookup block copper\n  lookup tags immersiveengineering:dust_wood\n  lookup mod create\n"
     )
 
 
-def get_latest_dump(text):
+def get_latest_dump(text: str) -> str:
     """Return only the newest complete registry dump."""
     starts = list(re.finditer("\\[REGDUMP\\]\\s+REGISTRY DUMP START", text))
     if not starts:
@@ -27,7 +29,7 @@ def get_latest_dump(text):
     return text[start:end]
 
 
-def parse_log():
+def parse_log() -> dict[str, list[dict[str, object]]]:
     """Parses the registry dump log file and returns a dictionary of categorized registry entries.
 
     Returns:
@@ -66,7 +68,7 @@ def parse_log():
     return registry
 
 
-def print_entry(entry):
+def print_entry(entry: dict[str, object]) -> None:
     """Prints a single registry entry in a human-readable format.
 
     Args:
@@ -84,7 +86,7 @@ def print_entry(entry):
     print()
 
 
-def search(registry, kind, query):
+def search(registry: dict[str, list[dict[str, object]]], kind: str, query: str) -> None:
     """Searches for entries matching a query within a given registry kind and prints the results.
 
     Args:
@@ -106,7 +108,7 @@ def search(registry, kind, query):
         print_entry(entry)
 
 
-def show_tags(registry, identifier):
+def show_tags(registry: dict, identifier: str) -> None:
     """Displays all tags for a specific item by its identifier.
 
     Args:
@@ -132,15 +134,15 @@ def show_tags(registry, identifier):
     sys.exit(1)
 
 
-def show_mod(registry, mod):
+def show_mod(registry: dict, mod: str) -> None:
     """Displays all registry entries belonging to a specified mod, showing entry kind, ID, and name.
 
     If no registry or mod is provided, defaults to a no-op display.
     """
     mod = mod.lower()
     results = []
-    for kind in registry:
-        for entry in registry[kind]:
+    for kind, entries in registry.items():
+        for entry in entries:
             if entry["mod"].lower() == mod:
                 results.append((kind, entry))
     print(f"MOD: {mod}")
@@ -151,7 +153,7 @@ def show_mod(registry, mod):
         print(f"{kind.upper():8} {entry['id']} - {entry['name']}")
 
 
-def main():
+def main() -> None:
     """Parses command-line arguments and dispatches to the appropriate lookup subcommand (item, block, machine, entity, tags, or mod).
 
     Handles help and unknown commands with usage output and exit codes.

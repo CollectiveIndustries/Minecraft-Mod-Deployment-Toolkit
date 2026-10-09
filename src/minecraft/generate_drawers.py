@@ -152,7 +152,7 @@ class ValidationMetrics:
 class AssetArchive:
     """Read PNG resources from a Minecraft/mod JAR without extracting it."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.archive = zipfile.ZipFile(path)
         self.names = tuple(self.archive.namelist())
@@ -164,7 +164,7 @@ class AssetArchive:
     def __enter__(self) -> AssetArchive:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object | None) -> None:
         self.close()
 
     def read_image(self, resource_path: str) -> Image.Image:
@@ -640,7 +640,7 @@ def emit_band_table(bands: dict[str, dict[str, tuple[int, int, float, float]]]) 
 # ---------------------------------------------------------------------------
 
 
-def write_json(path: Path, data, indent: int = 4) -> None:
+def write_json(path: Path, data: dict, indent: int = 4) -> None:
     """Write a dict to path as JSON with a trailing newline."""
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, indent=indent) + "\n"

@@ -75,6 +75,7 @@ from .changes import (
 from .states import check_rcon_available, classify_state
 from .types import (
     MemberPlan,
+    ModsChange,
     PreflightError,
     PreflightFailure,
     PreflightPlan,
@@ -664,7 +665,7 @@ def _first_mods_dir(config: DeploymentConfig) -> Path | None:
 def _compute_mods_change_for_scopes(
     config: DeploymentConfig,
     scopes: ScopeSet,
-):
+) -> tuple[ModsChange | None, Path | None]:
     """Compute the mods diff, or (None, None) when the server scope is off."""
     if not scopes.server:
         return (None, None)
@@ -696,7 +697,7 @@ def _compute_rp_changes_for_scopes(
 def _detect_mods_drift(
     scopes: ScopeSet,
     targeted: bool,
-    mods_change,
+    mods_change: ModsChange | None,
     logger: Any,
 ) -> tuple[bool, str | None]:
     """Section 2.9: a targeted server deploy warns when mods_dir differs from source.
@@ -714,7 +715,7 @@ def _build_member_plans(
     scopes: ScopeSet,
     targeted: bool,
     instance_changes: dict,
-    mods_change,
+    mods_change: ModsChange | None,
     rp_changes: dict,
     logger: Any = None,
 ) -> dict[str, MemberPlan]:

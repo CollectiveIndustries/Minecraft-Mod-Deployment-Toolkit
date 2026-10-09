@@ -52,6 +52,7 @@ import re
 import sys
 import zipfile
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -98,7 +99,7 @@ class OreRecord:
 class JarArchive:
     """Read JSON entries from a mod jar without extracting."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
         self.zip = zipfile.ZipFile(path)
         self.names = tuple(self.zip.namelist())
@@ -110,10 +111,10 @@ class JarArchive:
     def __enter__(self) -> JarArchive:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object | None) -> None:
         self.close()
 
-    def read_json(self, name: str):
+    def read_json(self, name: str) -> dict | None:
         """Reads and parses a JSON file, returning None if missing or invalid."""
         try:
             data = self.zip.read(name)
@@ -125,7 +126,7 @@ class JarArchive:
             return None
 
 
-def iter_jars(path: Path):
+def iter_jars(path: Path) -> Iterator[Path]:
     """Yield jar paths from a file or directory."""
     if path.is_file():
         yield path
@@ -223,7 +224,7 @@ def parse_tag_path(path: str, tag_kind: str) -> tuple[str, str] | None:
     return (namespace, name)
 
 
-def parse_tag_entries(values) -> tuple[set[str], set[str]]:
+def parse_tag_entries(values: object) -> tuple[set[str], set[str]]:
     """Return (direct_block_ids, tag_references).
 
     Tag references come back without the leading ``#``. Handles both the 1.20.x plain-string format and the newer object-with-id format.
@@ -247,7 +248,7 @@ def parse_tag_entries(values) -> tuple[set[str], set[str]]:
     return (blocks, tags)
 
 
-def _condition_requires_silk_touch(condition) -> bool:
+def _condition_requires_silk_touch(condition: object) -> bool:
     """Return True if this single condition object requires silk touch.
 
     Handles ``minecraft:match_tool`` with an enchantments predicate,
@@ -278,7 +279,7 @@ def _condition_requires_silk_touch(condition) -> bool:
     return False
 
 
-def _walk_loot_entries(entry, inherited_silk: bool, out_normal: set[str], out_silk: set[str]) -> None:
+def _walk_loot_entries(entry: object, inherited_silk: bool, out_normal: set[str], out_silk: set[str]) -> None:
     """Recurse a loot-table entry tree, bucketing items by silk-touch.
 
     ``inherited_silk`` is the silk-touch state carried down from ancestors. Each entry may add its own silk-touch requirement via its ``conditions``
@@ -314,7 +315,7 @@ def _walk_loot_entries(entry, inherited_silk: bool, out_normal: set[str], out_si
             _walk_loot_entries(child, silk, out_normal, out_silk)
 
 
-def extract_drops_from_loot_table(table) -> tuple[set[str], set[str]]:
+def extract_drops_from_loot_table(table: object) -> tuple[set[str], set[str]]:
     """Return (normal_drops, silk_touch_drops) from a loot table.
 
     Every item and tag reference in every pool is walked. Entries nested under a silk-touch condition go to the silk-touch set. Everything else goes
@@ -330,7 +331,7 @@ def extract_drops_from_loot_table(table) -> tuple[set[str], set[str]]:
     return (normal, silk)
 
 
-def is_ore_feature(feature) -> bool:
+def is_ore_feature(feature: object) -> bool:
     """Return True if the configured feature places ore blocks."""
     if not isinstance(feature, dict):
         return False
@@ -342,7 +343,7 @@ def is_ore_feature(feature) -> bool:
     return ftype.endswith(":ore")
 
 
-def extract_ore_targets(feature) -> list[str]:
+def extract_ore_targets(feature: object) -> list[str]:
     """Return block ids targeted by an ore configured feature."""
     if not isinstance(feature, dict):
         return []
