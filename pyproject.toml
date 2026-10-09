@@ -13,7 +13,7 @@ dependencies = [
     "textual>=8.2.8",
     "docker>=7.2.0",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.16"
 readme = "README.md"
 license = { text = "MIT" }
 
@@ -118,21 +118,43 @@ select = [
     "RUF",     # Ruff-specific rules
     "D",       # docstrings
     "TID",     # tidy-imports / banned APIs
+
+    "ANN001",  # function arguments must be annotated
+    "ANN002",  # *args must be annotated
+    "ANN003",  # **kwargs must be annotated
+    "ANN201",  # public functions must have return annotations
+    "ANN202",  # private functions must have return annotations
+    "ANN204",  # special methods must have return annotations
+    "ANN205",  # static methods must have return annotations
+    "ANN206",  # class methods must have return annotations
 ]
 
 ignore = [
-    "E501",   # line too long
+    "E501",    # Ruff formatter uses line-length as a target, not a hard limit
     "B008",    # dependency injection patterns
     "B904",    # exception chaining flexibility
     "C901",    # allowed complexity in core services
     "PLR0912", # allowed branches
     "PLR0915", # allowed statements
     "SIM108",  # readability preference
-    "D203",    # conflicts with D211 / project convention
-    "D213",    # conflicts with D212 / project convention
+
+    "D203",    # conflicting docstring convention
+    "D205",    # docformatter/Ruff formatting conflict
+    "D213",    # conflicting docstring convention
     "D105",    # dunder methods optional
     "D107",    # __init__ docstring optional
-    "D205",    # 1 blank line required before class docstring
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ANN001",
+    "ANN002",
+    "ANN003",
+    "ANN201",
+    "ANN202",
+    "ANN204",
+    "ANN205",
+    "ANN206",
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -167,6 +189,14 @@ dirs = "src,tests"
 exclude = "tests/.*/fixtures/"
 
 [tool.docstring-fixer]
+mode = "opendeep"
+batch_size = 5
+delay_between_batches = 1.0
+workers = 4
+retry = 1
+api_timeout = 240
+
+[tool.annotation-fixer]
 mode = "opendeep"
 batch_size = 5
 delay_between_batches = 1.0
