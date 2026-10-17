@@ -417,3 +417,130 @@ def test_path_separator_in_source_filename_is_rejected(tmp_path: Path) -> None:
 
     assert not result.success
     assert "path separators" in (result.failure_message or "")
+
+
+# ===========================================================================
+# Protect-pattern contract tests (spec Section 13.5)
+# ===========================================================================
+
+
+def test_protect_exact_filename(tmp_path: Path) -> None:
+    """An exact filename pattern protects only that file."""
+    target = tmp_path / "mods"
+    _seed(target, {"keep.jar": b"k", "bob.jar": b"b", "alice.jar": b"a"})
+    sources = _source(tmp_path / "src", {"keep.jar": b"k"})
+
+    result = ship(
+        ShipRequest(
+            source_set=sources,
+            target_dir=target,
+            protect_patterns=("bob.jar",),
+        )
+    )
+
+    assert result.success
+    assert result.protected_kept == ["bob.jar"]
+    assert result.removed == ["alice.jar"]
+
+
+def test_protect_glob_star_matches_suffix(tmp_path: Path) -> None:
+    """A ``*`` pattern protects every matching flat filename."""
+    target = tmp_path / "mods"
+    _seed(
+        target,
+        {
+            "keep.jar": b"k",
+            "bob-1.0.jar": b"b1",
+            "bob-2.0.jar": b"b2",
+            "alice.jar": b"a",
+        },
+    )
+    sources = _source(tmp_path / "src", {"keep.jar": b"k"})
+
+    result = ship(
+        ShipRequest(
+            source_set=sources,
+            target_dir=target,
+            protect_patterns=("bob-*.jar",),
+        )
+    )
+
+    assert result.success
+    assert result.protected_kept == ["bob-1.0.jar", "bob-2.0.jar"]
+    assert result.removed == ["alice.jar"]
+
+
+def test_protect_glob_question_matches_one_char(tmp_path: Path) -> None:
+    """A ``?`` pattern protects exactly one matching character."""
+    target = tmp_path / "mods"
+    _seed(
+        target,
+        {"keep.jar": b"k", "a1.jar": b"1", "a2.jar": b"2", "a10.jar": b"10"},
+    )
+    sources = _source(tmp_path / "src", {"keep.jar": b"k"})
+
+    result = ship(
+        ShipRequest(
+            source_set=sources,
+            target_dir=target,
+            protect_patterns=("a?.jar",),
+        )
+    )
+
+    assert result.success
+    assert result.protected_kept == ["a1.jar", "a2.jar"]
+    assert result.removed == ["a10.jar"]
+
+
+def test_protect_no_pattern_protects_nothing(tmp_path: Path) -> None:
+    """An empty pattern list protects nothing."""
+    target = tmp_path / "mods"
+    _seed(target, {"keep.jar": b"k", "bob.jar": b"b"})
+    sources = _source(tmp_path / "src", {"keep.jar": b"k"})
+
+    result = ship(ShipRequest(source_set=sources, target_dir=target))
+
+    assert result.success
+    assert result.protected_kept == []
+    assert result.removed == ["bob.jar"]
+
+
+def test_protect_directory_style_pattern_has_no_effect(tmp_path: Path) -> None:
+    """A directory-style pattern like ``bob/`` matches no flat filename."""
+    target = tmp_path / "mods"
+    _seed(target, {"keep.jar": b"k", "bob.jar": b"b"})
+    sources = _source(tmp_path / "src", {"keep.jar": b"k"})
+
+    result = ship(
+        ShipRequest(
+            source_set=sources,
+            target_dir=target,
+            protect_patterns=("bob/",),
+        )
+    )
+
+    # Shipping does not strip trailing slashes; `bob/` matches no flat
+    # filename, so `bob.jar` is removed.
+    assert result.success
+    assert result.protected_kept == []
+    assert result.removed == ["bob.jar"]
+
+
+def test_protect_source_file_is_replaced_despite_protection(tmp_path: Path) -> None:
+    """A protected filename still receives its source content when present."""
+    target = tmp_path / "mods"
+    _seed(target, {"bob.jar": b"old"})
+    sources = _source(tmp_path / "src", {"bob.jar": b"new"})
+
+    result = ship(
+        ShipRequest(
+            source_set=sources,
+            target_dir=target,
+            protect_patterns=("bob.jar",),
+        )
+    )
+
+    assert result.success
+    assert result.updated == ["bob.jar"]
+    assert result.protected_kept == []
+    assert (target / "bob.jar").read_bytes() == b"new"
