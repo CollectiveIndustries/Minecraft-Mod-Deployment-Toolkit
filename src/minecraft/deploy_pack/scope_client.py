@@ -10,24 +10,25 @@ Responsibilities:
   * publish the changelog HTML atomically (Section 4.10)
   * publish @www/* shared items from sync_mapping (Section 2.1)
 
+Slip mode (spec v1.3 Section 5.8, Section 14.4)
+---------------------------------
+
+When ``config.slip`` is not None, ``deploy_client_scope`` dispatches to
+the slip staging path:
+
+  * Client jars come from ``slip.jar_sources`` filtered by
+    ``side ∈ {client, both}``.
+  * Config and KubeJS come from ``slip.context.{config,kubejs}_source``.
+  * Resource packs (when ``--with-resources``) come from
+    ``slip.rp_sources``.
+  * The output filename is ``slip.client_distribution.output_filename``
+    (no ``{date}`` substitution; the slip stores the finalized name).
+
 Non-responsibilities:
   * Resource-pack ZIP publication and server.properties updates.
     scope_resource_pack.
   * Discord notification. notifications.py.
   * Preflight checks (source existence, filename validity). preflight.
-  * Unmarked-mod handling (Section 6.3). The audit tool (prompt_ui.py) or the
-    caller decides; this scope filters unmarked entries defensively.
-
-Staging interpretation (Section 7.1)
------------------------------
-
-Section 7.1 says "no staging" but Section 1.1 freezes common/changelog.py, whose
-public API takes a staging_dir. The reconciliation: server-scope writes
-go directly to instance dirs (Section 7.2 semantics, no swap). The client ZIP
-is a single artifact; assembling its contents in a temp dir and
-publishing it atomically via files.create_zip satisfies Section 4.10 without
-violating Section 7.1's intent. The temp dir is not a deployment staging tree;
-it is never swapped into place.
 
 Structure
 ---------
@@ -42,25 +43,6 @@ only called from within that section or from the public entry point.
     Section 4  Staging assembly
     Section 5  @www shared-item publication (Section 2.1)
     Section 6  Entry point
-
-The orchestrator :func:`deploy_client_scope` runs five independent
-phases. Each phase mutates ``result`` in place and returns either
-``None`` to continue or a failure message to abort. The
-:func:`_run_phases` helper iterates them, so the orchestrator stays a
-linear "resolve names, run phases, cleanup" walk. The staging temp
-directory is created before the phases and unconditionally removed in
-a ``finally`` block, regardless of which phase aborted.
-
-Logging
--------
-
-The scope logs at INFO on entry, on baseline resolution, when the ZIP
-and changelog land, and per shared item published. Per-key staging
-decisions and count summaries log at DEBUG. Warnings the operator
-needs to act on (missing RP source, unhashable ZIP, bad @www
-destination) log at WARN. Failures log at ERROR with the failing stage
-name. The module logger is ``minecraft.deploy_pack.scope_client``;
-callers may inject an override via ``logger=`` for a single call.
 """
 
 from __future__ import annotations
@@ -71,7 +53,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from minecraft.common import changelog as changelog_mod
 
@@ -89,6 +71,9 @@ from .files import (
 )
 from .logging_setup import get_logger
 from .overrides import apply_side_overrides, load_side_overrides
+
+if TYPE_CHECKING:
+    from minecraft.modpack_upgrade.slip_context import SlipContext
 
 _log = get_logger(__name__)
 
@@ -135,11 +120,7 @@ _DATE_TOKEN = "{date}"  # nosec
 
 
 def _resolve_output_name(template: str, logger: Any = None) -> tuple[str, str]:
-    """Return ``(resolved_filename, date_str)``.
-
-    ``{date}`` is replaced with today's UTC date in YYYYMMDD form. A template without the token is returned unchanged (per Section 7.1's "same-date re-run
-    when output_filename does not contain {date}" clause).
-    """
+    """Return ``(resolved_filename, date_str)``."""
     if logger is None:
         logger = _log
     date_str = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
@@ -161,10 +142,7 @@ def _changelog_name(resolved_zip_name: str, logger: Any = None) -> str:
 
 
 def _baseline_without_date_token(output_dir: Path, template: str, logger: Any) -> Path | None:
-    """Case 1 of Section 7.1: no ``{date}`` in the template.
-
-    The baseline is the existing file at the resolved name, or None.
-    """
+    """Case 1 of Section 7.1: no ``{date}`` in the template."""
     candidate = output_dir / template
     if candidate.is_file():
         logger.debug(f"_find_baseline: no-date template; using existing {candidate}")
@@ -179,11 +157,7 @@ def _glob_baseline_candidates(
     suffix: str,
     logger: Any,
 ) -> list[tuple[str, Path]]:
-    """Glob ``<prefix>*<suffix>`` under ``output_dir``; return ``(middle, path)`` pairs.
-
-    ``middle`` is the substring between the two affixes, which for a well-formed filename is the date. Entries whose middle is empty or which are
-    not regular files are skipped.
-    """
+    """Glob ``<prefix>*<suffix>`` under ``output_dir``; return ``(middle, path)``."""
     pattern = f"{prefix}*{suffix}"
     candidates: list[tuple[str, Path]] = []
     if not output_dir.is_dir():
@@ -219,16 +193,7 @@ def _pick_same_date_or_latest(
 
 
 def _find_baseline(output_dir: Path, template: str, date_str: str, logger: Any = None) -> Path | None:
-    """Find the changelog baseline ZIP per Section 7.1.
-
-    Cases:
-
-      1. Template has no ``{date}``: baseline = existing file at the
-         resolved name (or None).
-      2. Template has ``{date}``: look for ZIPs matching
-         ``<prefix>*<suffix>``; prefer the same-date candidate if
-         present; else the lexicographic maximum of the date substring.
-    """
+    """Find the changelog baseline ZIP per Section 7.1."""
     if logger is None:
         logger = _log
 
@@ -253,10 +218,7 @@ def _find_baseline(output_dir: Path, template: str, date_str: str, logger: Any =
 
 
 def _is_unmarked(entry: dict) -> bool:
-    """Section 6.3: an entry whose declared ``side`` is outside the valid set.
-
-    ``side_raw is None`` (no ``side`` key in the .pw.toml) is treated as marked, matching the parser's default of ``"both"``.
-    """
+    """Section 6.3: an entry whose declared ``side`` is outside the valid set."""
     raw = entry.get("side_raw")
     if raw is None:
         return False
@@ -281,10 +243,7 @@ def _filter_marked(entries: list[dict], overrides: Any, logger: Any) -> list[dic
 
 
 def _collect_existing_mod_paths(entries: list[dict], modpack_dir: Path, logger: Any) -> dict[str, Path]:
-    """Return ``{filename: path}`` for every entry present on disk.
-
-    Missing files log at WARN and are skipped.
-    """
+    """Return ``{filename: path}`` for every entry present on disk."""
     out: dict[str, Path] = {}
     for entry in entries:
         filename = entry.get("file")
@@ -300,11 +259,7 @@ def _collect_existing_mod_paths(entries: list[dict], modpack_dir: Path, logger: 
 
 
 def _resolve_client_mod_sources(config: DeploymentConfig, logger: Any) -> dict[str, Path]:
-    """Return ``{filename: source_path}`` for the client-side mod set.
-
-    Applies overrides, drops unmarked entries (unless overridden), runs the client side filter, and expands the dependency closure. Files missing
-    from disk are skipped with a warning.
-    """
+    """Return ``{filename: source_path}`` for the client-side mod set."""
     index_dir = config.modpack_dir / ".index"
     if not index_dir.is_dir():
         logger.debug(f"_resolve_client_mod_sources: index dir missing: {index_dir}")
@@ -333,6 +288,21 @@ def _resolve_client_mod_sources(config: DeploymentConfig, logger: Any) -> dict[s
     return _collect_existing_mod_paths(closure.entries, config.modpack_dir, logger)
 
 
+def _resolve_client_mod_sources_from_context(ctx: SlipContext, logger: Any) -> dict[str, Path]:
+    """Return slip jars with side ∈ {client, both}, mapped to their paths."""
+    out: dict[str, Path] = {}
+    for jar in ctx.slip.jars:
+        if jar.side not in ("client", "both"):
+            continue
+        path = ctx.jar_sources.get(jar.filename)
+        if path is None:
+            logger.warning(f"_resolve_client_mod_sources_from_context: slip jar {jar.filename!r} not in jar_sources")
+            continue
+        out[jar.filename] = path
+    logger.info(f"_resolve_client_mod_sources_from_context: {len(out)} client-side jar(s) from {len(ctx.slip.jars)} slip jar(s)")
+    return out
+
+
 # ===========================================================================
 # Section 4  Staging assembly
 # ===========================================================================
@@ -353,6 +323,21 @@ def _stage_client_mods(config: DeploymentConfig, staging_dir: Path, logger: Any)
     logger.debug(f"staging: {copied}/{len(sources)} mod(s) copied to {mods_dir}")
 
 
+def _stage_client_mods_from_context(ctx: SlipContext, staging_dir: Path, logger: Any) -> None:
+    """Slip-mode: copy client-side jars from ``ctx.jar_sources``."""
+    mods_dir = staging_dir / "mods"
+    mods_dir.mkdir(parents=True, exist_ok=True)
+    sources = _resolve_client_mod_sources_from_context(ctx, logger)
+    copied = 0
+    for name, src in sources.items():
+        try:
+            shutil.copy2(src, mods_dir / name)
+            copied += 1
+        except OSError as exc:
+            logger.warning(f"staging: copy mod {name} failed: {exc}")
+    logger.debug(f"staging: {copied}/{len(sources)} slip mod(s) copied to {mods_dir}")
+
+
 def _stage_one_sync_key(
     config: DeploymentConfig,
     staging_dir: Path,
@@ -360,11 +345,7 @@ def _stage_one_sync_key(
     mapping_value: Any,
     logger: Any,
 ) -> None:
-    """Copy one non-shared, non-resourcepack sync item into staging.
-
-    Skips keys excluded on the client side and keys whose destination is a shared (``@www/...``) location; those are published separately, not
-    embedded in the ZIP.
-    """
+    """Copy one non-shared, non-resourcepack sync item into staging."""
     dest_rel = resolve_mapping_for_side(mapping_value, "client")
     if dest_rel is None:
         logger.debug(f"staging: {key} excluded on client side; skipping")
@@ -382,10 +363,7 @@ def _stage_one_sync_key(
 
 
 def _stage_sync_mapping(config: DeploymentConfig, staging_dir: Path, logger: Any) -> None:
-    """Copy each non-shared, non-resourcepack sync item into staging.
-
-    The resourcepacks key is handled by :func:`_stage_resource_packs`.
-    """
+    """Copy each non-shared, non-resourcepack sync item into staging."""
     for key, mapping_value in config.sync_mapping.items():
         if key == "resourcepacks":
             logger.debug("staging: key 'resourcepacks' handled by _stage_resource_packs; skipping")
@@ -411,10 +389,7 @@ def _copy_rp_files(
     filenames: list[str],
     logger: Any,
 ) -> int:
-    """Copy each filename from ``source_dir`` into ``dest_dir``; return the count.
-
-    Missing sources log at WARN and are skipped.
-    """
+    """Copy each filename from ``source_dir`` into ``dest_dir``; return the count."""
     copied = 0
     for name in filenames:
         src = source_dir / name
@@ -430,12 +405,7 @@ def _copy_rp_files(
 
 
 def _stage_resource_packs(config: DeploymentConfig, staging_dir: Path, logger: Any) -> None:
-    """Stage the union of ``[resource_pack.X].filename`` values (Section 7.6).
-
-    Source path resolution: ``sync_root / resourcepacks.client``. Only
-    files that exist on disk are staged; preflight validates existence
-    (Section 7.8) so a missing source at this point is a defensive warning.
-    """
+    """Stage the union of ``[resource_pack.X].filename`` values (Section 7.6)."""
     rp_mapping = config.sync_mapping.get("resourcepacks")
     if not isinstance(rp_mapping, dict):
         logger.debug("staging: no [sync_mapping].resourcepacks; skipping RP staging")
@@ -457,13 +427,38 @@ def _stage_resource_packs(config: DeploymentConfig, staging_dir: Path, logger: A
     logger.debug(f"staging: {copied}/{len(filenames)} resource pack(s) copied to {dest_dir}")
 
 
+def _stage_resource_packs_from_context(ctx: SlipContext, staging_dir: Path, logger: Any) -> None:
+    """Slip-mode: copy each slip RP from ``ctx.rp_sources`` into staging."""
+    dest_dir = staging_dir / "resourcepacks"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    filenames: list[str] = []
+    seen: set[str] = set()
+    for rp in ctx.slip.resource_packs:
+        if rp.filename in seen:
+            continue
+        seen.add(rp.filename)
+        filenames.append(rp.filename)
+    copied = 0
+    for name in filenames:
+        src = ctx.rp_sources.get(name)
+        if src is None or not src.is_file():
+            logger.warning(f"client staging (slip): RP source missing: {name}")
+            continue
+        try:
+            shutil.copy2(src, dest_dir / name)
+            copied += 1
+        except OSError as exc:
+            logger.warning(f"client staging (slip): copy RP {name} failed: {exc}")
+    logger.debug(f"staging: {copied}/{len(filenames)} slip resource pack(s) copied to {dest_dir}")
+
+
 def _build_staging(
     config: DeploymentConfig,
     with_resources: bool,
     staging_dir: Path,
     logger: Any,
 ) -> None:
-    """Assemble the client staging tree under ``staging_dir``."""
+    """Assemble the client staging tree under ``staging_dir`` (legacy)."""
     logger.debug(f"staging: building into {staging_dir} (with_resources={with_resources})")
     _stage_client_mods(config, staging_dir, logger)
     _stage_sync_mapping(config, staging_dir, logger)
@@ -473,16 +468,36 @@ def _build_staging(
         logger.debug("staging: --with-resources not set; skipping resource pack staging")
 
 
+def _build_staging_from_context(
+    ctx: SlipContext,
+    with_resources: bool,
+    staging_dir: Path,
+    logger: Any,
+) -> None:
+    """Slip-mode staging: client jars, config, kubejs, and RPs."""
+    logger.debug(f"staging: building slip-mode into {staging_dir} (with_resources={with_resources})")
+    _stage_client_mods_from_context(ctx, staging_dir, logger)
+    config_dst = staging_dir / "config"
+    if ctx.config_source.is_dir():
+        config_dst.mkdir(parents=True, exist_ok=True)
+        copy_tree(ctx.config_source, config_dst, mode="merge", logger=logger)
+    kubejs_dst = staging_dir / "kubejs"
+    if ctx.kubejs_source.is_dir():
+        kubejs_dst.mkdir(parents=True, exist_ok=True)
+        copy_tree(ctx.kubejs_source, kubejs_dst, mode="merge", logger=logger)
+    if with_resources:
+        _stage_resource_packs_from_context(ctx, staging_dir, logger)
+    else:
+        logger.debug("staging (slip): --with-resources not set; skipping RP staging")
+
+
 # ===========================================================================
 # Section 5  @www shared-item publication (Section 2.1)
 # ===========================================================================
 
 
 def _shared_dest_of(value: Any) -> str | None:
-    """Return the ``@www/...`` destination of a sync-mapping value, if any.
-
-    Only plain string values are considered. A dict value with a ``resource_pack`` key is scope_resource_pack's concern (Section 4.9).
-    """
+    """Return the ``@www/...`` destination of a sync-mapping value, if any."""
     if isinstance(value, str) and value.startswith("@www/"):
         return value
     return None
@@ -494,10 +509,7 @@ def _publish_one_shared_item(
     dest_value: str,
     logger: Any,
 ) -> tuple[Path, CopyResult] | None:
-    """Publish one ``@www/...`` entry.
-
-    Returns ``(dest_dir, result)`` on success, or None when the source is absent or the destination is malformed. Source: ``sync_root/key``.
-    """
+    """Publish one ``@www/...`` entry."""
     src = config.sync_root / key
     if not src.is_dir():
         logger.debug(f"@www publish: {key} source {src} absent; skipping")
@@ -518,11 +530,7 @@ def _publish_shared_items(
     protect_patterns: list[str],
     logger: Any,
 ) -> tuple[list[Path], dict[str, CopyResult]]:
-    """Copy each sync_mapping entry whose value is ``@www/...`` to www_dir.
-
-    Source: ``sync_root / key``. Destination: resolved via
-    ``files.resolve_shared_dest``. Uses merge semantics.
-    """
+    """Copy each sync_mapping entry whose value is ``@www/...`` to www_dir."""
     published: list[Path] = []
     results: dict[str, CopyResult] = {}
     if config.www_dir is None:
@@ -548,13 +556,7 @@ def _publish_shared_items(
 
 
 def _run_phases(phases: list[Callable[[], str | None]], logger: Any) -> str | None:
-    """Run each phase callable in order; return the first error message or None.
-
-    Each phase performs its work (mutating a shared result object) and
-    returns ``None`` to continue or a failure message to abort. The
-    caller converts a non-None result into ``result.success = False``
-    plus ``result.failure_message``.
-    """
+    """Run each phase callable in order; return the first error message or None."""
     for phase in phases:
         err = phase()
         if err is not None:
@@ -566,11 +568,15 @@ def _phase_stage(
     config: DeploymentConfig,
     with_resources: bool,
     staging_root: Path,
+    slip_ctx: SlipContext | None,
     logger: Any,
 ) -> str | None:
     """Build the staging tree; on failure, return the error message."""
     try:
-        _build_staging(config, with_resources, staging_root, logger)
+        if slip_ctx is not None:
+            _build_staging_from_context(slip_ctx, with_resources, staging_root, logger)
+        else:
+            _build_staging(config, with_resources, staging_root, logger)
     except Exception as exc:
         msg = f"staging assembly failed: {exc}"
         logger.error(f"client scope: {msg}")
@@ -582,11 +588,12 @@ def _phase_baseline_and_diff(
     config: DeploymentConfig,
     staging_root: Path,
     date_str: str,
+    output_template: str,
     result: ClientScopeResult,
     logger: Any,
 ) -> str | None:
     """Resolve the baseline and build the diff report."""
-    baseline = _find_baseline(config.www_dir, config.output_filename, date_str, logger)
+    baseline = _find_baseline(config.www_dir, output_template, date_str, logger)
     result.baseline_zip = baseline
     if baseline is not None:
         logger.info(f"client scope: changelog baseline {baseline}")
@@ -607,7 +614,8 @@ def _phase_baseline_and_diff(
     result.initial_build = report.initial_build
     logger.debug(
         f"client scope: diff report; initial_build={report.initial_build} "
-        f"added_mods={len(report.added_mods)} removed_mods={len(report.removed_mods)} "
+        f"added_mods={len(report.added_mods)} "
+        f"removed_mods={len(report.removed_mods)} "
         f"kubejs_added={len(report.added_kubejs)} "
         f"kubejs_modified={len(report.modified_kubejs)} "
         f"kubejs_removed={len(report.removed_kubejs)}"
@@ -695,6 +703,19 @@ def _phase_shared(
     return None
 
 
+def _resolve_output_from_slip(slip_ctx: SlipContext, logger: Any) -> tuple[str, str] | None:
+    """Return ``(resolved_name, date_str)`` from the slip, or None if absent.
+
+    Slip mode uses ``client_distribution.output_filename`` directly; the
+    filename is already finalized (no ``{date}`` substitution). ``date_str``
+    is empty so baseline lookup falls back to the no-date branch.
+    """
+    if slip_ctx.slip.client_distribution is None:
+        logger.error("client scope: slip does not declare [client_distribution]; cannot build client pack")
+        return None
+    return (slip_ctx.slip.client_distribution.output_filename, "")
+
+
 def deploy_client_scope(
     config: DeploymentConfig,
     with_resources: bool,
@@ -703,17 +724,16 @@ def deploy_client_scope(
 ) -> ClientScopeResult:
     """Execute the client scope write phase (Section 4.2, Section 7.1).
 
+    Dispatches to slip mode when ``config.slip`` is set; legacy otherwise.
     Halts on the first runtime failure. Returns a result describing
     what was written. Never raises on a write failure; the caller
     decides exit code and recovery.
-
-    Read-only with respect to Docker: no container operations happen
-    here.
     """
     if logger is None:
         logger = _log
 
-    logger.info(f"client scope: entering; output_filename={config.output_filename!r} www_dir={config.www_dir} with_resources={with_resources}")
+    mode = "slip" if config.slip is not None else "legacy"
+    logger.info(f"client scope: entering; output_filename={config.output_filename!r} www_dir={config.www_dir} with_resources={with_resources} mode={mode}")
 
     result = ClientScopeResult()
 
@@ -723,7 +743,17 @@ def deploy_client_scope(
         logger.error(f"client scope: {result.failure_message}")
         return result
 
-    resolved_name, date_str = _resolve_output_name(config.output_filename, logger)
+    if config.slip is not None:
+        resolved_pair = _resolve_output_from_slip(config.slip, logger)
+        if resolved_pair is None:
+            result.success = False
+            result.failure_message = "slip does not declare [client_distribution]"
+            return result
+        resolved_name, date_str = resolved_pair
+        output_template = resolved_name
+    else:
+        resolved_name, date_str = _resolve_output_name(config.output_filename, logger)
+        output_template = config.output_filename
     result.resolved_output_filename = resolved_name
     changelog_name = _changelog_name(resolved_name, logger)
     base = config.download_base_url.rstrip("/") if config.download_base_url else ""
@@ -731,11 +761,12 @@ def deploy_client_scope(
 
     staging_root = Path(tempfile.mkdtemp(prefix="deploy_client_"))
     logger.debug(f"client scope: staging root {staging_root}")
+    slip_ctx = config.slip
     try:
         err = _run_phases(
             [
-                lambda: _phase_stage(config, with_resources, staging_root, logger),
-                lambda: _phase_baseline_and_diff(config, staging_root, date_str, result, logger),
+                lambda: _phase_stage(config, with_resources, staging_root, slip_ctx, logger),
+                lambda: _phase_baseline_and_diff(config, staging_root, date_str, output_template, result, logger),
                 lambda: _phase_zip(config, resolved_name, base, staging_root, result, logger),
                 lambda: _phase_changelog(config, changelog_name, base, result, logger),
                 lambda: _phase_shared(config, protect_patterns, result, logger),

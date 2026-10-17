@@ -14,112 +14,63 @@ Responsibilities (Section 9.2):
   * notification dispatch via notifications.py
   * exit-code mapping per Section 2.4
 
+Slip mode (spec v1.3 Section 14.1, Section 14.5, Section 14.7)
+------------------------------------------
+
+New CLI flags:
+
+  * ``--release <tag>`` - release mode, direct tag. Loads
+    ``sync/packing_slips/<tag>.toml`` and builds ``SlipContext`` from
+    ``www/releases/<tag>/``.
+  * ``--release-pointer <name>`` - release mode via a pointer file.
+    ``stable`` reads ``sync/packing_slips/stable`` (a single line like
+    ``v1.0.2.toml``) and loads the referenced release. ``latest-slip``
+    reads the DEV-local candidate pointer and loads the candidate.
+  * ``--integration`` - integration mode. Requires
+    ``--release-pointer latest-slip``. Builds ``SlipContext`` from the
+    candidate and captures one clean committed HEAD before construction.
+
+Legacy mode is preserved: without any slip flag, ``deploy_pack`` behaves
+exactly as v2 and slip-context construction is skipped.
+
 Exit codes (Section 2.4):
   0 success
   1 runtime failure
   2 CLI usage error
   3 configuration / preflight failure
-
-Error precedence: exit-2 checks run before config load; config load
-before the interactive prompt; the prompt before preflight; preflight
-before runtime. See :func:`_validate_cli`, :func:`_run_with_scope`,
-and the try/except hierarchy in :func:`main`.
-
-Interactive prompt (Section 6.2, Section 6.3)
--------------------------------
-
-Jars whose ``.pw.toml`` declares a ``side`` outside ``{client, server,
-both}`` are "unmarked" (Section 6.3). When a server or client scope is active
-and the operator has not passed ``--non-interactive``, the entrypoint
-prompts for each such jar and records the answer as a
-``[deployment_tool_review]`` entry in ``side_overrides.toml``. The
-prompt runs before preflight so that preflight's mods-change computation
-(Section 4.4) sees the newly-marked entries; it is skipped under ``--dry-run``
-because Section 2.6 forbids filesystem writes.
-
-Jars with *no* ``.pw.toml`` at all are also unmarked by Section 6.3, but they
-cannot be fixed by writing a review entry - the index has nothing to
-key against. The prompt warns about them and continues.
-
-CLI failure output (Section 4.7, Section 4.8, Section 4.13)
----------------------------------------
-
-The runtime failure paths emit structured diagnostics to stdout
-regardless of ``--notify``:
-
-  * **Failure summary line:** ``<failure_stage>: <error>`` on stdout.
-  * **Per-container status:** one ``<instance_name>: <state>`` line per
-    lifecycle-touched container, per Section 5.8's vocabulary. Rendered for
-    non-server-scope write failures, reload failures, and post-phase
-    failures. The server-scope write failure path emits the recovery
-    block instead (which carries the affected containers and the reason).
-
-Both are in addition to the logged diagnostics; the spec's "print ... to
-CLI (always)" clauses are satisfied by stdout.
-
-CLI warnings (Section 4.6.9)
----------------------
-
-``preflight`` collects warnings (the pack-required staleness notice,
-mods-drift on targeted server deploys, etc.) on ``PreflightPlan.warnings``.
-The entrypoint emits each at WARN before starting the runtime sequence,
-so the operator sees them in normal runs; ``--dry-run`` suppresses this
-emission (warnings are surfaced as part of the dry-run plan body instead).
-
-Structure
----------
-
-The module is organised into twelve sections with explicit banner
-comments. Each section is self-contained: everything inside it belongs
-to the same concern, and the eventual module split will move whole
-sections without touching their contents.
-
-    Section 1  Imports
-    Section 2  CLI surface             (parser, args, validation, scopes)
-    Section 3  Config load
-    Section 4  Interactive prompt
-    Section 5  RCON transport set
-    Section 6  Diagnostics
-    Section 7  Notification composition
-    Section 8  Recovery / notice helpers
-    Section 9  Scope writes
-    Section 10 Runtime phases (Section 4.1)
-    Section 11 CLI dispatch
-    Section 12 Entry point
-
-The Section 4.1 runtime sequence threads its state through a small
-:class:`_RuntimeState` dataclass and calls one single-purpose phase
-function per step. Each phase returns ``None`` to continue or an
-``int`` exit code to abort, which makes the failure contract visible
-at :func:`_run_deployment`'s call site.
-
-Logging
--------
-
-Every application module emits exclusively through LoggingCore (Section 9.2's
-"pluggable sinks" contract). Each module obtains its own logger via
-``logging_setup.get_logger(__name__)`` so the ``event.logger`` label
-reflects the module that produced the message, not the caller.
-``main`` wires the sink and sets the stdlib root logger's level so
-tooling that reads ``logging.getLogger().level`` sees the operator's
-intent. The two concerns are independent: LoggingCore owns emission,
-stdlib owns level visibility.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import sys
+import tomllib
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from minecraft.modpack_upgrade import slip as slip_mod
+from minecraft.modpack_upgrade.errors import UpgradeError as SlipUpgradeError
+from minecraft.modpack_upgrade.slip_context import (
+    SlipContext,
+    build_integration_context,
+    build_release_context,
+)
+
 from . import deps, notifications, prompt_ui, tool_version
 from .config_model import DeploymentConfig, load_deployment_config
 from .docker_runtime import Clock, DockerRuntime, RconTransport, select_rcon_transport
-from .errors import ConfigError, DeployPackError, DockerRuntimeError, DockerUnavailableError, RuntimeDeployError, UsageError
+from .errors import (
+    ConfigError,
+    DeployPackError,
+    DockerRuntimeError,
+    DockerUnavailableError,
+    RuntimeDeployError,
+    UsageError,
+)
 from .files import load_protect_patterns
 from .hooks import (
     PostHookResult,
@@ -139,6 +90,14 @@ from .preflight import PreflightError, PreflightPlan, ScopeSet, run_preflight, s
 from .scope_client import ClientScopeResult, deploy_client_scope
 from .scope_resource_pack import ResourcePackScopeResult, deploy_resource_pack_scope
 from .scope_server import ServerScopeResult, deploy_server_scope
+
+_DEFAULT_SLIP_CONFIG: dict[str, str] = {
+    "release_slip_dir": "sync/packing_slips",
+    "bundle_store": "www/releases",
+    "candidate_pointer_path": "/var/lib/minecraft-upgrade/latest-slip",
+    "candidate_store": "/var/lib/minecraft-upgrade/candidates",
+}
+
 
 # ===========================================================================
 # Section 2  CLI surface
@@ -160,7 +119,11 @@ _KNOWN_OVERRIDE_FLAGS = frozenset(
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser for deploy_pack's CLI (Section 2.2, Section 2.5)."""
-    parser = argparse.ArgumentParser(prog="deploy_pack", description="Deploy Minecraft server + client pack.", add_help=True)
+    parser = argparse.ArgumentParser(
+        prog="deploy_pack",
+        description="Deploy Minecraft server + client pack.",
+        add_help=True,
+    )
     parser.add_argument("--server", action="store_true", help="Server scope (Section 2.1)")
     parser.add_argument("--client", action="store_true", help="Client scope (Section 2.1)")
     parser.add_argument("--resource-pack", action="store_true", help="Resource-pack scope (Section 2.1)")
@@ -174,6 +137,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audit-mods", action="store_true", help="Standalone Textual UI (Section 6.1)")
     parser.add_argument("--non-interactive", action="store_true", help="Skip prompts; unmarked mods not deployed (Section 6.2)")
     parser.add_argument("--config-dir", type=str, default=None, help="Config directory (Section 2.2)")
+    parser.add_argument(
+        "--release",
+        type=str,
+        default=None,
+        metavar="TAG",
+        help="Release mode: load sync/packing_slips/<TAG>.toml and its bundle (spec Section 14.1)",
+    )
+    parser.add_argument(
+        "--release-pointer",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Release mode via pointer: 'stable' or 'latest-slip' (spec Section 14.5)",
+    )
+    parser.add_argument(
+        "--integration",
+        action="store_true",
+        help="Integration mode: requires --release-pointer latest-slip (spec Section 14.1)",
+    )
     return parser
 
 
@@ -197,12 +179,6 @@ def _parse_overrides(remaining: list[str]) -> dict[str, str]:
     matching ``[deploy_pack.toml]``'s naming convention (Section 2.8). Unknown
     flags are caught earlier by :func:`_validate_passthrough_flags`; this
     function only runs on tokens that already passed that gate.
-
-    Args:
-        remaining: The leftover tokens from ``parse_known_args``.
-
-    Returns:
-        A mapping of snake_case key to string value.
     """
     out: dict[str, str] = {}
     i = 0
@@ -241,6 +217,27 @@ class _Args:
     audit_mods: bool = False
     non_interactive: bool = False
     config_dir: str | None = None
+    release: str | None = None
+    release_pointer: str | None = None
+    integration: bool = False
+
+
+def _validate_slip_flags(args: _Args, has_scope: bool) -> None:
+    """Validate slip-flag combinations (spec v1.3 Section 14.1, Section 14.5)."""
+    if args.release and args.release_pointer:
+        raise UsageError("--release and --release-pointer are mutually exclusive")
+    if (args.release or args.release_pointer or args.integration) and not has_scope:
+        raise UsageError("slip flags require a deployment scope")
+    if args.integration:
+        if not args.release_pointer:
+            raise UsageError("--integration requires --release-pointer")
+        if args.release_pointer != "latest-slip":
+            raise UsageError(f"--integration requires --release-pointer latest-slip, got {args.release_pointer!r}")
+    if args.release_pointer is not None:
+        if args.release_pointer not in ("stable", "latest-slip"):
+            raise UsageError(f"unknown pointer: {args.release_pointer!r} (expected 'stable' or 'latest-slip')")
+        if args.release_pointer == "latest-slip" and not args.integration:
+            raise UsageError("--release-pointer latest-slip requires --integration")
 
 
 def _validate_args(args: _Args, parser: argparse.ArgumentParser) -> None:
@@ -265,6 +262,12 @@ def _validate_args(args: _Args, parser: argparse.ArgumentParser) -> None:
             rejected.append("--debug-deps")
         if args.non_interactive:
             rejected.append("--non-interactive")
+        if args.release:
+            rejected.append("--release")
+        if args.release_pointer:
+            rejected.append("--release-pointer")
+        if args.integration:
+            rejected.append("--integration")
         if rejected:
             raise UsageError("--audit-mods is incompatible with: " + ", ".join(rejected))
         return
@@ -277,6 +280,7 @@ def _validate_args(args: _Args, parser: argparse.ArgumentParser) -> None:
         raise UsageError("--full and --instance are mutually exclusive")
     if args.instance is not None and (not (args.server or args.resource_pack)):
         raise UsageError("--instance requires --server or --resource-pack")
+    _validate_slip_flags(args, has_scope)
 
 
 def _validate_passthrough_flags(remaining: list[str]) -> None:
@@ -321,37 +325,173 @@ def _resolve_config_dir(raw: str | None) -> Path:
 
 
 # ===========================================================================
+# Section 2b  Slip context construction (spec v1.3 Section 14.1, Section 14.5, Section 14.7)
+# ===========================================================================
+
+
+def _run_git(args: list[str], cwd: Path) -> tuple[int, str]:
+    """Run ``git`` with ``args`` in ``cwd``; return (returncode, stdout-stripped).
+
+    Returns (127, "") when git is unavailable or times out so the caller
+    can distinguish "git missing" from "git failed".
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return (result.returncode, result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return (127, "")
+
+
+def _read_slip_config(config_dir: Path) -> dict[str, str]:
+    """Return the ``[slip]`` table from ``deploy_pack.toml`` merged with defaults."""
+    toml_path = config_dir / "deploy_pack.toml"
+    raw: dict[str, str] = {}
+    if toml_path.is_file():
+        try:
+            with open(toml_path, "rb") as handle:
+                data = tomllib.load(handle)
+            section = data.get("slip")
+            if isinstance(section, dict):
+                raw = {str(k): str(v) for k, v in section.items()}
+        except (OSError, tomllib.TOMLDecodeError):
+            raw = {}
+    merged = dict(_DEFAULT_SLIP_CONFIG)
+    merged.update(raw)
+    return merged
+
+
+def _read_pointer_file(path: Path, logger: Any) -> str:
+    """Read a single-line pointer file and return the stripped content."""
+    if not path.is_file():
+        raise ConfigError(f"pointer file not found: {path}")
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ConfigError(f"could not read pointer file {path}: {exc}") from exc
+    if not content:
+        raise ConfigError(f"pointer file is empty: {path}")
+    return content
+
+
+def _strip_toml_suffix(value: str) -> str:
+    """Return ``value`` without a trailing ``.toml`` suffix, if present."""
+    return value[:-5] if value.endswith(".toml") else value
+
+
+def _build_release_slip_context(slip_dir: Path, bundle_store: Path, release_id: str, logger: Any) -> SlipContext:
+    """Load a release slip and construct a release-mode SlipContext."""
+    slip_path = slip_dir / f"{release_id}.toml"
+    bundle_root = bundle_store / release_id
+    logger.info(f"slip: loading release {release_id!r} from {slip_path}, bundle {bundle_root}")
+    slip_obj = slip_mod.load_slip(slip_path)
+    return build_release_context(slip_obj, bundle_root)
+
+
+def _build_integration_slip_context(
+    project_root: Path,
+    pointer_path: Path,
+    candidate_store: Path,
+    logger: Any,
+) -> SlipContext:
+    """Load a candidate and construct an integration-mode SlipContext.
+
+    Rejects dirty working trees for ``sync/config`` and ``sync/kubejs``
+    before capturing HEAD (spec Section 14.7). Captures HEAD exactly once.
+    """
+    candidate_id = _read_pointer_file(pointer_path, logger)
+    candidate_root = candidate_store / candidate_id
+    slip_path = candidate_root / "packing_slip.toml"
+    config_source = project_root / "sync" / "config"
+    kubejs_source = project_root / "sync" / "kubejs"
+
+    rc, out = _run_git(
+        ["status", "--porcelain", "sync/config", "sync/kubejs"],
+        project_root,
+    )
+    if rc == 127:
+        raise ConfigError("integration mode: git is not available; cannot capture HEAD")
+    if rc != 0:
+        raise ConfigError(f"integration mode: git status failed (rc={rc}); cannot capture HEAD")
+    if out:
+        raise ConfigError(f"integration mode: dirty working tree for sync/config or sync/kubejs: {out[:200]}")
+
+    rc, head = _run_git(["rev-parse", "HEAD"], project_root)
+    if rc != 0 or not head:
+        raise ConfigError(f"integration mode: git rev-parse HEAD failed (rc={rc})")
+
+    logger.info(f"slip: loading integration candidate {candidate_id!r} from {slip_path}, HEAD={head[:12]}")
+    slip_obj = slip_mod.load_slip(slip_path)
+    return build_integration_context(
+        slip_obj,
+        candidate_root,
+        config_source=config_source,
+        kubejs_source=kubejs_source,
+        captured_head=head,
+    )
+
+
+def _build_slip_context(config_dir: Path, args: _Args, logger: Any) -> SlipContext | None:
+    """Build a SlipContext if slip flags are present; None in legacy mode."""
+    if not (args.release or args.release_pointer):
+        return None
+    slip_cfg = _read_slip_config(config_dir)
+    project_root = config_dir.parent
+    try:
+        if args.integration:
+            return _build_integration_slip_context(
+                project_root,
+                Path(slip_cfg["candidate_pointer_path"]),
+                Path(slip_cfg["candidate_store"]),
+                logger,
+            )
+        slip_dir = project_root / slip_cfg["release_slip_dir"]
+        bundle_store = project_root / slip_cfg["bundle_store"]
+        if args.release:
+            release_id = args.release
+        else:  # args.release_pointer == "stable"
+            release_id = _strip_toml_suffix(_read_pointer_file(slip_dir / "stable", logger))
+        return _build_release_slip_context(slip_dir, bundle_store, release_id, logger)
+    except ConfigError:
+        raise
+    except SlipUpgradeError as exc:
+        raise ConfigError(f"slip load failed: {exc}") from exc
+    except Exception as exc:
+        raise ConfigError(f"slip context build failed: {exc}") from exc
+
+
+# ===========================================================================
 # Section 3  Config load
 # ===========================================================================
 
 
 def _setup_logging(debug: bool) -> Any:
-    """Configure logging and return this module's logger.
-
-    The returned logger is labelled ``minecraft.deploy_pack.main``, so every event emitted by this file carries its own module tag rather than a
-    generic ``deploy_pack`` label. Downstream modules obtain their own loggers via ``logging_setup.get_logger(__name__)``.
-    """
+    """Configure logging and return this module's logger."""
     level = logging.DEBUG if debug else logging.INFO
     logging.getLogger().setLevel(level)
     _configure_logging(debug=debug)
     return _get_loggingcore_logger(__name__)
 
 
-def _load_config(config_dir: Path, overrides: list[str]) -> DeploymentConfig:
-    """Load the deployment config, forwarding CLI overrides as kwargs.
-
-    Args:
-        config_dir: The resolved config directory.
-        overrides: The leftover ``--flag value`` tokens from the CLI.
-
-    Returns:
-        The resolved deployment configuration.
-
-    Raises:
-        ConfigError: On any config-loading failure.
-    """
+def _load_config(
+    config_dir: Path,
+    overrides: list[str],
+    slip: SlipContext | None = None,
+    requested_instances: set[str] | None = None,
+) -> DeploymentConfig:
+    """Load the deployment config, forwarding CLI overrides as kwargs."""
     parsed = _parse_overrides(overrides)
-    return load_deployment_config(config_dir=config_dir, **parsed)
+    return load_deployment_config(
+        config_dir=config_dir,
+        requested_instances=requested_instances,
+        slip=slip,
+        **parsed,
+    )
 
 
 def _sticky_max(actions: list[str]) -> str:
@@ -365,10 +505,7 @@ def _sticky_max(actions: list[str]) -> str:
 
 
 def _classify_unmarked(unmarked: list, entries: list[dict]) -> tuple[list, list]:
-    """Split unmarked jars into (fixable, unfixable) by whether an index entry exists.
-
-    A jar with no ``.pw.toml`` cannot be fixed by writing a review entry; the index has nothing to key against.
-    """
+    """Split unmarked jars into (fixable, unfixable) by whether an index entry exists."""
     indexed_files = {str(e.get("file", "")) for e in entries if e.get("file")}
     fixable = [u for u in unmarked if u.filename in indexed_files]
     unfixable = [u for u in unmarked if u.filename not in indexed_files]
@@ -424,8 +561,8 @@ def _prompt_for_unmarked(config: DeploymentConfig, logger: Any) -> None:
     if not sys.stdin.isatty():
         logger.warning(
             f"{len(fixable)} unmarked jar(s) need review but stdin is not a TTY; "
-            f"skipping the interactive prompt. Pass --non-interactive to acknowledge, "
-            f"or run in a terminal."
+            f"skipping the interactive prompt. Pass --non-interactive to "
+            f"acknowledge, or run in a terminal."
         )
         return
 
@@ -520,7 +657,10 @@ def _run_debug_deps(config: DeploymentConfig, logger: Any) -> None:
 
 def _run_diagnostic_notify(config: DeploymentConfig, logger: Any) -> None:
     """Attempt the diagnostic Discord message (Section 5.2)."""
-    ctx = notifications.DiagnosticContext(tool_version=tool_version(), timestamp=notifications.render_timestamp_now())
+    ctx = notifications.DiagnosticContext(
+        tool_version=tool_version(),
+        timestamp=notifications.render_timestamp_now(),
+    )
     all_roles = config.discord.player_roles + config.discord.operator_roles
     notifications.notify_diagnostic(config.discord.diagnostic_template, ctx, config.webhook_url, all_roles, logger=logger)
 
@@ -608,7 +748,12 @@ def _build_rp_section(plan: PreflightPlan, rp_result: ResourcePackScopeResult | 
     filename = None
     if rp_result and rp_result.publish_results:
         filename = rp_result.publish_results[0].filename
-    return notifications.build_resource_pack_section(configured=True, published_filename=filename, members=list(plan.partition), effective_action=None)
+    return notifications.build_resource_pack_section(
+        configured=True,
+        published_filename=filename,
+        members=list(plan.partition),
+        effective_action=None,
+    )
 
 
 def _send_live(
@@ -686,7 +831,12 @@ class _NoticeOutcome:
         return bool(self.delivered)
 
 
-def _build_recovery_ctx(config: DeploymentConfig, rcon_set: _RconSet, cancel_message: str, clock: Clock | None = None) -> RecoveryContext:
+def _build_recovery_ctx(
+    config: DeploymentConfig,
+    rcon_set: _RconSet,
+    cancel_message: str,
+    clock: Clock | None = None,
+) -> RecoveryContext:
     """Assemble a RecoveryContext around the given RCON set."""
     container_of = {name: inst.container for name, inst in config.instances.items() if inst.container}
 
@@ -709,7 +859,12 @@ def _build_recovery_ctx(config: DeploymentConfig, rcon_set: _RconSet, cancel_mes
     )
 
 
-def _dispatch_restart_notices(config: DeploymentConfig, warned_and_running: list[str], rcon_set: _RconSet, logger: Any) -> _NoticeOutcome:
+def _dispatch_restart_notices(
+    config: DeploymentConfig,
+    warned_and_running: list[str],
+    rcon_set: _RconSet,
+    logger: Any,
+) -> _NoticeOutcome:
     """Dispatch the in-game restart notice to warned-and-running members (Section 4.14 step 4)."""
     template = config.docker.restart_notice_template
     wait_seconds = config.docker.restart_wait_seconds
@@ -821,7 +976,12 @@ def _print_server_write_failure_recovery(config: DeploymentConfig, to_stop: list
     print("       docker start " + " ".join(containers))
 
 
-def _print_recovery_block(config: DeploymentConfig, recovery: RecoveryResult, container_states: dict[str, Any], reason: str) -> None:
+def _print_recovery_block(
+    config: DeploymentConfig,
+    recovery: RecoveryResult,
+    container_states: dict[str, Any],
+    reason: str,
+) -> None:
     """Print the Section 8.8 recovery block after a failed pre-hook stop."""
     start_failed = list(getattr(recovery, "start_failed", []) or [])
     unreachable = list(getattr(recovery, "unreachable", []) or [])
@@ -859,11 +1019,14 @@ def _run_writes(
     scopes: _Scopes,
     protect_patterns: list[str],
     logger: Any,
-) -> tuple[bool, ServerScopeResult | None, ClientScopeResult | None, ResourcePackScopeResult | None, str | None]:
-    """Perform scopes in Section 4.2's order, halting on first failure.
-
-    Each scope receives no logger; it uses its own module logger so events are tagged with the module that produced them.
-    """
+) -> tuple[
+    bool,
+    ServerScopeResult | None,
+    ClientScopeResult | None,
+    ResourcePackScopeResult | None,
+    str | None,
+]:
+    """Perform scopes in Section 4.2's order, halting on first failure."""
     server_result: ServerScopeResult | None = None
     client_result: ClientScopeResult | None = None
     rp_result: ResourcePackScopeResult | None = None
@@ -889,16 +1052,8 @@ def _run_writes(
 
 @dataclass
 class _RuntimeState:
-    """Mutable state threaded through the Section 4.1 runtime phases.
+    """Mutable state threaded through the Section 4.1 runtime phases."""
 
-    Populated by :func:`_make_runtime_state` for non-dry-run invocations only, because constructing the RCON set performs Docker port inspection
-    (``select_rcon_transport`` -> ``runtime.published_ports``) and Section 2.6 forbids Docker operations during dry-run.
-
-    The phase helpers read inputs from the top half and write their outputs to the bottom half. ``pre``, ``to_stop``, ``reloaded``,
-    ``reload_failed``, and the three scope results are only meaningful once the corresponding phase has run.
-    """
-
-    # Inputs
     config: DeploymentConfig
     plan: PreflightPlan
     scopes: _Scopes
@@ -906,11 +1061,9 @@ class _RuntimeState:
     notify: bool
     protect_patterns: list[str]
     logger: Any
-    # Derived before the first phase
     container_of: dict[str, str]
     rcon_set: _RconSet
     recovery_ctx: RecoveryContext
-    # Phase outputs
     warned_and_running: list[str] = field(default_factory=list)
     to_stop: list[str] = field(default_factory=list)
     pre: PreHookResult | None = None
@@ -948,7 +1101,13 @@ def _make_runtime_state(
     )
 
 
-def _run_dry_run_phase(config: DeploymentConfig, plan: PreflightPlan, scopes: _Scopes, notify: bool, logger: Any) -> int:
+def _run_dry_run_phase(
+    config: DeploymentConfig,
+    plan: PreflightPlan,
+    scopes: _Scopes,
+    notify: bool,
+    logger: Any,
+) -> int:
     """Section 2.6: report the plan and return without any write or lifecycle op."""
     logger.info("=" * 72)
     logger.info("DRY RUN - plan")
@@ -973,10 +1132,7 @@ def _run_dry_run_phase(config: DeploymentConfig, plan: PreflightPlan, scopes: _S
 
 
 def _run_notice_phase(state: _RuntimeState) -> int | None:
-    """Section 4.14 steps 3-5: compute warned_and_running, dispatch notices, wait.
-
-    Returns 1 when a required notice failed (aborts before any writes), or None to continue.
-    """
+    """Section 4.14 steps 3-5: compute warned_and_running, dispatch notices, wait."""
     if state.plan.restart_set:
         state.warned_and_running = compute_warned_and_running(
             runtime=state.runtime,
@@ -1002,10 +1158,7 @@ def _run_notice_phase(state: _RuntimeState) -> int | None:
 
 
 def _run_stop_phase(state: _RuntimeState) -> int | None:
-    """Section 4.14 step 6: execute the pre-hook stop, or abort on failure.
-
-    Returns 1 on stop failure (recovery already attempted by ``execute_pre_hook``), or None to continue.
-    """
+    """Section 4.14 step 6: execute the pre-hook stop, or abort on failure."""
     if not state.plan.restart_set:
         return None
     stop_timeouts: dict[str, int] = {}
@@ -1025,16 +1178,18 @@ def _run_stop_phase(state: _RuntimeState) -> int | None:
         state.logger.error(f"stop phase failed for: {', '.join(state.pre.failed)}")
         print("pre_hook: docker stop failed for: " + ", ".join(state.pre.failed))
         if state.pre.recovery is not None and state.pre.recovery.any_failure:
-            _print_recovery_block(state.config, state.pre.recovery, state.plan.container_states, "stop phase failure")
+            _print_recovery_block(
+                state.config,
+                state.pre.recovery,
+                state.plan.container_states,
+                "stop phase failure",
+            )
         return 1
     return None
 
 
 def _run_write_phase(state: _RuntimeState) -> int | None:
-    """Section 4.2: run the scopes; handle write failure per Section 4.7.
-
-    Returns 1 on failure, or None to continue.
-    """
+    """Section 4.2: run the scopes; handle write failure per Section 4.7."""
     write_ok, server_result, client_result, rp_result, write_msg = _run_writes(state.config, state.plan, state.scopes, state.protect_patterns, state.logger)
     state.server_result = server_result
     state.client_result = client_result
@@ -1071,10 +1226,7 @@ def _run_write_phase(state: _RuntimeState) -> int | None:
 
 
 def _run_reload_phase(state: _RuntimeState) -> int | None:
-    """Section 4.6.8: RCON reload running reload_set members.
-
-    Returns 1 on reload failure (recovery + notify already handled), or None to continue.
-    """
+    """Section 4.6.8: RCON reload running reload_set members."""
     if not state.plan.reload_set:
         return None
     for member in sorted(state.plan.reload_set):
@@ -1113,7 +1265,15 @@ def _run_reload_phase(state: _RuntimeState) -> int | None:
 def _send_live_if_notify(state: _RuntimeState) -> None:
     """Post the live notification when --notify is active."""
     if state.notify:
-        _send_live(state.config, state.plan, state.scopes, state.client_result, state.rp_result, False, state.logger)
+        _send_live(
+            state.config,
+            state.plan,
+            state.scopes,
+            state.client_result,
+            state.rp_result,
+            False,
+            state.logger,
+        )
 
 
 def _handle_post_failure(state: _RuntimeState, post: PostHookResult) -> int:
@@ -1143,10 +1303,7 @@ def _handle_post_failure(state: _RuntimeState, post: PostHookResult) -> int:
 
 
 def _run_post_phase(state: _RuntimeState) -> int:
-    """Section 4.13: start every container this deployment stopped; wait for health.
-
-    Returns 0 on success (sending the online notification if warranted), or 1 on any start / health failure.
-    """
+    """Section 4.13: start every container this deployment stopped; wait for health."""
     if not state.plan.restart_set:
         return 0
     post = execute_post_hook(
@@ -1175,11 +1332,7 @@ def _run_deployment(
     protect_patterns: list[str],
     logger: Any,
 ) -> int:
-    """Execute the Section 4.1 runtime sequence.
-
-    Returns the exit code.     Walks the phases in order; each phase returns an exit code to abort     or None to continue. Dry-run short-circuits
-    before any state that     would touch Docker beyond the read-only preflight inspections.
-    """
+    """Execute the Section 4.1 runtime sequence."""
     if not scopes.scope_set.any():
         return 0
     if dry_run:
@@ -1208,13 +1361,21 @@ def _run_deployment(
 # ===========================================================================
 
 
-def _load_config_or_exit(config_dir: Path, remaining: list[str], logger: Any) -> DeploymentConfig | None:
-    """Load config, logging and swallowing any exception.
-
-    Returns None on failure.
-    """
+def _load_config_or_exit(
+    config_dir: Path,
+    remaining: list[str],
+    logger: Any,
+    slip: SlipContext | None = None,
+    requested_instances: set[str] | None = None,
+) -> DeploymentConfig | None:
+    """Load config, logging and swallowing any exception; return None on failure."""
     try:
-        return _load_config(config_dir, remaining)
+        return _load_config(
+            config_dir,
+            remaining,
+            slip=slip,
+            requested_instances=requested_instances,
+        )
     except Exception as exc:
         logger.error(f"config error: {exc}")
         return None
@@ -1229,10 +1390,7 @@ def _run_debug_deps_safe(config: DeploymentConfig, logger: Any) -> None:
 
 
 def _prompt_if_needed(config: DeploymentConfig, scopes: _Scopes, args: _Args, logger: Any) -> int | None:
-    """Section 6.2: prompt for unmarked jars on live server/client runs.
-
-    Skipped under ``--dry-run`` (no writes per Section 2.6) and under ``--non-interactive``. Returns 3 on prompt failure, else None.
-    """
+    """Section 6.2: prompt for unmarked jars on live server/client runs."""
     if not (scopes.scope_set.server or scopes.scope_set.client):
         return None
     if args.non_interactive or args.dry_run:
@@ -1294,9 +1452,26 @@ def _emit_plan_warnings(plan: PreflightPlan, args: _Args, logger: Any) -> None:
 
 
 def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
-    """Config load -> prompt -> preflight -> runtime, in spec order (Section 2.4)."""
+    """Config load -> prompt -> preflight -> runtime, in spec order (Section 2.4).
+
+    Slip context is built before config load (spec Section 14.1). A slip failure
+    exits 3, matching config/preflight failures.
+    """
     config_dir = _resolve_config_dir(args.config_dir)
-    config = _load_config_or_exit(config_dir, remaining, logger)
+
+    try:
+        slip_ctx = _build_slip_context(config_dir, args, logger)
+    except ConfigError as exc:
+        logger.error(f"slip error: {exc}")
+        return 3
+
+    config = _load_config_or_exit(
+        config_dir,
+        remaining,
+        logger,
+        slip=slip_ctx,
+        requested_instances=args.instance,
+    )
     if config is None:
         return 3
 
@@ -1336,10 +1511,7 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
 
 
 def _parse_cli(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[_Args | None, list[str]]:
-    """Parse argv into (_Args, remaining).
-
-    Returns ``(None, remaining)`` when ``--non-interactive`` alone was passed, which is the Section 2.5 "print help, exit 0" case.
-    """
+    """Parse argv into (_Args, remaining)."""
     ns, remaining = parser.parse_known_args(argv)
     args = _Args(
         server=ns.server,
@@ -1355,6 +1527,9 @@ def _parse_cli(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[_Args 
         audit_mods=ns.audit_mods,
         non_interactive=ns.non_interactive,
         config_dir=ns.config_dir,
+        release=ns.release,
+        release_pointer=ns.release_pointer,
+        integration=ns.integration,
     )
     non_interactive_alone = args.non_interactive and not (args.server or args.client or args.resource_pack or args.full or args.audit_mods or args.debug_deps)
     if non_interactive_alone:
@@ -1363,10 +1538,7 @@ def _parse_cli(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[_Args 
 
 
 def _validate_cli(args: _Args, parser: argparse.ArgumentParser, remaining: list[str]) -> int | None:
-    """Run the Section 2.5 exit-2 checks.
-
-    Returns 2 on failure, None on success.
-    """
+    """Run the Section 2.5 exit-2 checks; return 2 on failure, None on success."""
     try:
         _validate_args(args, parser)
         _validate_passthrough_flags(remaining)
@@ -1391,10 +1563,7 @@ def _dispatch_audit_mods(args: _Args, config_dir: Path, remaining: list[str], lo
 
 
 def _dispatch_debug_deps_only(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
-    """Section 2.5: --debug-deps without a scope.
-
-    Optional --notify fires diagnostic.
-    """
+    """Section 2.5: --debug-deps without a scope."""
     config = _load_config_or_exit(config_dir, remaining, logger)
     if config is None:
         return 3
@@ -1436,10 +1605,7 @@ def _dispatch_no_scope(
 
 
 def _run(argv: list[str]) -> int:
-    """Top-level entrypoint.
-
-    Returns the process exit code.
-    """
+    """Top-level entrypoint; returns the process exit code."""
     parser = _build_parser()
     if not argv:
         parser.print_help()
@@ -1473,10 +1639,7 @@ def _run(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Process entrypoint.
-
-    Maps exceptions to Section 2.4's exit codes.
-    """
+    """Process entrypoint; maps exceptions to Section 2.4's exit codes."""
     if argv is None:
         argv = sys.argv[1:]
     try:

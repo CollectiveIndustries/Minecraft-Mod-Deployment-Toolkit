@@ -10,6 +10,16 @@ Responsibilities:
     step 4, Section 4.10)
   * update ``server.properties`` atomically (Section 4.9 step 5, Section 7.4, Section 4.10)
 
+Slip mode (spec v1.3 Section 5.8, Section 14.4)
+---------------------------------
+
+When ``plan.slip_context`` is not None, per-member RP config comes from
+``slip.resource_packs`` filtered by ``instance == member``; source ZIPs
+come from ``ctx.rp_sources``. SHA-1 is computed from the source ZIP
+(slip stores SHA-256 for integrity). The publish destination and URL
+remain the same (driven by ``[sync_mapping].resourcepacks.resource_pack``
+from ``deploy_pack.toml``, which is still loaded in slip mode).
+
 Non-responsibilities:
   * Deciding the per-member effective action. Section 4.6.6's merge is done by
     preflight; this scope reads ``MemberPlan.resource_pack_target``.
@@ -17,15 +27,6 @@ Non-responsibilities:
     deferral itself is preflight's classification of the member into
     ``none_set``.
   * Notifications. notifications.py.
-
-Zero-pack path (Section 7.7)
----------------------
-
-A partition member with no ``[resource_pack.X]`` section has nothing to
-publish and no properties to touch. The scope reports it in
-``no_pack_members`` and moves on. If the entire partition has zero
-packs, the scope is a no-op and returns success - no compose read, no
-source validation, no properties write.
 
 Structure
 ---------
@@ -39,32 +40,13 @@ The scope walks Section 4.9's five steps in order. Each step is one function:
     Section 5  Phase 4: publish each ZIP whose destination differs
     Section 6  Phase 5: update each member's server.properties
     Section 7  Summary + public entry point
-
-:func:`deploy_resource_pack_scope` is the only public symbol that
-performs work; every helper is reachable through it and is exercised
-by the existing test suite at that boundary. Phase helpers return
-plain tuples on failure (``error_message, failure_member``) so the
-orchestrator's control flow stays linear and auditable.
-
-Logging
--------
-
-The scope logs at INFO on entry, on each publish, and on each
-server.properties update. Per-member validation, SHA-1 computation,
-destination resolution, and skip decisions log at DEBUG. Warnings the
-operator needs to act on (missing server.properties path, RP
-prompt-only deferral) log at WARN. Failures log at ERROR with the
-failing stage (``validate``, ``publish``, ``properties``) and the
-member name where applicable. The module logger is
-``minecraft.deploy_pack.scope_resource_pack``; callers may inject an
-override via ``logger=`` for a single call.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config_model import DeploymentConfig, InstanceConfig, ResourcePackConfig
 from .errors import ConfigError
@@ -78,6 +60,9 @@ from .files import (
 from .logging_setup import get_logger
 from .preflight import PreflightPlan
 from .properties import PropertyEdit, apply_edits
+
+if TYPE_CHECKING:
+    from minecraft.modpack_upgrade.slip_context import SlipContext
 
 _log = get_logger(__name__)
 
@@ -151,11 +136,7 @@ class ResourcePackScopeResult:
 
 
 def _client_source_dir(config: DeploymentConfig, logger: Any) -> Path | None:
-    """Return ``sync_root / resourcepacks.client`` or None if unset.
-
-    Section 7.6: the source path resolves from ``[sync_mapping].resourcepacks.client`` under sync_root. A missing or non-string value means RP publication
-    cannot happen; preflight (Section 7.7 / Section 7.8) validates this when a pack is configured for the partition.
-    """
+    """Return ``sync_root / resourcepacks.client`` or None if unset."""
     rp_mapping = config.sync_mapping.get("resourcepacks")
     if not isinstance(rp_mapping, dict):
         logger.debug("_client_source_dir: [sync_mapping].resourcepacks is not a table")
@@ -192,10 +173,7 @@ def _instance_server_properties(inst: InstanceConfig) -> Path | None:
 
 
 def _needs_publish(destination: Path, source_sha1: str, logger: Any = None) -> bool:
-    """Section 4.4: publish when destination missing OR SHA-1 differs.
-
-    SHA-1 comparison is case-insensitive. This guard is for a destination that was written by something else.
-    """
+    """Section 4.4: publish when destination missing OR SHA-1 differs."""
     if logger is None:
         logger = _log
     if not destination.is_file():
@@ -221,10 +199,15 @@ def _needs_publish(destination: Path, source_sha1: str, logger: Any = None) -> b
 
 @dataclass
 class _PendingPublish:
-    """One member's validated publish plan (Section 4.9 phases 1-3 output)."""
+    """One member's validated publish plan.
+
+    ``rp`` is duck-typed: both ``ResourcePackConfig`` (legacy) and
+    ``slip.ResourcePackEntry`` (slip mode) expose ``filename``,
+    ``required``, and ``prompt``.
+    """
 
     member: str
-    rp: ResourcePackConfig
+    rp: Any
     source: Path
     sha1: str
     destination: Path
@@ -253,20 +236,44 @@ def _partition_by_pack(
     return (members_with_pack, no_pack)
 
 
+def _partition_by_pack_slip(
+    ctx: SlipContext,
+    partition: list[str],
+) -> tuple[list[tuple[str, Any]], list[str]]:
+    """Slip-mode: split by slip-declared RPs; first entry wins on duplicates."""
+    by_member: dict[str, Any] = {}
+    for rp in ctx.slip.resource_packs:
+        if rp.instance not in by_member:
+            by_member[rp.instance] = rp
+    members_with_pack: list[tuple[str, Any]] = []
+    no_pack: list[str] = []
+    for member in partition:
+        if member in by_member:
+            members_with_pack.append((member, by_member[member]))
+        else:
+            no_pack.append(member)
+    return (members_with_pack, no_pack)
+
+
 def _resolve_mapping_paths(
     config: DeploymentConfig,
     logger: Any,
 ) -> tuple[Path | None, str | None, str | None]:
-    """Resolve the source dir and mapping value for RP publication.
-
-    Returns ``(source_dir, dest_value, error)``. When both are populated ``error`` is None; when ``error`` is set, both paths are None.
-    """
+    """Resolve the source dir and mapping value for RP publication."""
     source_dir = _client_source_dir(config, logger)
     if source_dir is None:
-        return (None, None, "[sync_mapping].resourcepacks.client is required when at least one pack is configured")
+        return (
+            None,
+            None,
+            "[sync_mapping].resourcepacks.client is required when at least one pack is configured",
+        )
     dest_value = _resource_pack_mapping(config, logger)
     if dest_value is None:
-        return (None, None, "[sync_mapping].resourcepacks.resource_pack is required when at least one pack is configured")
+        return (
+            None,
+            None,
+            "[sync_mapping].resourcepacks.resource_pack is required when at least one pack is configured",
+        )
     return (source_dir, dest_value, None)
 
 
@@ -279,11 +286,7 @@ def _plan_one_publish(
     download_base_url: str,
     logger: Any,
 ) -> tuple[_PendingPublish | None, str | None]:
-    """Validate one member's pack and build its pending plan.
-
-    Returns ``(pending, None)`` on success or ``(None, error_message)`` on the first validation failure. Check order mirrors Section 4.9 phase 1: filename
-    -> source exists -> sha1 -> dest dir -> url.
-    """
+    """Validate one member's pack and build its pending plan."""
     logger.debug(f"[{member}] validating resource pack {rp.filename!r}")
 
     try:
@@ -332,16 +335,70 @@ def _plan_one_publish(
     return (pending, None)
 
 
+def _plan_one_publish_slip(
+    member: str,
+    rp: Any,
+    ctx: SlipContext,
+    dest_value: str,
+    www_dir: Path,
+    download_base_url: str,
+    logger: Any,
+) -> tuple[_PendingPublish | None, str | None]:
+    """Slip-mode equivalent of :func:`_plan_one_publish`."""
+    logger.debug(f"[{member}] validating slip resource pack {rp.filename!r}")
+
+    try:
+        validate_resource_pack_filename(rp.filename)
+    except ConfigError as exc:
+        return (None, str(exc))
+
+    source = ctx.rp_sources.get(rp.filename)
+    if source is None or not source.is_file():
+        return (None, f"slip RP source not found for {rp.filename!r}")
+
+    try:
+        sha1 = compute_sha1(source)
+        logger.debug(f"[{member}] {rp.filename} sha1={sha1}")
+    except OSError as exc:
+        return (None, f"could not hash {source}: {exc}")
+
+    try:
+        dest_dir = resolve_resource_pack_dest(dest_value, www_dir, logger)
+    except ConfigError as exc:
+        return (None, str(exc))
+
+    destination = dest_dir / rp.filename
+
+    try:
+        url = build_resource_pack_url(download_base_url, dest_value, rp.filename, logger)
+    except ConfigError as exc:
+        return (None, str(exc))
+
+    target = {
+        "require-resource-pack": "true" if rp.required else "false",
+        "resource-pack": url,
+        "resource-pack-prompt": rp.prompt,
+        "resource-pack-sha1": sha1,
+    }
+    pending = _PendingPublish(
+        member=member,
+        rp=rp,
+        source=source,
+        sha1=sha1,
+        destination=destination,
+        url=url,
+        target=target,
+    )
+    logger.debug(f"[{member}] planned slip publish {source} -> {destination}")
+    return (pending, None)
+
+
 def _validate_and_plan_publishes(
     config: DeploymentConfig,
     partition: list[str],
     logger: Any,
 ) -> tuple[list[_PendingPublish], list[str], str | None, str | None]:
-    """Phases 1 + 2 + 3 of Section 4.9.
-
-    Returns ``(pending, no_pack_members, error_message, error_member)``. On error, ``pending`` is empty (the caller discards partial plans when it
-    takes the failure path) and ``error_message`` is set.
-    """
+    """Phases 1 + 2 + 3 of Section 4.9."""
     members_with_pack, no_pack = _partition_by_pack(config, partition)
     logger.debug(f"_validate_and_plan_publishes: partition={partition} with_pack={[m for m, _ in members_with_pack]} no_pack={no_pack}")
 
@@ -353,7 +410,12 @@ def _validate_and_plan_publishes(
         return ([], no_pack, err, None)
 
     if config.www_dir is None:
-        return ([], no_pack, "www_dir is not set; resource-pack scope requires it", None)
+        return (
+            [],
+            no_pack,
+            "www_dir is not set; resource-pack scope requires it",
+            None,
+        )
 
     assert source_dir is not None and dest_value is not None
     pending: list[_PendingPublish] = []
@@ -362,6 +424,56 @@ def _validate_and_plan_publishes(
             member,
             rp,
             source_dir,
+            dest_value,
+            config.www_dir,
+            config.download_base_url,
+            logger,
+        )
+        if err is not None:
+            return ([], no_pack, err, member)
+        assert p is not None
+        pending.append(p)
+
+    return (pending, no_pack, None, None)
+
+
+def _validate_and_plan_publishes_slip(
+    config: DeploymentConfig,
+    plan: PreflightPlan,
+    logger: Any,
+) -> tuple[list[_PendingPublish], list[str], str | None, str | None]:
+    """Slip-mode Phases 1 + 2 + 3 of Section 4.9."""
+    ctx = plan.slip_context
+    assert ctx is not None
+    members_with_pack, no_pack = _partition_by_pack_slip(ctx, plan.partition)
+    logger.debug(f"_validate_and_plan_publishes_slip: partition={list(plan.partition)} with_pack={[m for m, _ in members_with_pack]} no_pack={no_pack}")
+
+    if not members_with_pack:
+        return ([], no_pack, None, None)
+
+    dest_value = _resource_pack_mapping(config, logger)
+    if dest_value is None:
+        return (
+            [],
+            no_pack,
+            "[sync_mapping].resourcepacks.resource_pack is required when at least one pack is configured",
+            None,
+        )
+
+    if config.www_dir is None:
+        return (
+            [],
+            no_pack,
+            "www_dir is not set; resource-pack scope requires it",
+            None,
+        )
+
+    pending: list[_PendingPublish] = []
+    for member, rp in members_with_pack:
+        p, err = _plan_one_publish_slip(
+            member,
+            rp,
+            ctx,
             dest_value,
             config.www_dir,
             config.download_base_url,
@@ -384,10 +496,7 @@ def _publish_one(
     p: _PendingPublish,
     logger: Any,
 ) -> tuple[PublishResult | None, tuple[str, str] | None]:
-    """Attempt a single publish (Section 4.9 phase 4).
-
-    Returns ``(PublishResult, None)`` on success or ``(None, (error_message, failure_member))`` on failure.
-    """
+    """Attempt a single publish (Section 4.9 phase 4)."""
     try:
         needed = _needs_publish(p.destination, p.sha1, logger)
     except Exception as exc:
@@ -411,7 +520,10 @@ def _publish_one(
         atomic_copy(p.source, p.destination, logger=logger)
     except Exception as exc:
         logger.error(f"resource-pack scope: publish failed for {p.member}: {exc}")
-        return (None, (f"could not publish {p.source} -> {p.destination}: {exc}", p.member))
+        return (
+            None,
+            (f"could not publish {p.source} -> {p.destination}: {exc}", p.member),
+        )
 
     result = PublishResult(
         member=p.member,
@@ -429,11 +541,7 @@ def _run_publish_phase(
     pending: list[_PendingPublish],
     logger: Any,
 ) -> tuple[list[PublishResult], str | None, str | None]:
-    """Section 4.9 phase 4: publish every pending ZIP.
-
-    Returns ``(publish_results, error_message, failure_member)``. Halts on the first failure; ``publish_results`` holds what was completed before
-    the abort.
-    """
+    """Section 4.9 phase 4: publish every pending ZIP."""
     results: list[PublishResult] = []
     for p in pending:
         pr, err = _publish_one(p, logger)
@@ -455,15 +563,7 @@ def _write_properties_one(
     config: DeploymentConfig,
     logger: Any,
 ) -> tuple[PropertiesWriteResult | None, str | None]:
-    """Update one member's server.properties (Section 4.9 phase 5).
-
-    Returns:
-      * ``(result, None)`` on a write attempt (with ``wrote`` reflecting
-        whether the file changed).
-      * ``(None, None)`` when the member has no instance entry or no
-        server.properties path - treated as a skip.
-      * ``(None, error_message)`` on a write failure.
-    """
+    """Update one member's server.properties (Section 4.9 phase 5)."""
     inst = config.instances.get(p.member)
     if inst is None:
         logger.warning(f"resource-pack scope: partition member {p.member!r} not in config.instances; skipping properties")
@@ -501,11 +601,7 @@ def _run_properties_phase(
     config: DeploymentConfig,
     logger: Any,
 ) -> tuple[list[PropertiesWriteResult], str | None, str | None]:
-    """Section 4.9 phase 5: update every pending member's server.properties.
-
-    Returns ``(write_results, error_message, failure_member)``. Halts on the first failure; skipped members (no instance or no path) are logged by
-    :func:`_write_properties_one` and not appended.
-    """
+    """Section 4.9 phase 5: update every pending member's server.properties."""
     results: list[PropertiesWriteResult] = []
     for p in pending:
         wr, err = _write_properties_one(p, config, logger)
@@ -533,6 +629,22 @@ def _log_rp_summary(result: ResourcePackScopeResult, logger: Any) -> None:
     )
 
 
+def _fail(
+    result: ResourcePackScopeResult,
+    stage: str,
+    message: str,
+    member: str | None,
+    logger: Any,
+) -> ResourcePackScopeResult:
+    """Populate ``result`` with a failure and return it."""
+    result.success = False
+    result.failure_stage = stage
+    result.failure_message = message
+    result.failure_member = member
+    logger.error(f"resource-pack scope: {stage} failed for {member or '(global)'}: {message}")
+    return result
+
+
 def deploy_resource_pack_scope(
     config: DeploymentConfig,
     plan: PreflightPlan,
@@ -541,7 +653,8 @@ def deploy_resource_pack_scope(
 ) -> ResourcePackScopeResult:
     """Execute the resource-pack scope write phase (Section 4.9).
 
-    Order (mandatory per Section 4.9):
+    Dispatches to slip mode when ``plan.slip_context`` is set; legacy
+    otherwise. Order (mandatory per Section 4.9):
 
       1. Validate all source ZIPs, compute all SHA-1s, resolve all
          destinations and URLs.
@@ -557,23 +670,19 @@ def deploy_resource_pack_scope(
     if logger is None:
         logger = _log
 
-    logger.info(f"resource-pack scope: partition={list(plan.partition)}")
+    mode = "slip" if plan.slip_context is not None else "legacy"
+    logger.info(f"resource-pack scope: partition={list(plan.partition)} mode={mode}")
 
     result = ResourcePackScopeResult()
 
-    # ------------------------------------------------------------------
-    # Phases 1-3: validate + plan
-    # ------------------------------------------------------------------
-    pending, no_pack, err, err_member = _validate_and_plan_publishes(config, plan.partition, logger)
+    if plan.slip_context is not None:
+        pending, no_pack, err, err_member = _validate_and_plan_publishes_slip(config, plan, logger)
+    else:
+        pending, no_pack, err, err_member = _validate_and_plan_publishes(config, plan.partition, logger)
     result.no_pack_members = no_pack
 
     if err is not None:
-        result.success = False
-        result.failure_stage = "validate"
-        result.failure_message = err
-        result.failure_member = err_member
-        logger.error(f"resource-pack scope: validate failed for {err_member or '(global)'}: {err}")
-        return result
+        return _fail(result, "validate", err, err_member, logger)
 
     if not pending:
         logger.info("resource-pack scope: no packs configured for partition; no-op")
@@ -581,33 +690,16 @@ def deploy_resource_pack_scope(
 
     logger.debug(f"resource-pack scope: {len(pending)} pending publish(es)")
 
-    # ------------------------------------------------------------------
-    # Phase 4: publish
-    # ------------------------------------------------------------------
     publish_results, err, err_member = _run_publish_phase(pending, logger)
     result.publish_results = publish_results
     if err is not None:
-        result.success = False
-        result.failure_stage = "publish"
-        result.failure_message = err
-        result.failure_member = err_member
-        return result
+        return _fail(result, "publish", err, err_member, logger)
 
-    # ------------------------------------------------------------------
-    # Phase 5: server.properties
-    # ------------------------------------------------------------------
     properties_results, err, err_member = _run_properties_phase(pending, config, logger)
     result.properties_results = properties_results
     if err is not None:
-        result.success = False
-        result.failure_stage = "properties"
-        result.failure_message = err
-        result.failure_member = err_member
-        return result
+        return _fail(result, "properties", err, err_member, logger)
 
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
     _log_rp_summary(result, logger)
     if result.no_pack_members:
         logger.debug(f"resource-pack scope: members with no pack: {result.no_pack_members}")

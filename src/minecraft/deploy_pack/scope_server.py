@@ -32,6 +32,22 @@ applied, unmarked entries (Section 6.3) are dropped unless an override marks
 them, the server side filter runs, and the dependency closure expands
 the seed.
 
+Slip mode (spec v1.3 Section 5.8, Section 14.4)
+---------------------------------
+
+When ``plan.slip_context`` is not ``None``, the module dispatches to
+``_deploy_server_scope_slip``. In slip mode:
+
+  * Mods come from ``slip.jar_sources``, filtered by the slip-declared
+    per-jar side (``server`` or ``both``). The Prism index and
+    side-overrides file are NOT consulted (Section 14.4).
+  * Config and KubeJS come from ``slip.context.{config,kubejs}_source``,
+    deployed into each instance's ``config/`` and ``kubejs/`` using the
+    slip's per-instance ``config_mode``, ``kubejs_mode``,
+    ``config_deletions``, and ``protect_patterns``.
+  * ``config_deletions`` is applied as an explicit remove pass *before*
+    ``copy_tree`` and honors ``protect_patterns``.
+
 Unmarked handling (Section 6.3)
 ------------------------
 
@@ -61,16 +77,27 @@ via ``logger=`` for a single call.
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import deps
 from .config_model import DeploymentConfig, InstanceConfig
-from .files import CopyResult, copy_tree, deploy_flat_files, is_shared_dest, resolve_mapping_for_side
+from .files import (
+    CopyResult,
+    copy_tree,
+    deploy_flat_files,
+    is_protected_path,
+    is_shared_dest,
+    resolve_mapping_for_side,
+)
 from .logging_setup import get_logger
 from .overrides import apply_side_overrides, load_side_overrides
 from .preflight import PreflightPlan
+
+if TYPE_CHECKING:
+    from minecraft.modpack_upgrade.slip_context import SlipContext
 
 _log = get_logger(__name__)
 
@@ -227,6 +254,25 @@ def _resolve_mods_source(
     return out
 
 
+def _resolve_mods_source_from_context(ctx: SlipContext, logger: Any) -> dict[str, Path]:
+    """Return ``{filename: path}`` for slip jars with side ∈ {server, both}.
+
+    Spec v1.3 Section 14.4: in slip mode the slip-derived source set is the
+    authority. The Prism index and side-overrides file are not consulted.
+    """
+    out: dict[str, Path] = {}
+    for jar in ctx.slip.jars:
+        if jar.side not in ("server", "both"):
+            continue
+        path = ctx.jar_sources.get(jar.filename)
+        if path is None:
+            logger.warning(f"_resolve_mods_source_from_context: slip jar {jar.filename!r} not in jar_sources")
+            continue
+        out[jar.filename] = path
+    logger.info(f"_resolve_mods_source_from_context: {len(out)} server-side jar(s) from {len(ctx.slip.jars)} slip jar(s)")
+    return out
+
+
 def _mode_for_key(key: str, inst: InstanceConfig) -> str:
     """Return the Section 7.2 clean mode for a sync-mapping key on this instance.
 
@@ -291,56 +337,144 @@ def _deploy_member(
             member_result.other_results[key] = result
 
 
-def deploy_server_scope(
+def _apply_config_deletions(
+    root: Path,
+    deletions: tuple[str, ...],
+    protect: tuple[str, ...],
+    logger: Any,
+) -> None:
+    """Explicitly remove ``deletions`` under ``root``, honoring ``protect``.
+
+    Used in slip mode's ``config_mode = "merge"`` path: the slip declares
+    an explicit deletion list that must be applied even though merge mode
+    otherwise retains target-only files. A protected entry is skipped
+    with a warning (spec v1.3 Section 5.3 rule 11).
+    """
+    if not deletions:
+        return
+    if not root.is_dir():
+        logger.debug(f"_apply_config_deletions: {root} is not a directory; skipping")
+        return
+    for rel in deletions:
+        target = root / rel
+        if not target.exists():
+            logger.debug(f"_apply_config_deletions: {rel} absent under {root}; skipping")
+            continue
+        if is_protected_path(rel, list(protect)):
+            logger.warning(f"_apply_config_deletions: {rel!r} is protected; skipping delete")
+            continue
+        try:
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+            else:
+                logger.warning(f"_apply_config_deletions: {rel!r} is not a file or directory; skipping")
+                continue
+            logger.info(f"_apply_config_deletions: deleted {rel}")
+        except OSError as exc:
+            logger.warning(f"_apply_config_deletions: could not delete {rel}: {exc}")
+
+
+def _deploy_member_from_context(
+    inst: InstanceConfig,
+    member_result: MemberWriteResult,
+    ctx: SlipContext,
+    logger: Any,
+) -> None:
+    """Slip-mode per-member deploy: config and kubejs from the context sources.
+
+    Source roots come from ``ctx.config_source`` and ``ctx.kubejs_source``.
+    Modes, deletions, and protections come from the slip's per-instance
+    spec (spec v1.3 Section 5.3 rule 11).
+    """
+    assert inst.instance_root is not None
+    slip_inst = ctx.slip.instances.get(inst.name)
+    if slip_inst is None:
+        logger.warning(f"scope_server: [{inst.name}] not in slip.instances; MUST NOT deploy (spec v1.3 Section 5.3 rule 10)")
+        return
+
+    config_dst = inst.instance_root / "config"
+    _apply_config_deletions(config_dst, slip_inst.config_deletions, slip_inst.protect_patterns, logger)
+    logger.debug(f"[{inst.name}] slip config: mode={slip_inst.config_mode} {ctx.config_source} -> {config_dst}")
+    config_result = copy_tree(
+        ctx.config_source,
+        config_dst,
+        mode=slip_inst.config_mode,
+        protect_patterns=list(slip_inst.protect_patterns),
+        logger=logger,
+    )
+    member_result.config_result = config_result
+    if config_result.any_change:
+        logger.info(
+            f"[{inst.name}] config: {config_result.changed_count} change(s) "
+            f"(+{len(config_result.added)} ~{len(config_result.updated)} "
+            f"-{len(config_result.removed)})"
+        )
+
+    kubejs_dst = inst.instance_root / "kubejs"
+    logger.debug(f"[{inst.name}] slip kubejs: mode={slip_inst.kubejs_mode} {ctx.kubejs_source} -> {kubejs_dst}")
+    kubejs_result = copy_tree(
+        ctx.kubejs_source,
+        kubejs_dst,
+        mode=slip_inst.kubejs_mode,
+        protect_patterns=list(slip_inst.protect_patterns),
+        logger=logger,
+    )
+    member_result.kubejs_result = kubejs_result
+    if kubejs_result.any_change:
+        logger.info(
+            f"[{inst.name}] kubejs: {kubejs_result.changed_count} change(s) "
+            f"(+{len(kubejs_result.added)} ~{len(kubejs_result.updated)} "
+            f"-{len(kubejs_result.removed)})"
+        )
+
+
+def _deploy_mods_from_source(
+    source_map: dict[str, Path],
+    plan: PreflightPlan,
+    protect_patterns: list[str],
+    result: ServerScopeResult,
+    logger: Any,
+) -> bool:
+    """Shared mods deployment body. Returns True on success, False on failure.
+
+    Both legacy and slip paths funnel through this so the failure shape is
+    identical.
+    """
+    assert plan.mods_dir is not None
+    try:
+        logger.debug(f"server scope: mods_dir={plan.mods_dir} with {len(source_map)} source(s)")
+        result.mods_dir = plan.mods_dir
+        result.mods_result = deploy_flat_files(
+            src_files=source_map,
+            dst_dir=plan.mods_dir,
+            protect_patterns=protect_patterns,
+            logger=logger,
+        )
+        logger.info(f"server scope: mods_dir deploy complete; {result.mods_result.changed_count} change(s)")
+        return True
+    except Exception as exc:
+        result.success = False
+        result.failure_phase = "mods"
+        result.failure_message = str(exc)
+        logger.error(f"server scope: mods deploy failed: {exc}")
+        return False
+
+
+def _deploy_members(
     config: DeploymentConfig,
     plan: PreflightPlan,
     protect_patterns: list[str],
-    logger: Any = None,
-) -> ServerScopeResult:
-    """Execute the server scope write phase (Section 4.2, Section 7.2).
+    result: ServerScopeResult,
+    logger: Any,
+) -> int | None:
+    """Walk the partition, deploying each member. Returns an exit-style code or None.
 
-    ``protect_patterns`` is loaded by the caller once via
-    ``files.load_protect_patterns`` - main owns that read so it can be
-    logged once and shared across scopes.
-
-    Halts on first runtime failure (Section 4.2). Returns a result describing
-    what was written and, on failure, what was and wasn't attempted.
-    Never raises on a write failure.
-
-    Read-only with respect to Docker: no container operations happen
-    here.
+    Uses the legacy ``_deploy_member`` when ``plan.slip_context`` is None,
+    otherwise ``_deploy_member_from_context``. Both share the outer
+    error-handling shape.
     """
-    if logger is None:
-        logger = _log
-    logger.info(f"server scope: partition={list(config.partition)} targeted={plan.targeted} mods_dir={plan.mods_dir}")
-
-    result = ServerScopeResult()
-
-    if plan.targeted:
-        result.mods_skipped_reason = "targeted deploy (--instance) does not touch mods_dir"
-        logger.info(f"server scope: {result.mods_skipped_reason}")
-    elif plan.mods_dir is None:
-        result.mods_skipped_reason = "mods_dir could not be determined"
-        logger.warning(f"server scope: {result.mods_skipped_reason}")
-    else:
-        try:
-            src_map = _resolve_mods_source(config, logger)
-            logger.debug(f"server scope: mods_dir={plan.mods_dir} with {len(src_map)} source(s)")
-            result.mods_dir = plan.mods_dir
-            result.mods_result = deploy_flat_files(
-                src_files=src_map,
-                dst_dir=plan.mods_dir,
-                protect_patterns=protect_patterns,
-                logger=logger,
-            )
-            logger.info(f"server scope: mods_dir deploy complete; {result.mods_result.changed_count} change(s)")
-        except Exception as exc:
-            result.success = False
-            result.failure_phase = "mods"
-            result.failure_message = str(exc)
-            logger.error(f"server scope: mods deploy failed: {exc}")
-            return result
-
     for member in config.partition:
         inst = config.instances.get(member)
         if inst is None:
@@ -353,7 +487,10 @@ def deploy_server_scope(
         logger.debug(f"server scope: deploying member {member}")
         member_result = MemberWriteResult(member=member)
         try:
-            _deploy_member(config, inst, member_result, protect_patterns, logger)
+            if plan.slip_context is not None:
+                _deploy_member_from_context(inst, member_result, plan.slip_context, logger)
+            else:
+                _deploy_member(config, inst, member_result, protect_patterns, logger)
         except Exception as exc:
             result.success = False
             result.failure_phase = "config"
@@ -361,10 +498,58 @@ def deploy_server_scope(
             result.failure_message = str(exc)
             result.member_results[member] = member_result
             logger.error(f"server scope: member {member} deploy failed: {exc}")
-            return result
+            return None
         result.member_results[member] = member_result
+    return 0
 
-    logger.info(f"server scope: complete; {result.changed_count()} change(s) across {len(result.member_results)} member(s)")
-    if result.protected_kept:
-        logger.debug(f"server scope: {len(result.protected_kept)} protected file(s) preserved")
+
+def deploy_server_scope(
+    config: DeploymentConfig,
+    plan: PreflightPlan,
+    protect_patterns: list[str],
+    logger: Any = None,
+) -> ServerScopeResult:
+    """Execute the server scope write phase (Section 4.2, Section 7.2).
+
+    ``protect_patterns`` is loaded by the caller once via
+    ``files.load_protect_patterns`` - main owns that read so it can be
+    logged once and shared across scopes. In slip mode, ``protect_patterns``
+    is ignored for config/kubejs: the slip's per-instance
+    ``protect_patterns`` take priority (spec v1.3 Section 5.3 rule 11). It is still
+    used for the shared mods directory, which no slip entry governs.
+
+    Halts on first runtime failure (Section 4.2). Returns a result describing
+    what was written and, on failure, what was and wasn't attempted.
+    Never raises on a write failure.
+
+    Read-only with respect to Docker: no container operations happen
+    here.
+    """
+    if logger is None:
+        logger = _log
+    mode = "slip" if plan.slip_context is not None else "legacy"
+    logger.info(f"server scope: partition={list(config.partition)} targeted={plan.targeted} mods_dir={plan.mods_dir} mode={mode}")
+
+    result = ServerScopeResult()
+
+    if plan.targeted:
+        result.mods_skipped_reason = "targeted deploy (--instance) does not touch mods_dir"
+        logger.info(f"server scope: {result.mods_skipped_reason}")
+    elif plan.mods_dir is None:
+        result.mods_skipped_reason = "mods_dir could not be determined"
+        logger.warning(f"server scope: {result.mods_skipped_reason}")
+    else:
+        if plan.slip_context is not None:
+            source_map = _resolve_mods_source_from_context(plan.slip_context, logger)
+        else:
+            source_map = _resolve_mods_source(config, logger)
+        if not _deploy_mods_from_source(source_map, plan, protect_patterns, result, logger):
+            return result
+
+    _deploy_members(config, plan, protect_patterns, result, logger)
+
+    if result.success:
+        logger.info(f"server scope: complete; {result.changed_count()} change(s) across {len(result.member_results)} member(s)")
+        if result.protected_kept:
+            logger.debug(f"server scope: {len(result.protected_kept)} protected file(s) preserved")
     return result

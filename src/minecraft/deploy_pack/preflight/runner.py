@@ -10,54 +10,34 @@ function logs at INFO on entry (scopes, dry_run, notify), at DEBUG
 per-section as each check block runs, and at INFO at the end with a
 one-line summary of the plan (partition size, none/reload/restart
 split, pack_required). Every branch that appends a
-``PreflightFailure`` logs at WARN with the specific reason and (where
-applicable) the member name; without those, a ``--debug`` run that
-fails at the top level would show only the trailing summary and the
-operator would have to parse the multi-line ``PreflightError`` text to
-find the cause. The four ``raise PreflightError`` sites - the early
-bail on Section 3.5/Section 2.5/Section 3.19, the post-per-member aggregation, the
-RCON-unavailable bail, and the online-template bail - each log at
-ERROR with the failure count and source labels before raising, so the
-aggregated diagnostic lands in the sink regardless of how ``main.py``
-renders it to stderr.
+``PreflightFailure`` logs at WARN with the specific reason. The five
+``raise PreflightError`` sites each log at ERROR with the failure count
+and source labels before raising.
 
-Per-member helpers (``_inspect_all``, ``_settle_restarting``,
-``_classify_states``, ``_check_drift``, ``_check_resource_pack_sources``,
-``_build_member_plans``, ``_partition``) accept a trailing
-``logger: Any = None`` defaulting to the module logger and are threaded
-from :func:`run_preflight`. ``_has_fatal`` is a pure predicate and
-emits nothing.
+Slip-mode integration (spec v1.3 Section 5.6, Section 5.8, Section 14.4, Section 14.7)
+----------------------------------------------------------
 
-Calls into other modules (``resolve_compose_path``,
-``check_mount_drift``, ``notifications.validate_*``,
-``check_rcon_available``, ``build_resource_pack_url``,
-``validate_resource_pack_filename``) do not thread ``logger``: each
-sub-module emits under its own module name, which is more informative
-than re-attributing its events here. Only ``check_rcon_available`` and
-the ``notifications.validate_*`` helpers accept a caller ``logger``;
-those are passed this module's logger where the caller's context
-matters. ``resolve_compose_path`` is a two-argument function whose
-single DEBUG line uses the ``config_model`` module logger.
-
-Structure
----------
-
-:func:`run_preflight` is a thin orchestrator that walks the Section 4.1
-sequence in order. Each check phase is a small function with a single
-responsibility, so a failure at any point can be traced to a specific
-phase without reading the entire file. The two ``raise`` points
-(early bail after top-level checks, late bail after per-member and
-template checks) are separate helpers so the ordering contract is
-visible at a glance.
+When ``config.slip`` is present, ``run_preflight`` dispatches to slip
+checks in ``_run_top_level_checks``. Slip failures use sources
+``"Section 5.6"`` and ``"Section 14.7"``. After the top-level checks,
+``_raise_if_slip_failures`` bails before Docker inspection. The plan's
+``mods_change``, per-instance server changes, and resource-pack changes
+are computed from ``SlipContext`` in the ``*_from_scopes`` helpers.
 """
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from minecraft.deploy_pack import notifications
-from minecraft.deploy_pack.config_model import DeploymentConfig, derive_mods_dir, resolve_compose_path
+from minecraft.deploy_pack.config_model import (
+    ComposeService,
+    DeploymentConfig,
+    derive_mods_dir,
+    resolve_compose_path,
+)
 from minecraft.deploy_pack.docker_runtime import ContainerState, DockerRuntime, check_mount_drift
 from minecraft.deploy_pack.errors import ConfigError
 from minecraft.deploy_pack.files import (
@@ -69,8 +49,11 @@ from minecraft.deploy_pack.logging_setup import get_logger
 from .actions import is_pack_action, resolve_paths_action, sticky_max
 from .changes import (
     compute_instance_server_change,
+    compute_instance_server_change_from_context,
     compute_mods_change,
+    compute_mods_change_from_context,
     compute_resource_pack_change,
+    compute_resource_pack_change_from_context,
 )
 from .states import check_rcon_available, classify_state
 from .types import (
@@ -86,6 +69,7 @@ from .types import (
 _log = get_logger(__name__)
 
 _EARLY_BAIL_SOURCES = ("Section 3.5", "Section 2.5", "Section 3.19")
+_SLIP_BAIL_SOURCES = ("Section 5.6", "Section 14.7")
 _MODS_DRIFT_WARNING = "mods_dir differs from the full source set; a targeted deploy does not touch shared mods. Run a non-targeted --server to update mods."
 _PACK_REQUIRED_WARNING = "client pack content changed; the current ZIP is stale. Run --client to rebuild."
 
@@ -104,33 +88,197 @@ def _log_preflight_entry(
     logger: Any,
 ) -> None:
     """Emit the single INFO line that opens every preflight run."""
-    logger.info(f"preflight: scopes={scopes.names()} with_resources={with_resources} notify={notify} dry_run={dry_run} partition={list(config.partition)}")
+    mode = config.slip.mode if config.slip is not None else "legacy"
+    logger.info(
+        f"preflight: scopes={scopes.names()} with_resources={with_resources} notify={notify} dry_run={dry_run} partition={list(config.partition)} mode={mode}"
+    )
 
 
 def _has_fatal(failures: list[PreflightFailure], *sources: str) -> bool:
-    """Return True if any failure came from one of the given sources.
-
-    No logging: pure predicate, called twice per run.
-    """
+    """Return True if any failure came from one of the given sources."""
     wanted = set(sources)
     return any(f.source in wanted for f in failures)
 
 
-def _needs_lifecycle(scopes: ScopeSet, config: DeploymentConfig) -> bool:
-    """Return True when the scope requires container inspection (Section 4.12).
+def _has_configured_rp(config: DeploymentConfig, member: str) -> bool:
+    """Return True if ``member`` has an RP configured (slip-aware)."""
+    if config.slip is not None:
+        return any(rp.instance == member for rp in config.slip.slip.resource_packs)
+    return member in config.resource_packs
 
-    Server always does. Resource-pack does only when at least one partition member has a ``[resource_pack.X]`` section (Section 7.7).
-    """
+
+def _needs_lifecycle(scopes: ScopeSet, config: DeploymentConfig) -> bool:
+    """Return True when the scope requires container inspection (Section 4.12)."""
     if scopes.server:
         return True
-    return scopes.resource_pack and any(m in config.resource_packs for m in config.partition)
+    if not scopes.resource_pack:
+        return False
+    return any(_has_configured_rp(config, m) for m in config.partition)
 
 
 def _compose_needed_for_scopes(scopes: ScopeSet, config: DeploymentConfig) -> bool:
     """Return True when a broken compose is fatal for this invocation (Section 3.5)."""
     if scopes.server:
         return True
-    return scopes.resource_pack and any(m in config.resource_packs for m in config.partition)
+    if not scopes.resource_pack:
+        return False
+    return any(_has_configured_rp(config, m) for m in config.partition)
+
+
+# ---------------------------------------------------------------------------
+# Slip compatibility checks (spec v1.3 Section 5.6, Section 14.7)
+# ---------------------------------------------------------------------------
+
+
+def _run_git(args: list[str], cwd: Path) -> tuple[int, str]:
+    """Run ``git`` with ``args`` in ``cwd``; return (returncode, stdout)."""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return (result.returncode, result.stdout.strip())
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return (127, "")
+
+
+def _check_slip_runtime(
+    failures: list[PreflightFailure],
+    warnings: list[str],
+    config: DeploymentConfig,
+    logger: Any,
+) -> None:
+    """Compare slip.runtime against each instance's Compose service (spec v1.3 Section 5.6)."""
+    slip_ctx = config.slip
+    assert slip_ctx is not None
+    runtime = slip_ctx.slip.runtime
+    for member in config.partition:
+        inst = config.instances.get(member)
+        if inst is None or inst.service is None:
+            continue
+        svc: ComposeService = inst.service
+        if svc.image is not None and svc.image != runtime.image_reference:
+            msg = f"image_reference mismatch: slip={runtime.image_reference!r} compose={svc.image!r}"
+            logger.warning(f"slip compatibility: [{member}] {msg}")
+            failures.append(PreflightFailure(f"Section 5.6 [{member}]", msg))
+        if svc.platform is not None and svc.platform != runtime.platform:
+            msg = f"platform mismatch: slip={runtime.platform!r} compose={svc.platform!r}"
+            logger.warning(f"slip compatibility: [{member}] {msg}")
+            failures.append(PreflightFailure(f"Section 5.6 [{member}]", msg))
+    warnings.append(
+        "slip runtime fields minecraft_version, loader_type, loader_version, "
+        "image_digest, and java_version are not yet reconciled against Compose "
+        "(runtime derivation not implemented)"
+    )
+
+
+def _check_slip_working_tree(
+    failures: list[PreflightFailure],
+    config: DeploymentConfig,
+    logger: Any,
+) -> None:
+    """Enforce Section 14.7: release-mode deploys reject dirty deployment inputs."""
+    rc, out = _run_git(
+        [
+            "status",
+            "--porcelain",
+            "sync/config",
+            "sync/kubejs",
+            "docker-compose.yml",
+            "config.d/deploy_pack.toml",
+        ],
+        config.project_root,
+    )
+    if rc == 127:
+        logger.warning("slip compatibility: git not available; cannot verify working-tree state")
+        failures.append(
+            PreflightFailure(
+                "Section 14.7",
+                "cannot verify working-tree state: git is not available",
+            )
+        )
+        return
+    if rc != 0:
+        logger.warning(f"slip compatibility: git status failed (rc={rc})")
+        failures.append(
+            PreflightFailure(
+                "Section 14.7",
+                f"cannot verify working-tree state: git status rc={rc}",
+            )
+        )
+        return
+    if out:
+        logger.warning(f"slip compatibility: dirty working tree: {out[:200]}")
+        failures.append(
+            PreflightFailure(
+                "Section 14.7",
+                f"working tree is dirty: {out[:200]}",
+            )
+        )
+
+
+def _check_slip_tree_hashes(
+    failures: list[PreflightFailure],
+    config: DeploymentConfig,
+    logger: Any,
+) -> None:
+    """Enforce Section 5.6: release-mode deploys verify recorded tree hashes against HEAD."""
+    slip_ctx = config.slip
+    assert slip_ctx is not None
+    inputs = slip_ctx.slip.inputs_git
+    checks = (
+        ("sync/config", inputs.config_tree, "config_tree"),
+        ("sync/kubejs", inputs.kubejs_tree, "kubejs_tree"),
+        ("docker-compose.yml", inputs.compose_tree, "compose_tree"),
+        ("config.d/deploy_pack.toml", inputs.deploy_toml_tree, "deploy_toml_tree"),
+    )
+    for relpath, expected, field_name in checks:
+        rc, actual = _run_git(["rev-parse", f"HEAD:{relpath}"], config.project_root)
+        if rc != 0:
+            logger.warning(f"slip compatibility: git rev-parse HEAD:{relpath} failed (rc={rc})")
+            failures.append(
+                PreflightFailure(
+                    "Section 5.6",
+                    f"cannot verify {field_name}: git rev-parse HEAD:{relpath} rc={rc}",
+                )
+            )
+            continue
+        if actual != expected:
+            logger.warning(f"slip compatibility: {field_name} mismatch: slip={expected} HEAD={actual}")
+            failures.append(
+                PreflightFailure(
+                    "Section 5.6",
+                    f"{field_name} mismatch: slip={expected} HEAD={actual}",
+                )
+            )
+
+
+def _check_slip_compatibility(
+    failures: list[PreflightFailure],
+    warnings: list[str],
+    config: DeploymentConfig,
+    logger: Any,
+) -> None:
+    """Slip-mode checks: runtime reconciliation and (release only) tree hashes."""
+    slip_ctx = config.slip
+    if slip_ctx is None:
+        return
+    logger.debug(f"preflight: slip compatibility checks (mode={slip_ctx.mode})")
+    _check_slip_runtime(failures, warnings, config, logger)
+    if slip_ctx.mode == "release":
+        _check_slip_working_tree(failures, config, logger)
+        _check_slip_tree_hashes(failures, config, logger)
+
+
+def _raise_if_slip_failures(failures: list[PreflightFailure], logger: Any) -> None:
+    """Bail before Docker inspection when slip compatibility has already failed."""
+    if not _has_fatal(failures, *_SLIP_BAIL_SOURCES):
+        return
+    logger.error(f"preflight: slip compatibility failed with {len(failures)} failure(s); aborting before Docker checks")
+    raise PreflightError(failures)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +295,12 @@ def _check_unknown_instances(
     if not config.partition_unknown:
         return
     logger.warning(f"preflight: unknown --instance name(s): {config.partition_unknown}")
-    failures.append(PreflightFailure("Section 2.5", "unknown --instance name(s): " + ", ".join(config.partition_unknown)))
+    failures.append(
+        PreflightFailure(
+            "Section 2.5",
+            "unknown --instance name(s): " + ", ".join(config.partition_unknown),
+        )
+    )
 
 
 def _check_instances_configured(
@@ -209,20 +362,22 @@ def _check_www_dir_available(
 
 def _run_top_level_checks(
     failures: list[PreflightFailure],
+    warnings: list[str],
     config: DeploymentConfig,
     scopes: ScopeSet,
     logger: Any,
 ) -> None:
-    """Run the four checks that gate the rest of preflight."""
+    """Run the top-level checks that gate the rest of preflight."""
     logger.debug("preflight: top-level checks")
     _check_unknown_instances(failures, config, logger)
     _check_instances_configured(failures, config, scopes, logger)
     _check_compose_available(failures, config, scopes, logger)
     _check_www_dir_available(failures, config, scopes, logger)
+    _check_slip_compatibility(failures, warnings, config, logger)
 
 
 def _raise_if_early_bail(failures: list[PreflightFailure], logger: Any) -> None:
-    """Raise when a Section 3.5/Section 2.5/Section 3.19 failure makes further checks meaningless."""
+    """Raise when a Section 3.5/2.5/3.19 failure makes further checks meaningless."""
     if not _has_fatal(failures, *_EARLY_BAIL_SOURCES):
         return
     logger.error(f"preflight: aborting early with {len(failures)} top-level failure(s): {[f.source for f in failures]}")
@@ -248,10 +403,9 @@ def _check_one_member_compose(
     scopes: ScopeSet,
     logger: Any,
 ) -> tuple[list[PreflightFailure], tuple[str, Path] | None]:
-    """Section 3.2/Section 3.6/Section 3.8 checks for a single partition member.
+    """Section 3.2/3.6/3.8 checks for a single partition member.
 
-    Returns ``(failures, mods_dir_candidate)``. The candidate is ``(member, resolved_mods_dir)`` when the server scope is active and the member's
-    service declares a ``/data/mods`` bind; ``None`` otherwise.
+    Returns ``(failures, mods_dir_candidate)``.
     """
     inst = config.instances.get(member)
     if inst is None:
@@ -296,7 +450,10 @@ def _check_one_member_compose(
     if scopes.server:
         m = derive_mods_dir(inst.service)
         if m is not None:
-            candidate = (member, resolve_compose_path(m, config.compose.file.base_dir))
+            candidate = (
+                member,
+                resolve_compose_path(m, config.compose.file.base_dir),
+            )
 
     return failures, candidate
 
@@ -318,7 +475,7 @@ def _check_all_member_compose(
 
 
 def _should_check_mods_dir_agreement(config: DeploymentConfig, scopes: ScopeSet) -> bool:
-    """Section 3.7 gate: server scope, not a targeted deploy, and a non-empty partition."""
+    """Section 3.7 gate: server scope, not targeted, non-empty partition."""
     return scopes.server and config.requested_instances is None and bool(config.partition)
 
 
@@ -334,11 +491,7 @@ def _find_missing_mods_dir_members(
 def _find_disagreeing_mods_dir_sources(
     mods_dir_candidates: list[tuple[str, Path]],
 ) -> set[Path] | None:
-    """Return the distinct host sources when >1 is present, else None.
-
-    None means "all candidates agree on the same source" (the healthy case); a returned set means the partition disagrees and preflight should fail
-    with the sorted source list.
-    """
+    """Return the distinct host sources when >1 is present, else None."""
     sources = {path for _name, path in mods_dir_candidates}
     if len(sources) <= 1:
         return None
@@ -364,17 +517,7 @@ def _check_mods_dir_agreement(
     mods_dir_candidates: list[tuple[str, Path]],
     logger: Any,
 ) -> list[PreflightFailure]:
-    """Section 3.7: every non-targeted partition member must share one mods_dir bind.
-
-    Three checks in order, first failure wins:
-
-      1. Every partition member must declare a /data/mods bind.
-      2. All members' binds must resolve to the same host source.
-      3. (Informational only) A TOML-vs-compose disagreement is warned.
-
-    Skipped entirely for a targeted deploy (Section 2.9: --server --instance X
-    does not touch mods_dir).
-    """
+    """Section 3.7: every non-targeted partition member must share one mods_dir bind."""
     if not _should_check_mods_dir_agreement(config, scopes):
         return []
 
@@ -391,7 +534,7 @@ def _check_mods_dir_agreement(
     disagreeing = _find_disagreeing_mods_dir_sources(mods_dir_candidates)
     if disagreeing is not None:
         sorted_sources = sorted(disagreeing)
-        logger.warning(f"preflight: mods_dir bind sources disagree across partition members: {sorted(str(p) for p in sorted_sources)}")
+        logger.warning(f"preflight: mods_dir bind sources disagree across partition members: {[str(p) for p in sorted_sources]}")
         return [
             PreflightFailure(
                 "Section 3.7",
@@ -414,10 +557,7 @@ def _inspect_all(
     failures: list[PreflightFailure],
     logger: Any = None,
 ) -> tuple[dict[str, ContainerState], list[str]]:
-    """Inspect every partition member's container.
-
-    Return (states, restarting).
-    """
+    """Inspect every partition member's container; return (states, restarting)."""
     if logger is None:
         logger = _log
     logger.debug(f"_inspect_all: inspecting {len(config.partition)} member(s)")
@@ -528,11 +668,7 @@ def _run_member_checks(
     runtime: DockerRuntime,
     logger: Any,
 ) -> dict[str, ContainerState]:
-    """Run the per-member compose/lifecycle phase.
-
-    Returns the container-state map. Populates ``failures`` with everything detected. When lifecycle checks are not required, or the compose file
-    could not be loaded, returns an empty map without touching Docker.
-    """
+    """Run the per-member compose/lifecycle phase."""
     if not (needs_lifecycle and config.compose.ok):
         return {}
 
@@ -562,7 +698,7 @@ def _check_resource_pack_sources(
     failures: list[PreflightFailure],
     logger: Any = None,
 ) -> None:
-    """Validate resource-pack source files and filenames for the partition (Section 7.7, Section 7.8)."""
+    """Validate resource-pack source files and filenames for the partition."""
     if logger is None:
         logger = _log
     logger.debug("_check_resource_pack_sources: validating RP sources for partition")
@@ -594,7 +730,12 @@ def _check_resource_pack_sources(
         source = config.sync_root / client_sub / rp.filename
         if not source.is_file():
             logger.warning(f"_check_resource_pack_sources: [{member}] source not found: {source}")
-            failures.append(PreflightFailure(f"Section 7.8 [{member}]", f"resource pack source not found: {source}"))
+            failures.append(
+                PreflightFailure(
+                    f"Section 7.8 [{member}]",
+                    f"resource pack source not found: {source}",
+                )
+            )
         else:
             logger.debug(f"_check_resource_pack_sources: [{member}] {rp.filename} validated at {source}")
 
@@ -605,8 +746,15 @@ def _check_resource_pack_sources_if_needed(
     scopes: ScopeSet,
     logger: Any,
 ) -> None:
-    """Run Section 7.7/Section 7.8 source validation only when the RP scope is active."""
+    """Run Section 7.7/7.8 source validation only when the RP scope is active.
+
+    In slip mode, sources are already verified at SlipContext construction;
+    the check is skipped.
+    """
     if not scopes.resource_pack:
+        return
+    if config.slip is not None:
+        logger.debug("preflight: slip mode - RP sources verified at SlipContext construction")
         return
     logger.debug("preflight: resource-pack source validation")
     _check_resource_pack_sources(config, failures, logger)
@@ -645,11 +793,7 @@ def _check_template_availability_if_notify(
 
 
 def _first_mods_dir(config: DeploymentConfig) -> Path | None:
-    """Return the first partition member's mods_dir, or None.
-
-    Compose is authoritative for ``mods_dir`` (Section 3.4); the first member that resolves a ``/data/mods`` bind wins. Consistency across the partition is
-    enforced earlier by :func:`_check_mods_dir_agreement`.
-    """
+    """Return the first partition member's mods_dir, or None."""
     if not (config.compose.ok and config.partition):
         return None
     for member in config.partition:
@@ -670,6 +814,8 @@ def _compute_mods_change_for_scopes(
     if not scopes.server:
         return (None, None)
     mods_dir = _first_mods_dir(config)
+    if config.slip is not None:
+        return (compute_mods_change_from_context(config.slip, mods_dir), mods_dir)
     mods_change = compute_mods_change(config, mods_dir)
     return (mods_change, mods_dir)
 
@@ -681,6 +827,8 @@ def _compute_instance_changes_for_scopes(
     """Compute per-member config/kubejs diffs when the server scope is active."""
     if not scopes.server:
         return {}
+    if config.slip is not None:
+        return {m: compute_instance_server_change_from_context(config, m, config.slip) for m in config.partition}
     return {m: compute_instance_server_change(config, m) for m in config.partition}
 
 
@@ -691,6 +839,8 @@ def _compute_rp_changes_for_scopes(
     """Compute per-member resource-pack evaluations when the RP scope is active."""
     if not scopes.resource_pack:
         return {}
+    if config.slip is not None:
+        return {m: compute_resource_pack_change_from_context(config, m, config.slip) for m in config.partition if _has_configured_rp(config, m)}
     return {m: compute_resource_pack_change(config, m) for m in config.partition if m in config.resource_packs}
 
 
@@ -700,14 +850,25 @@ def _detect_mods_drift(
     mods_change: ModsChange | None,
     logger: Any,
 ) -> tuple[bool, str | None]:
-    """Section 2.9: a targeted server deploy warns when mods_dir differs from source.
-
-    Returns ``(drift_detected, warning_message)``. The warning is None when no drift is detected.
-    """
+    """Section 2.9: a targeted server deploy warns when mods_dir differs from source."""
     if not (scopes.server and targeted and mods_change is not None and mods_change.any):
         return (False, None)
     logger.warning("preflight: mods_drift detected on targeted deploy")
     return (True, _MODS_DRIFT_WARNING)
+
+
+def _resolve_rp_for_plan(config: DeploymentConfig, member: str) -> object | None:
+    """Return the RP config for ``member``, slip-aware.
+
+    Both ``ResourcePackConfig`` and ``ResourcePackEntry`` expose
+    ``filename``, ``required``, and ``prompt``.
+    """
+    if config.slip is not None:
+        for rp in config.slip.slip.resource_packs:
+            if rp.instance == member:
+                return rp
+        return None
+    return config.resource_packs.get(member)
 
 
 def _build_member_plans(
@@ -747,7 +908,7 @@ def _build_member_plans(
             if config.compose.ok:
                 resourcepacks = config.sync_mapping.get("resourcepacks") or {}
                 dest_value = resourcepacks.get("resource_pack") if isinstance(resourcepacks, dict) else None
-                rpc = config.resource_packs.get(member)
+                rpc = _resolve_rp_for_plan(config, member)
                 if isinstance(dest_value, str) and dest_value and rpc is not None and rp.source_sha1 is not None:
                     url = build_resource_pack_url(config.download_base_url, dest_value, rpc.filename)
                     plan.resource_pack_target = {
@@ -774,8 +935,9 @@ def _build_member_plans(
             )
         plans[member] = plan
         logger.debug(
-            f"_build_member_plans: [{member}] server={plan.server_action!r} rp={plan.resource_pack_action!r} "
-            f"effective={plan.effective_action!r} pack_required={plan.pack_required} "
+            f"_build_member_plans: [{member}] server={plan.server_action!r} "
+            f"rp={plan.resource_pack_action!r} effective={plan.effective_action!r} "
+            f"pack_required={plan.pack_required} "
             f"changed_paths={len(plan.changed_paths)} reasons={len(plan.reasons)}"
         )
     return plans
@@ -813,10 +975,7 @@ def _check_rcon_if_needed(
     dry_run: bool,
     logger: Any,
 ) -> None:
-    """Section 8.4: every running restart_set member must have a selectable RCON transport.
-
-    Skipped under ``--dry-run`` (Section 2.6) and when no restart will happen. Raises ``PreflightError`` on any failure.
-    """
+    """Section 8.4: every running restart_set member must have a selectable RCON transport."""
     if not (needs_lifecycle and restart_set and not dry_run):
         return
     logger.debug(f"preflight: RCON availability check for restart_set={restart_set}")
@@ -837,10 +996,7 @@ def _compute_pack_required_warning(
     warnings: list[str],
     logger: Any,
 ) -> str | None:
-    """Section 4.6.9: emit the staleness warning when --client is not in scope.
-
-    Appends to ``warnings`` so the CLI prints it, and returns the text so the live notification can render it. Returns None when no warning applies.
-    """
+    """Section 4.6.9: emit the staleness warning when --client is not in scope."""
     if not (pack_required and not scopes.client):
         return None
     warnings.append(_PACK_REQUIRED_WARNING)
@@ -856,10 +1012,7 @@ def _validate_online_template_if_needed(
     container_states: dict[str, ContainerState],
     logger: Any,
 ) -> None:
-    """Section 5.11 second pass: online template, only when a running restart will fire.
-
-    Raises ``PreflightError`` on any template failure.
-    """
+    """Section 5.11 second pass: online template, only when a running restart will fire."""
     if not (notify and not dry_run and restart_set):
         return
     any_running = any(container_states.get(m) is not None and container_states[m].is_running for m in restart_set)
@@ -920,11 +1073,13 @@ def _run_plan_assembly(
         targeted=targeted,
         mods_drift=mods_drift,
         pack_required_warning=pack_required_warning,
+        slip_context=config.slip,
     )
     logger.info(
         f"preflight: plan built; partition={plan.partition} "
         f"none={len(none_set)} reload={len(reload_set)} restart={len(restart_set)} "
-        f"pack_required={pack_required} warnings={len(warnings)}"
+        f"pack_required={pack_required} warnings={len(warnings)} "
+        f"slip_mode={config.slip.mode if config.slip is not None else None}"
     )
     return plan
 
@@ -943,26 +1098,7 @@ def run_preflight(
     runtime: DockerRuntime,
     logger: Any = None,
 ) -> PreflightPlan:
-    """Run every preflight check, aggregate failures, return the plan.
-
-    Raises PreflightError (a ConfigError, exit 3) if any check fails.
-
-    The sequence mirrors Section 4.1:
-
-      1. Top-level prerequisites (Section 2.5, Section 3.5, Section 3.19). Bail early on
-         failure - nothing downstream can be trusted.
-      2. Per-member compose checks and lifecycle inspection (Section 3.2,
-         Section 3.6, Section 3.7, Section 3.8, Section 4.12, Section 3.17).
-      3. Resource-pack source validation (Section 7.7, Section 7.8) and Discord
-         template validation (Section 5.11, first pass).
-      4. Bail if any failures were collected (Section 4.3).
-      5. Plan assembly (Section 4.6): effective actions, partition, RCON
-         availability (Section 8.4), pack-required warning (Section 4.6.9), online
-         template (Section 5.11, second pass).
-
-    ``logger`` is optional; when omitted, the module logger
-    ``minecraft.deploy_pack.preflight.runner`` is used.
-    """
+    """Run every preflight check, aggregate failures, return the plan."""
     if logger is None:
         logger = _log
 
@@ -971,7 +1107,8 @@ def run_preflight(
     failures: list[PreflightFailure] = []
     warnings: list[str] = []
 
-    _run_top_level_checks(failures, config, scopes, logger)
+    _run_top_level_checks(failures, warnings, config, scopes, logger)
+    _raise_if_slip_failures(failures, logger)
     _raise_if_early_bail(failures, logger)
 
     needs_lifecycle = _needs_lifecycle(scopes, config)

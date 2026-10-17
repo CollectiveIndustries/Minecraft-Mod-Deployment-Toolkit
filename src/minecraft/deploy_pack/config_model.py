@@ -80,13 +80,16 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from ConfigCore import ConfigManager
 
 from .errors import ConfigError
 from .logging_setup import get_logger
+
+if TYPE_CHECKING:
+    from minecraft.modpack_upgrade.slip_context import SlipContext
 
 _log = get_logger(__name__)
 
@@ -127,6 +130,8 @@ class ComposeService:
         secrets: Names of secrets attached to the service.
         environment: Environment variables for the service.
         env_files: Paths to environment files loaded by the service.
+        image: Container image reference, or None when unset.
+        platform: Target platform string (e.g. ``linux/amd64``), or None.
     """
 
     name: str
@@ -138,6 +143,8 @@ class ComposeService:
     secrets: list[str]
     environment: dict[str, str]
     env_files: list[Path]
+    image: str | None = None
+    platform: str | None = None
 
 
 @dataclass
@@ -281,6 +288,10 @@ class DeploymentConfig:
       * ``partition_requested`` - True when ``--instance`` was passed.
         Redundant with ``requested_instances is not None`` but exposed as
         a stable boolean for callers that only need the flag.
+
+    Slip mode (spec v1.3 Section 5.8): ``slip`` carries the verified ``SlipContext``
+    when deploy-pack is invoked in release or integration mode. It is None
+    in legacy mode and behaves identically to v2.
     """
 
     project_root: Path
@@ -306,6 +317,7 @@ class DeploymentConfig:
     webhook_url: str | None = None
     compose: ComposeLoadResult = None  # type: ignore[assignment]
     mods_dir_toml: Path | None = None
+    slip: SlipContext | None = None
 
 
 # ===========================================================================
@@ -617,6 +629,8 @@ def _parse_service(name: str, raw: dict, base_dir: Path) -> ComposeService:
         secrets=_parse_secrets(raw.get("secrets")),
         environment=_parse_environment(raw.get("environment")),
         env_files=_parse_env_files(raw.get("env_file"), base_dir),
+        image=str(raw["image"]) if raw.get("image") else None,
+        platform=str(raw["platform"]) if raw.get("platform") else None,
     )
 
 
@@ -1468,6 +1482,7 @@ def _assemble_config(
     partition_unknown: list[str],
     requested_instances: Iterable[str] | None,
     sections: tuple,
+    slip: SlipContext | None = None,
 ) -> DeploymentConfig:
     """Assemble the final DeploymentConfig from the resolved parts."""
     (
@@ -1504,6 +1519,7 @@ def _assemble_config(
         webhook_url=webhook_url,
         compose=compose_result,
         mods_dir_toml=mods_dir_toml,
+        slip=slip,
     )
 
 
@@ -1512,6 +1528,7 @@ def load_deployment_config(
     requested_instances: Iterable[str] | None = None,
     cli_remaining: list[str] | None = None,
     logger: Any = None,
+    slip: SlipContext | None = None,
 ) -> DeploymentConfig:
     """Load, merge, and validate configuration.
 
@@ -1521,13 +1538,19 @@ def load_deployment_config(
 
     ``cli_remaining`` are arguments argparse did not consume. They are the highest-priority config source (Section 3.1).
 
+    ``slip`` is the verified ``SlipContext`` when deploy-pack runs in release
+    or integration mode (spec v1.3 Section 5.8). When None, behavior is identical
+    to legacy v2.
+
     This function performs no os.environ access (Section 9.2).
 
     A broken compose file does NOT raise. The DeploymentConfig.compose field carries the diagnostic; preflight applies Section 3.5.
     """
     if logger is None:
         logger = _log
-    logger.info(f"config load: config_dir={config_dir} requested_instances={sorted(requested_instances) if requested_instances is not None else None}")
+    logger.info(
+        f"config load: config_dir={config_dir} requested_instances={sorted(requested_instances) if requested_instances is not None else None} slip_mode={slip.mode if slip is not None else None}"
+    )
     config_dir = config_dir.resolve()
     project_root = config_dir.parent
     raw = _load_config_files(config_dir)
@@ -1538,6 +1561,7 @@ def load_deployment_config(
         project_root=project_root,
         requested_instances=requested_instances,
         logger=logger,
+        slip=slip,
     )
 
 
@@ -1547,6 +1571,7 @@ def _build_deployment_config(
     project_root: Path,
     requested_instances: Iterable[str] | None,
     logger: Any = None,
+    slip: SlipContext | None = None,
 ) -> DeploymentConfig:
     """Turn the merged raw dict into a typed DeploymentConfig.
 
@@ -1591,6 +1616,7 @@ def _build_deployment_config(
         partition_unknown=partition_unknown,
         requested_instances=requested_instances,
         sections=sections,
+        slip=slip,
     )
     logger.info(f"config: built; partition={partition} compose_ok={compose_result.ok} www_dir={result.www_dir}")
     return result

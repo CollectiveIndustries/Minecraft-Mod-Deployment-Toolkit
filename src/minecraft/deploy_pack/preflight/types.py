@@ -18,16 +18,25 @@ the failure count and source labels immediately before raising, so
 logging at ERROR here would double-report; DEBUG keeps the
 construction visible for direct callers (tests) and future
 aggregation sites without duplicating the operator-facing diagnostic.
+
+``PreflightPlan.slip_context`` carries the ``SlipContext`` from
+``DeploymentConfig.slip`` when deploy-pack runs in slip mode. It is
+None in legacy mode; the field is present so plan consumers (scope
+modules, in a later slice) can access it without a separate argument.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from minecraft.deploy_pack.docker_runtime import ContainerState
 from minecraft.deploy_pack.errors import ConfigError
 from minecraft.deploy_pack.logging_setup import get_logger
+
+if TYPE_CHECKING:
+    from minecraft.modpack_upgrade.slip_context import SlipContext
 
 _log = get_logger(__name__)
 
@@ -194,3 +203,4 @@ class PreflightPlan:
     targeted: bool = False
     mods_drift: bool = False
     pack_required_warning: str | None = None
+    slip_context: SlipContext | None = None
