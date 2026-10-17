@@ -1,9 +1,9 @@
 # Minecraft Upgrade System — Specification v1.3
 
-**Status:** Design of record. Architecture frozen. Implementation authorized against the acceptance-test checklist in §20. Production readiness requires passing tests and exercising the migration runbook.
+**Status:** Design of record. Architecture frozen. Slices 1–3 (canonical hashing, slip schema, `.pw.toml` writer, shipping transaction) implemented and passing (1225 tests, 91.26% coverage). Production readiness requires the remaining implementation slices, all §20 acceptance tests, and exercising the migration runbook.
 **Supersedes:** v1.2, v1.1, v1.0, `Upgrade_System_specifications.md` v0.1.0
 **Baseline contract:** `Project_Specs.md` v3.0 (`deploy_pack` v2)
-**Date:** 2026-10-15
+**Date:** 2026-10-17
 
 **Changes in v1.3 (final):**
 1. Prod pulls immutable release bundles from DEV via **rsync over SSH**. Prod never contacts providers. `sync/downloads/` is DEV-only.
@@ -16,8 +16,14 @@
 8. Deployment modes: `release` (immutable, hashes enforced) and `integration` (moving committed Git inputs, frozen JARs).
 9. Complete rollback restores world, runtime, artifacts, and config/KubeJS inputs together.
 10. Deployment is a logical transaction with a durable operation journal and rollback journal.
-11. Canonical hashing is fully specified: TOML parse → RFC 8785 canonical JSON → SHA-256.
+11. Canonical hashing is fully specified: TOML parse → RFC 8785 canonical JSON → SHA-256. `None` values are treated as absent; document order is preserved in the parsed slip.
 12. Existing `deploy_pack` v2 lifecycle contract is preserved; adapters are permitted, silent redefinition is not.
+13. `.pw.toml` writer contract frozen (§5.7): one provider block for external artifacts, zero for in-house, `side = "unknown"` sentinel, byte-stable output.
+14. `SlipContext` frozen as the bridge between verified slips and the existing `deploy_pack` pipeline (§5.8).
+15. Protect-pattern matching frozen to `fnmatch.fnmatch` with two matching scopes (§13.5).
+16. `config_mode` and `kubejs_mode` enums clarified: `{merge, delete}` and `{delete}` respectively (§5.2).
+17. Shipping is a logically atomic transaction with a rollback journal (§13.2).
+18. Slip parsing preserves document order for `[[jar]]`, `[[resource_pack]]`, `[[velocity_plugin]]`; canonical ordering is hash-only (§5.3).
 
 **Retained from v1.1/v1.2:**
 - Artifact authority: prod receives exact tested bytes.
@@ -288,19 +294,21 @@ member_manifest_sha256 = "..."
 [instances.survival]
 targeted = true
 required_sides = ["both", "server"]
-config_mode = "merge"            # "merge" | "replace"
-kubejs_mode = "delete"           # "delete" | "merge"
-config_deletions = []            # explicit relative paths to remove
+config_mode = "merge"            # "merge" | "delete"
+kubejs_mode = "delete"           # "delete" only
+config_deletions = []            # explicit relative paths to remove under merge
 protect_patterns = []
 
 [instances.creative]
 targeted = true
 required_sides = ["both", "server"]
-config_mode = "merge"
-kubejs_mode = "delete"
+config_mode = "merge"            # "merge" | "delete"
+kubejs_mode = "delete"           # "delete" only
 config_deletions = []
 protect_patterns = []
 ```
+
+The enum comments are normative. `config_mode ∈ {merge, delete}`. `kubejs_mode = delete` only. `kubejs_mode = "merge"` is not supported in v1.3.
 
 ### 5.3 Rules
 
@@ -312,15 +320,17 @@ protect_patterns = []
 6. Every `[[jar]]` MUST resolve through its declared `provider` + `provider_endpoint` during preparation. Resulting artifact MUST stage at `sync/downloads/<filename>` and match recorded SHA-256. Applies equally to external and in-house artifacts.
 7. Every `[[jar]]` MUST follow the same promotion and release-packaging workflow. Provider origin MUST NOT create a separate deployment pipeline or distinct registry section.
 8. Every `[[jar]]` MUST declare dependency edges with `namespace` (`project` or `modid`) and `source` (`pw_toml` or `jar_manifest`). Empty array if none.
-9. Every `[[jar]]` MUST reference a `.pw.toml` file whose SHA-256 is recorded and validated at preparation.
+9. Every `[[jar]]` MUST reference a `.pw.toml` file whose SHA-256 is recorded and validated at preparation. The `.pw.toml` file MUST conform to §5.7.
 10. `[instances.*]` MUST include every targeted production instance. A release that omits an instance MUST NOT deploy to it.
-11. Protection patterns MUST be explicit per instance. `.deploy_protect` MUST NOT affect slip-mode deploys.
+11. Protection patterns MUST be explicit per instance. `.deploy_protect` MUST NOT affect slip-mode deploys. The matching primitive and scope are defined in §13.5.
 12. `provider`, `project_id`, `version_id`, `provider_endpoint`, and in-house build metadata record origin and provenance. They MUST NOT instruct production deployment to fetch directly from a provider. Production MUST consume the validated staged artifact.
 13. `provider_endpoint` MUST identify a location that can resolve the selected artifact. If generic (e.g., API base), provider-specific IDs are required.
 14. `[tested].world` MUST be `survival` or `creative`, or absent if no migration test was required.
 15. `release_mode = "update"`: resolved Compose runtime MUST match slip `[runtime]`.
 16. `release_mode = "upgrade"`: effective Compose MUST match slip `[runtime]`; slip `compose_tree` MUST match working-tree Compose.
 17. `[fingerprints]` values are part of the canonical slip body. Changing a fingerprint changes the slip identity and invalidates prior approval. This is intentional.
+18. Slip parsing MUST preserve document order for `[[jar]]`, `[[resource_pack]]`, and `[[velocity_plugin]]`. Canonical ordering (§5.4) is applied only when computing `content_sha256`.
+19. `config_mode` MUST be `"merge"` or `"delete"`. `kubejs_mode` MUST be `"delete"`.
 
 ### 5.4 Canonical hashing
 
@@ -331,11 +341,12 @@ The canonicalization algorithm is normative.
 1. Parse TOML using Python's standard-library `tomllib`.
 2. Normalize all strings and keys to Unicode NFC.
 3. Reject duplicate keys and keys that collide after normalization.
-4. Permit only strings, booleans, safe integers, arrays, and tables in the canonical body. Reject floats and TOML datetime values.
-5. Remove the root `content_sha256` field before canonicalization.
-6. Sort object keys according to RFC 8785 (JSON Canonicalization Scheme).
-7. Apply array ordering rules (below).
-8. Encode as UTF-8 and compute SHA-256.
+4. Drop any `None` values from the body. TOML has no null; a programmatically-constructed body with `None` MUST hash identically to a TOML-round-tripped body with the key absent.
+5. Permit only strings, booleans, safe integers, arrays, and tables in the canonical body. Reject floats and TOML datetime values.
+6. Remove the root `content_sha256` field before canonicalization.
+7. Sort object keys according to RFC 8785 (JSON Canonicalization Scheme).
+8. Apply array ordering rules (below).
+9. Encode as UTF-8 and compute SHA-256.
 
 **Implementation:** Pinned Python `rfc8785` dependency. Exact version pinned in `pdm.lock`. Test vectors verify output stability.
 
@@ -385,6 +396,46 @@ Both modes verify artifact SHA-256 before shipping. Both consume the same `[[jar
 | `upgrade` | Slip `[runtime]` | Effective Compose MUST match slip target; `compose_tree` hash MUST match. Mismatch → abort. |
 
 Authority changes only when the release explicitly declares an upgrade.
+
+### 5.7 `.pw.toml` writer contract
+
+The `.pw.toml` files referenced by `[[jar]].pw_toml` MUST conform to the schema consumed by `deploy_pack.deps.parse_prism_toml`. The writer lives at `modpack_upgrade.pw_toml`.
+
+**Rules:**
+
+1. `filename` — required; exact staged artifact filename. No path separators, no NUL, not `.` or `..`.
+2. `name` — optional display name.
+3. `side` — always written explicitly. One of `client`, `server`, `both`, or the sentinel `unknown`. The sentinel preserves the parser's unmarked-entry detection (§3.11, §6.3 of `Project_Specs.md` v3.0): an omitted `side` would default to `both` in the parser and silently misclassify the artifact.
+4. `[download]` — emitted only when `url`, `hash-format`, and `hash` are all present. Partial blocks are rejected.
+5. `[update.modrinth]` or `[update.curseforge]` — exactly one provider block for an externally sourced artifact; zero for an in-house artifact that has no upstream identity; never two.
+6. `[[x-prismlauncher-dependencies]]` — project-ID edges only, as `addonId` and `type`. Mod-ID edges are recorded in the packing slip (§5.2, `[[jar]].dependencies`) and MUST NOT be mislabeled as Prism project IDs.
+7. Output is byte-stable. Field order is fixed, strings are NFC normalized, and the pinned `tomli-w` dependency's emitter runs. Golden fixtures pin the output.
+8. The writer MUST NOT modify `deps.py`. Compatibility with the existing parser is a hard constraint, not a soft goal.
+
+The generated file's SHA-256 is recorded as `[[jar]].pw_toml_sha256` in the packing slip. Production obtains artifact bytes from the release bundle (§6), not from the `.pw.toml`'s download URL.
+
+### 5.8 `SlipContext`
+
+`SlipContext` is the immutable bridge between a verified slip and the existing `deploy_pack` pipeline. It is constructed once, validated at construction, and carried on `DeploymentConfig` and `PreflightPlan`.
+
+**Fields:**
+
+- `slip: PackingSlip` — the verified slip.
+- `mode: "release" | "integration"` — the deployment mode (§5.5).
+- `bundle_root: Path` — release bundle root, or candidate store root in integration mode.
+- `config_source: Path` — the config snapshot root.
+- `kubejs_source: Path` — the KubeJS snapshot root.
+- `jar_sources: Mapping[str, Path]` — filename → artifact path.
+- `runtime_payload: Path` — staged runtime payload location.
+- `captured_head: str | None` — the committed Git revision captured at construction time (integration mode only).
+
+**Rules:**
+
+1. `SlipContext` is validated at construction. Scope modules MUST NOT independently reinterpret pointers or mutable source paths.
+2. In slip modes (`release` and `integration`), `deps.resolve_mod_sources` and `overrides.py` MUST NOT be called. The slip-derived source set is the authority.
+3. In `integration` mode, config and KubeJS inputs come from a single clean committed Git revision captured at construction time. The `latest-slip` pointer is not consulted by scope modules; it is resolved once by the integration entry point and its result is embedded in `SlipContext`.
+4. In `release` mode, config and KubeJS inputs come from the release bundle's snapshots. Tree hashes are enforced.
+5. When `DeploymentConfig.slip is None`, `deploy_pack` behaves exactly as v2. Slip-mode branches are additive; no legacy behavior changes.
 
 ---
 
@@ -476,7 +527,7 @@ The manifest itself is signed by the release-signing key. The signature is store
 }
 ```
 
-The chain begins at a pinned trust anchor committed to the repository. Each entry’s `previous_entry_hash` MUST match the prior entry’s `entry_hash`.
+The chain begins at a pinned trust anchor committed to the repository. Each entry's `previous_entry_hash` MUST match the prior entry's `entry_hash`.
 
 ### 7.2 Trust anchor
 
@@ -529,7 +580,7 @@ Git object IDs are recorded using their actual object format. The registry entry
 4. Select versions per policy (RELEASE → BETA → authorized ALPHA).
 5. Resolve dependency closure iteratively.
 6. Download selected artifacts to sync/downloads/.
-7. Write .pw.toml for each.
+7. Write .pw.toml for each (§5.7).
 8. Assemble candidate slip.
 9. Loop:
    a. Apply validated candidate changes in a temporary workspace.
@@ -667,6 +718,7 @@ Explicit Discord command. No auto-build on push.
 6. Register as in-house artifact (CAS backing, web view).
 7. Add to candidate slip as a `[[jar]]` entry with `provider = "in-house"`.
 8. Stage into `sync/downloads/` for release bundle inclusion.
+9. Emit the in-house `.pw.toml` per §5.7 with no provider update block.
 
 ### 9.3 Build record
 
@@ -860,8 +912,7 @@ Deployment phase (PROD):
  11. Acquire the deployment lock.
  12. Pre-stage runtime and artifacts.
  13. Stop services consuming the shared mod directory.
- 14. Apply staged changes using atomic per-file replacements with a
-     rollback journal.
+ 14. Apply staged changes using the shipping transaction (§13.2).
  15. Verify the resulting inventory against the selected slip.
  16. Start services.
  17. Run post-deployment health checks.
@@ -870,6 +921,8 @@ Deployment phase (PROD):
 ```
 
 Steps 1–10 are the **publication** phase on prod. Steps 11–19 are the **deployment** phase. Publication and deployment remain distinct operations with separate authorization.
+
+Slip modes attach a `SlipContext` (§5.8) to `DeploymentConfig` and `PreflightPlan`. Scope modules take their source sets from the context, not from `deps.resolve_mod_sources` or `overrides.py`.
 
 ### 12.5 Pull transport
 
@@ -973,9 +1026,9 @@ Turn a release bundle (or DEV candidate) into the target `mods/` folder.
 ```
 1. Load slip.
 2. For each [[jar]] with side ∈ {server, both}:
-   - verify artifact exists in warehouse with matching sha256
+   - verify artifact exists with matching sha256
    - add to source set
-3. Diff source set vs. target mods/ (via files.deploy_flat_files).
+3. Diff source set vs. target mods/.
 4. Preflight:
    - enabled JAR not in slip and not protected → block
    - stale JAR tracked by previous release and not in new release → remove
@@ -984,11 +1037,22 @@ Turn a release bundle (or DEV candidate) into the target `mods/` folder.
    - unexpected non-JAR files → report; block if they could affect loading
 5. Pre-stage all changes.
 6. Stop services consuming the shared mod directory.
-7. Apply atomic per-file replacements with a rollback journal.
-8. Verify resulting inventory against the slip.
+7. Apply changes atomically per file with a rollback journal.
+8. Verify resulting inventory against the slip plus retained protected files.
 9. Start services.
 10. Log shipment.
 ```
+
+Steps 3–8 are implemented as a logically atomic transaction by `modpack_upgrade.shipping.ship`. The transaction:
+
+- Pre-stages every new and changed file and verifies each staged file's SHA-256 against its source.
+- Backs up every file about to be removed or replaced.
+- Records every operation to an append-only JSONL journal.
+- Applies operations atomically per file.
+- Verifies the resulting inventory against the desired set plus any protected files retained at their pre-transaction hashes.
+- On failure, walks the journal backwards and restores the pre-transaction inventory.
+
+The transaction does not stop or start services; the caller wraps it in lifecycle phases (§12.4 steps 13 and 16).
 
 ### 13.3 Same code, different targets
 
@@ -1000,7 +1064,7 @@ Turn a release bundle (or DEV candidate) into the target `mods/` folder.
 
 ### 13.4 Rules
 
-- Shipping MUST be atomic per file (reuse `files.py`).
+- Shipping MUST be atomic per file.
 - Shipping MUST verify SHA-256 before placement.
 - Shipping MUST honor slip-declared protection patterns.
 - Shipping MUST NOT read `side_overrides.toml` in slip mode.
@@ -1028,9 +1092,18 @@ Turn a release bundle (or DEV candidate) into the target `mods/` folder.
 
 **`protect_patterns`:**
 
-- Single documented Git-wildmatch-style path-pattern implementation.
-- Patterns matched against normalized relative POSIX paths.
-- Implementation and dependency version pinned.
+The matching primitive is Python's standard-library `fnmatch.fnmatch` (POSIX glob). Not Git wildmatch. `*` matches any character sequence (including `/`), `?` matches exactly one character, `[seq]` matches any character in `seq`, `[!seq]` matches any character not in `seq`. Every other character matches literally.
+
+`deploy_pack` applies two matching scopes:
+
+- **Full path** — the normalized relative POSIX path is matched against each pattern.
+- **Component** — every `/`-separated path component is matched against each pattern.
+
+The `deploy_pack` pattern loader strips a single trailing `/` before matching. `modpack_upgrade.shipping` does not strip trailing slashes and does not perform component matching; it matches against the flat `.jar` filename only, because shipping operates on a flat directory.
+
+When the same pattern list protects both `mods/` jars and an instance's config tree, shipping sees only the flat filename and the config-tree copy sees the nested relative path plus its components. A pattern that is meaningful in only one context (e.g. `config/*`) simply does not match in the other; it is not an error.
+
+Protection governs removal only. A protected file that also appears in the source set is still overwritten with the source's content.
 
 ### 13.6 Provider independence guarantee
 
@@ -1078,13 +1151,13 @@ The only upstream mod-artifact source for prod is DEV's release bundle.
 
 | Module | Behavior in slip mode |
 |---|---|
-| `config_model.py` | Unchanged; still loads `deploy_pack.toml` and resolves instances from Compose. Additionally loads the slip. |
-| Slip loading | Reads slip; reconciles `[runtime]` against effective Compose; reconciles `[inputs.git]` against working tree (release mode only); provides artifact selection. |
-| `deps.py` | NOT called. |
-| `overrides.py` | NOT called. |
+| `config_model.py` | Unchanged; still loads `deploy_pack.toml` and resolves instances from Compose. Additionally attaches `SlipContext`. |
+| Slip loading | Reads slip; reconciles `[runtime]` against effective Compose; reconciles `[inputs.git]` against working tree (release mode only); provides `SlipContext` to the pipeline. |
+| `deps.py` | NOT called in slip mode. The slip-derived source set is the authority (§5.8). |
+| `overrides.py` | NOT called in slip mode. |
 | `preflight/changes.py` | Compares slip-declared state vs. current target state. |
-| `scope_server.py` | Uses shipping system to place jars (from slip); deploys configs/kubejs from slip snapshot (release) or committed HEAD (integration). |
-| `scope_client.py` | Builds from slip's `[client_distribution]` and client-distribution manifest. |
+| `scope_server.py` | Uses `SlipContext` and the shipping transaction (§13.2) to place jars; deploys configs/kubejs from `SlipContext`'s source roots. |
+| `scope_client.py` | Builds from slip's `[client_distribution]` and the client-distribution manifest. |
 | `scope_resource_pack.py` | Uses slip's `[[resource_pack]]`. |
 | `prompt_ui.py` | Edits candidate slip review file. |
 
@@ -1124,7 +1197,7 @@ The pointer is a logical release reference, not a filesystem path.
 2. Load `deploy_pack.toml`; resolve instances via Compose.
 3. `release_mode = "update"`: verify slip `[runtime]` matches effective Compose.
 4. `release_mode = "upgrade"`: verify effective Compose matches slip `[runtime]`.
-5. Do NOT verify `config_tree` or `kubejs_tree`. Configs/kubejs come from one clean committed HEAD revision.
+5. Do NOT verify `config_tree` or `kubejs_tree`. Configs/kubejs come from one clean committed HEAD revision captured at `SlipContext` construction.
 6. Verify `[instances.*]` covers deployment targets.
 7. Any mismatch on enforced fields → abort.
 
@@ -1430,7 +1503,7 @@ Do not delete immutable slips or rewrite release history as rollback.
 | T15 | Daemon API auth and idempotency | Submit forged, unauthorized, and replayed requests. All invalid cases fail; repeated valid requests return the original result. |
 | T16 | Concurrent deployment lock | Start two deployment requests simultaneously. One proceeds; the other is rejected or queued without corrupting state. |
 | T17 | Shared-mod shipping | Seed every case in a test `mods/` directory: enabled JAR in slip, enabled JAR not in slip, stale JAR, `.jar.disabled`, nested directory, non-JAR file. Assert exact preflight decision and resulting inventory. |
-| T18 | Config/KubeJS rollback | Deploy a release that changes config and KubeJS, then roll back. Previous approved bundle’s config and KubeJS are restored exactly. |
+| T18 | Config/KubeJS rollback | Deploy a release that changes config and KubeJS, then roll back. Previous approved bundle's config and KubeJS are restored exactly. |
 | T19 | Health-check failure recovery | Simulate startup timeout, missing RCON response, repeated container restarts, fatal logs, and proxy backend failure. Daemon halts or rolls back per contract. |
 | T20 | Migration rollback drill | Run the migration rollback on a production-like clone. Old command path, artifact inventory, and active release are restorable without data loss. |
 | T21 | Release bundle immutability | Attempt to republish an existing release ID with changed content. Publication fails; existing bundle remains untouched. |
@@ -1518,7 +1591,11 @@ The system is acceptable for production use only when:
 | Provider metadata | Modrinth/CurseForge adapters (DEV only) |
 | Artifact bytes (prod) | DEV release bundle, rsync pull |
 | Artifact bytes (DEV) | Providers + in-house builds |
+| `.pw.toml` writer | `modpack_upgrade.pw_toml` (§5.7) |
+| Slip-mode source sets | `SlipContext` (§5.8) |
 | Side policy | Slip `[[jar]].side` (runtime); `side_overrides.toml` (legacy only) |
+| Protect-pattern matching | `fnmatch.fnmatch`, two scopes (§13.5) |
+| Shipping transaction | `modpack_upgrade.shipping` (§13.2) |
 | Instance/container mapping | `deploy_pack.toml` + Compose |
 | Deployment interface | Release bundle + slip |
 | Production lifecycle | `deploy_pack` v2 |
@@ -1547,6 +1624,8 @@ See §16.
 - **Release mode** — `update` or `upgrade`. Runtime authority selector.
 - **Deployment mode** — `release` (immutable, hashes enforced) or `integration` (moving committed Git inputs).
 - **Shipping** — operation that materializes a slip into `mods/`.
+- **Shipping transaction** — logically atomic apply of a source set to a target directory with rollback (§13.2).
+- **SlipContext** — immutable bridge between a verified slip and the existing pipeline (§5.8).
 - **Promote** — write slip, stage in git, print instructions. Does not commit/tag/push.
 - **Publish** — create an immutable release bundle. Explicit operator command.
 - **Deploy** — activate staged release; invoke `deploy-pack --release <tag>`.
@@ -1571,7 +1650,7 @@ See §16.
 | Publish | Explicit operator command. Creates immutable bundle. Fails on precondition failure. |
 | Pull (DEV→Prod) | Prod initiates rsync-over-SSH pull from DEV publication directory. Verifies bundle manifest and every hash. |
 | Deploy | `deploy-pack --release <tag>` activates staged release after acquiring the deployment lock. |
-| Config load | Slip is additive. Existing instance resolution preserved. |
+| Config load | Slip is additive. Existing instance resolution preserved. `SlipContext` attached when slip present. |
 | Runtime check — update | Compose authoritative. Slip must match. `compose_tree` enforced. |
 | Runtime check — upgrade | Slip authoritative. Compose must match slip + `compose_tree` hash. |
 | Path resolution | Derived from `deploy_pack.toml` + Compose. Slip verifies. |
@@ -1581,6 +1660,10 @@ See §16.
 | `latest` JAR source | Frozen via `latest-slip`. |
 | `latest` Git source | One clean committed HEAD revision, captured once per deployment. |
 | Release identity | Signed tag + registry chain + bundle manifest. |
+| Slip parsing | Preserves document order. Canonical ordering applied only for hashing. |
+| `.pw.toml` writer | One external provider block or zero for in-house. `side = "unknown"` sentinel. Byte-stable. |
+| Shipping | Logically atomic transaction: pre-stage, back up, journal, apply, verify, or rollback. |
+| Protect patterns | `fnmatch.fnmatch`. Shipping matches flat filename; config-tree copy matches full path plus components. |
 | Rollback | Previous approved bundle + pre-upgrade world backup (for upgrades). |
 | Concurrent deployment | Single exclusive lock. Concurrent requests rejected or queued. |
 | Interrupted deployment | Recovery from journal or halt for operator intervention. |
@@ -1595,19 +1678,32 @@ See §16.
 
 ## Pending before production cutover
 
-| Deliverable | Status |
-|---|---|
-| Migration runbook | Not written; required before cutover |
-| Prod daemon API contract | Not frozen; required before implementation |
-| Log classifier design | Not written; interface fixed, catalog evolves |
-| DEV Compose project spec (resolution loop + `latest`) | Not written |
-| `deploy_pack` refactor plan | Not written; compatibility audit required |
-| In-house build toolchain spec | Not written; record format fixed |
-| rsync-over-SSH warehouse contract | Not written |
-| Release registry and trust-anchor operational procedure | Not written |
-| OCI registry allowlist and image pinning procedure | Not written |
-| World backup and restoration drill | Not written; required before cutover |
-| All acceptance tests in §20 | Not implemented |
-| Verification that existing SMB config is truly inactive | Not verified |
+The following are **not yet written**. Design freeze is complete; production cutover requires these to exist and pass review.
 
-**Design freeze is complete.** Implementation is authorized against §20. Production cutover requires all §20 tests passing and the migration runbook exercised on DEV.
+| Deliverable | Category |
+|---|---|
+| Artifact warehouse and publication-bundle contract | Design |
+| rsync-over-SSH access and transfer contract | Design |
+| Dev Compose project and test-isolation contract | Design |
+| Candidate iteration and persistent budget journal | Design |
+| Known-fix format and log-classifier taxonomy | Design |
+| In-house build toolchain and artifact-registration contract | Design |
+| Production daemon API and idempotency contract | Design |
+| Migration runbook and rollback drill | Operational |
+| Actual host paths, keys, allowlists, and permissions | Deployment configuration |
+| All §20 acceptance tests | Implementation |
+
+The following are **frozen** in this document and are compatible with the current implementation state (slices 1–3 landed, tests passing):
+
+- Slip schema and canonical hashing (§5.2, §5.3, §5.4).
+- `.pw.toml` writer contract (§5.7).
+- `SlipContext` contract (§5.8).
+- Stable and candidate pointer resolution (§4.2, §14.5).
+- Per-host deployment modes and CLI contract (§14, §15).
+- Configuration/KubeJS merge and deletion behavior (§13.5).
+- Runtime descriptor and image/payload pinning (§5.2, §6.2).
+- Client distribution and resource-pack schema (§5.2).
+- Snapshot identity and migration-required policy (§10.3, §10.7).
+- Approval record and Discord interaction security (§11.3, §11.4).
+- Shipping transaction, health-check, and recovery contract (§13.2, §12.9, §12.10).
+- Full test matrix and acceptance criteria (§20, §21).
