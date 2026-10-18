@@ -1,10 +1,12 @@
 # docs/Side_Determination.md
 
-**Status:** Frozen as spec v1.3.1 (slice 7a, rev e)
+**Status:** Frozen as spec v1.3.1 (slice 7a, rev f)
 **Consumer:** `materialize` (final side), preflight (verification), shipping (filtering)
 **Authority:** `config.d/side_overrides.toml` is final; everything else is best-effort
 
 **Rev e changes:** `unknown` and absent `.pw.toml` sides are not preflight failures. Only malformed values fail. Side resolution runs at materialize; exit 3 only if precedence chain exhausts. In-house unified with general chain. Drafting text removed. Scope clarified (minecraft-upgrade strict, deploy-pack legacy unchanged).
+
+**Rev f changes:** §4.1 corrected. Modrinth exposes two independent side fields — `client_side` and `server_side`, each with values `required` / `optional` / `unsupported` / `unknown` — not a single `environment` enum. The corrected table in §4.1 matches `resolver._modrinth_side` exactly. The prior rev e table described a hypothetical pre-2.0 Modrinth enum and was never implemented.
 
 ---
 
@@ -92,20 +94,38 @@ Not special-cased.
 
 ### §4.1 Modrinth
 
-| `environment` | Slip side |
-|---|---|
-| `client_and_server` | `both` |
-| `client_only` | `client` |
-| `client_only_server_optional` | `both` |
-| `singleplayer_only` | `client` |
-| `server_only` | `server` |
-| `server_only_client_optional` | `both` |
-| `dedicated_server_only` | `server` |
-| `client_or_server` | `unknown` |
-| `client_or_server_prefers_both` | `both` |
-| `unknown` | `unknown` |
+Modrinth's API (`GET /v2/project/<id>`) exposes **two independent**
+side fields per project — `client_side` and `server_side` — not a
+single combined `environment` enum. Each field carries one of four
+values: `required`, `optional`, `unsupported`, `unknown`.
 
-Optional-side `both` cases preserve original enum in report provenance.
+The adapter (`resolver._modrinth_side`) combines the two fields into a
+slip side as follows:
+
+| `client_side` | `server_side` | Slip side | Rationale |
+|---|---|---|---|
+| `unsupported` | `unsupported` | `unknown` | Mod runs on neither side — needs override |
+| `unsupported` | any other | `server` | Server-only mod |
+| any other | `unsupported` | `client` | Client-only mod |
+| `None` (absent) | any value | `unknown` | Missing data — do not infer |
+| any value | `None` (absent) | `unknown` | Missing data — do not infer |
+| any other | any other | `both` | Runs on both sides |
+
+Notes:
+
+- **"Any other"** means any value other than `unsupported` or `None` —
+  including `required`, `optional`, and `unknown`. Modrinth's `unknown`
+  on one or both sides falls through to `both`; the adapter does not
+  infer a restriction from Modrinth's `unknown`.
+- **Absent (`None`) fields** are treated as `unknown` at the slip level.
+  Do not conflate with `optional` — an absent field is missing data,
+  not a "no constraint" signal.
+- **The slip's three-value enum flattens** what Modrinth's four-value
+  fields can express. `client_side=required` / `server_side=optional`
+  becomes `both`, losing the "prefers client" bias. Only the flattened
+  `side_provisional` appears in the resolution report's `[[resolved]]`
+  entry; the raw `client_side` / `server_side` strings are **not**
+  preserved in the report.
 
 ### §4.2 CurseForge — always `unknown`
 
@@ -182,7 +202,7 @@ selection, not side safety.
 | No override; Fabric array form | `unknown` | `unknown` |
 | No override; Forge `clientSideOnly=true` | `client` | `jar` |
 | No override; Forge `clientSideOnly=false` or absent | Skip to provider | — |
-| No override; Modrinth usable | Mapped value | `provider` |
+| No override; Modrinth usable (see §4.1) | Mapped value | `provider` |
 | No override; CurseForge | `unknown` | `unknown` |
 | No override; provider `unknown` | Fall to `.pw.toml` | — |
 | No override; `.pw.toml` usable | `.pw.toml` value | `pw_toml` |
@@ -197,6 +217,7 @@ selection, not side safety.
 | v1.3.1 rev c | `unknown`/absent `.pw.toml` side is valid. Malformed rejects. In-house unified. |
 | v1.3.1 rev d | Drafting text removed from §6. Scope clarified: minecraft-upgrade strict, deploy-pack legacy unchanged. |
 | v1.3.1 rev e | No changes; carried forward from rev d. |
+| v1.3.1 rev f | §4.1 corrected to reflect the real Modrinth `client_side` / `server_side` API shape. Corrected mapping now matches `resolver._modrinth_side`. Removed the false claim that the report preserves the raw Modrinth enum. |
 
 ---
 
