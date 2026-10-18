@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -12,11 +11,9 @@ from pathlib import Path
 import pytest
 
 from minecraft.modpack_upgrade.cli.commands.acknowledge import (
-    _compute_compose_sha256,
     _get_confirmation,
     _now_utc,
     _present_losses,
-    _resolve_compose_path,
     _write_acknowledgment,
     run,
 )
@@ -48,11 +45,6 @@ from minecraft.modpack_upgrade.state import (
 def _hex(ch: str) -> str:
     """Return a 64-char hex string of repeated ``ch``."""
     return ch * 64
-
-
-def _hex_of(path: Path) -> str:
-    """Return the SHA-256 of a file."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _minimal_report() -> ResolutionReport:
@@ -109,45 +101,6 @@ def _minimal_state(**overrides: object) -> RunState:
 def test_now_utc_format() -> None:
     """_now_utc returns ISO-8601 with Z suffix."""
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", _now_utc())
-
-
-def test_resolve_compose_path_no_deploy_toml(tmp_path: Path) -> None:
-    """No deploy_pack.toml means the default docker-compose.yml path."""
-    assert _resolve_compose_path(tmp_path, tmp_path) == tmp_path / "docker-compose.yml"
-
-
-def test_resolve_compose_path_custom(tmp_path: Path) -> None:
-    """A custom compose_file in deploy_pack.toml is honored."""
-    custom = tmp_path / "custom.yml"
-    (tmp_path / "deploy_pack.toml").write_text(f'[docker]\ncompose_file = "{custom}"\n')
-    assert _resolve_compose_path(tmp_path, tmp_path) == custom
-
-
-def test_resolve_compose_path_malformed_toml_falls_back(tmp_path: Path) -> None:
-    """A malformed deploy_pack.toml falls back to the default."""
-    (tmp_path / "deploy_pack.toml").write_text("not = valid = toml")
-    assert _resolve_compose_path(tmp_path, tmp_path) == tmp_path / "docker-compose.yml"
-
-
-def test_compute_compose_sha256_missing_raises(tmp_path: Path) -> None:
-    """A missing compose file raises UpgradeCliError(3)."""
-    with pytest.raises(UpgradeCliError) as ei:
-        _compute_compose_sha256(tmp_path, tmp_path)
-    assert ei.value.exit_code == 3
-
-
-def test_compute_compose_sha256_unreadable_raises(tmp_path: Path) -> None:
-    """A compose file that does not parse raises UpgradeCliError(3)."""
-    (tmp_path / "docker-compose.yml").write_text(":::not yaml")
-    with pytest.raises(UpgradeCliError) as ei:
-        _compute_compose_sha256(tmp_path, tmp_path)
-    assert ei.value.exit_code == 3
-
-
-def test_compute_compose_sha256_valid(tmp_path: Path) -> None:
-    """A valid compose file yields its SHA-256."""
-    (tmp_path / "docker-compose.yml").write_text("services:\n  a:\n    image: x\n")
-    assert _compute_compose_sha256(tmp_path, tmp_path) == _hex_of(tmp_path / "docker-compose.yml")
 
 
 def test_present_losses_empty(capsys: pytest.CaptureFixture[str]) -> None:

@@ -36,7 +36,7 @@ from minecraft.modpack_upgrade.resolver import CycleError, Resolver, ResolverInp
 from minecraft.modpack_upgrade.seed import load_seed
 from minecraft.modpack_upgrade.state import RunState, save_state
 
-from .acknowledge import _compute_compose_sha256, _resolve_compose_path
+from . import _compose
 
 __all__ = ["run"]
 
@@ -230,6 +230,9 @@ def _load_inputs(
 
     Raises ``UpgradeCliError(3)`` on any failure, including the
     Manifest_Schema Section 2 ``update``-mode equivalence check.
+
+    Compose-file resolution and hashing are delegated to :mod:`._compose` -
+    the single source of truth across all CLI commands.
     """
     manifest_path = project_root / "sync" / "modpack.manifest.toml"
     try:
@@ -237,20 +240,20 @@ def _load_inputs(
     except SchemaError as exc:
         raise UpgradeCliError(3, str(exc)) from exc
 
-    # Manifest_Schema Section 2 / Section 8 rule 8: update mode requires the manifest
-    # to describe the currently-deployed runtime. Compute the compose
+    # Manifest_Schema Section 2 / Section 8 rule 8: update mode requires the
+    # manifest to describe the currently-deployed runtime. Compute the compose
     # SHA-256 here too, so a broken compose aborts before any report
     # is written (write-order fix).
     effective_compose_sha: str | None = None
     if release_mode == "update":
-        compose_path = _resolve_compose_path(config_dir, project_root)
+        compose_path = _compose.resolve_compose_path(config_dir, project_root)
         if not compose_path.is_file():
             raise UpgradeCliError(
                 3,
                 f"--release-mode update requires a Compose file at {compose_path} to verify manifest/Compose equivalence.",
             )
         _verify_manifest_matches_compose(manifest, compose_path)
-        effective_compose_sha = _compute_compose_sha256(config_dir, project_root)
+        effective_compose_sha = _compose.compute_compose_sha256(config_dir, project_root)
 
     try:
         in_house = tuple(load_in_house_filenames(config_dir))

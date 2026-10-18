@@ -5,10 +5,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from minecraft.modpack_upgrade.cli.commands.update import run
+from minecraft.modpack_upgrade.cli.commands import _compose
+from minecraft.modpack_upgrade.cli.commands.update import (
+    _env_as_mapping,
+    _extract_compose_runtime,
+    run,
+)
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 from minecraft.modpack_upgrade.providers.base import Provider, ProviderVersion
 from minecraft.modpack_upgrade.providers.curseforge import CurseForgeProvider
@@ -391,3 +397,235 @@ def test_upgrade_mode_does_not_check_compose_equivalence(tmp_path: Path) -> None
         state_dir=tmp_path / "state",
     )
     assert code == 0
+
+
+# ---------------------------------------------------------------------------
+# Slice 8 pair 6: update delegates compose resolution to the shared _compose module
+# ---------------------------------------------------------------------------
+#
+# ``_compose`` is exhaustively tested in ``test_compose.py``. These tests
+# pin only the wiring: a future refactor that re-introduces a local copy of
+# ``resolve_compose_path`` or ``compute_compose_sha256`` on ``update.py``
+# would fail these, even if the local copy happened to behave identically
+# today. They also make the pair-7 removal of the deprecated wrappers on
+# ``acknowledge.py`` safe: if ``update.py`` still depended on them, these
+# spies would stop firing when the wrappers are deleted.
+
+
+def test_update_mode_delegates_compose_resolution_to_shared_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Update calls _compose.resolve_compose_path (twice, by design).
+
+    Two call sites are expected:
+
+      1. ``_load_inputs`` resolves the path directly, to check it exists
+         and to hand it to ``_verify_manifest_matches_compose``.
+      2. ``_compose.compute_compose_sha256`` re-resolves the path itself
+         on every call - it does not trust callers to pass the right
+         path, keeping the ``(config_dir, project_root)`` API stable
+         across all three commands.
+
+    Both calls must go through ``_compose.resolve_compose_path``. A
+    regression that inlines the resolution in ``update.py``, or that
+    stops ``compute_compose_sha256`` from re-resolving internally,
+    changes this count and fails the assertion.
+    """
+    config_dir = _setup_project(tmp_path, mods={})
+    calls: list[tuple[Path, Path]] = []
+    real = _compose.resolve_compose_path
+
+    def _spy(cfg: Path, root: Path) -> Path:
+        calls.append((cfg, root))
+        return real(cfg, root)
+
+    monkeypatch.setattr(_compose, "resolve_compose_path", _spy)
+    code = run(
+        config_dir=config_dir,
+        project_root=tmp_path,
+        release_mode="update",
+        registry=_registry({}),
+        run_id="run-1",
+        now="2026-01-01T00:00:00Z",
+        state_dir=tmp_path / "state",
+    )
+    assert code == 0
+    assert calls == [(config_dir, tmp_path), (config_dir, tmp_path)]
+
+
+def test_update_mode_delegates_compose_sha_to_shared_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Update calls _compose.compute_compose_sha256, not a local copy."""
+    config_dir = _setup_project(tmp_path, mods={})
+    calls: list[tuple[Path, Path]] = []
+    fake_sha = "e" * 64
+
+    def _spy(cfg: Path, root: Path) -> str:
+        calls.append((cfg, root))
+        return fake_sha
+
+    monkeypatch.setattr(_compose, "compute_compose_sha256", _spy)
+    code = run(
+        config_dir=config_dir,
+        project_root=tmp_path,
+        release_mode="update",
+        registry=_registry({}),
+        run_id="run-1",
+        now="2026-01-01T00:00:00Z",
+        state_dir=tmp_path / "state",
+    )
+    assert code == 0
+    assert calls == [(config_dir, tmp_path)]
+    # The spy's return value must be what the state recorded; if update.py
+    # bypassed the shared module, the fake sha would never appear in the
+    # state file.
+    state_text = (tmp_path / "state" / "runs" / "run-1" / "state.toml").read_text()
+    assert fake_sha in state_text
+
+
+# ---------------------------------------------------------------------------
+# Slice 8 pair 9a: _env_as_mapping branch coverage
+# ---------------------------------------------------------------------------
+#
+# Every branch of the compose-environment normaliser is exercised directly.
+# The end-to-end paths through ``_extract_compose_runtime`` and ``run()``
+# already cover the dict-with-string-values happy path; these cases pin the
+# remaining coercion and rejection branches so a future refactor cannot
+# silently change e.g. ``None`` -> absent vs. ``""`` or start reading the
+# host environment for bare list entries.
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Mapping form, ordinary case.
+        ({"A": "1", "B": "2"}, {"A": "1", "B": "2"}),
+        # Mapping form, empty.
+        ({}, {}),
+        # Mapping form, None value coerces to empty string.
+        ({"A": None}, {"A": ""}),
+        # Mapping form, int and bool values coerce through str().
+        ({"A": 1}, {"A": "1"}),
+        ({"A": True}, {"A": "True"}),
+        # Mapping form, non-str key coerces through str().
+        ({1: "A"}, {"1": "A"}),
+        # List form, empty.
+        ([], {}),
+        # List form, well-formed "KEY=VALUE".
+        (["A=1", "B=2"], {"A": "1", "B": "2"}),
+        # List form, bare "KEY" (no '=') is dropped (host-env passthrough).
+        (["A=1", "B"], {"A": "1"}),
+        # List form, non-str items are dropped.
+        (["A", 42, "B=2"], {"B": "2"}),
+        # Non-dict, non-list inputs return empty.
+        (None, {}),
+        ("oops", {}),
+        (42, {}),
+    ],
+)
+def test_env_as_mapping(raw: Any, expected: dict[str, str]) -> None:
+    """_env_as_mapping normalizes every supported compose env shape."""
+    assert _env_as_mapping(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# Slice 8 pair 9a: _extract_compose_runtime branch coverage
+# ---------------------------------------------------------------------------
+#
+# Every branch of the compose-runtime extractor is exercised directly.
+# The end-to-end paths through ``run()`` already cover the "mapping form,
+# matching image, all three values present" happy path; these cases pin
+# the failure paths and alternate env shapes.
+
+
+def _write_compose(tmp_path: Path, body: str) -> Path:
+    """Write ``body`` as ``docker-compose.yml`` and return its path."""
+    path = tmp_path / "docker-compose.yml"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_extract_compose_runtime_missing_file(tmp_path: Path) -> None:
+    """A missing compose file (OSError) yields None."""
+    assert _extract_compose_runtime(tmp_path / "absent.yml") is None
+
+
+def test_extract_compose_runtime_malformed_yaml(tmp_path: Path) -> None:
+    """Malformed YAML (yaml.YAMLError) yields None."""
+    path = _write_compose(tmp_path, "key: [unclosed\n")
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_scalar_top_level(tmp_path: Path) -> None:
+    """A top-level scalar (not a mapping) yields None."""
+    path = _write_compose(tmp_path, "just_a_string\n")
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_list_top_level(tmp_path: Path) -> None:
+    """A top-level list (not a mapping) yields None."""
+    path = _write_compose(tmp_path, "- a\n- b\n")
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_services_not_table(tmp_path: Path) -> None:
+    """A non-mapping ``services`` value yields None."""
+    path = _write_compose(tmp_path, "services: not_a_table\n")
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_non_dict_service_skipped(tmp_path: Path) -> None:
+    """A non-mapping service entry is skipped."""
+    path = _write_compose(tmp_path, "services:\n  mc:\n    - a\n")
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_non_minecraft_image_skipped(tmp_path: Path) -> None:
+    """A service whose image does not contain 'minecraft' is skipped."""
+    path = _write_compose(tmp_path, "services:\n  web:\n    image: nginx:latest\n")
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_minecraft_image_missing_env(tmp_path: Path) -> None:
+    """A minecraft service with no ``environment`` block yields None."""
+    path = _write_compose(tmp_path, "services:\n  mc:\n    image: itzg/minecraft-server\n")
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_minecraft_image_partial_env(tmp_path: Path) -> None:
+    """A minecraft service missing any of the three values yields None."""
+    body = "services:\n  mc:\n    image: itzg/minecraft-server\n    environment:\n      VERSION: '1.21.1'\n      TYPE: FORGE\n"
+    path = _write_compose(tmp_path, body)
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_unknown_type_returns_none(tmp_path: Path) -> None:
+    """An unrecognised ``TYPE`` value yields None."""
+    body = "services:\n  mc:\n    image: itzg/minecraft-server\n    environment:\n      VERSION: '1.21.1'\n      TYPE: VANILLA\n      FORGE_VERSION: '52.0.1'\n"
+    path = _write_compose(tmp_path, body)
+    assert _extract_compose_runtime(path) is None
+
+
+def test_extract_compose_runtime_list_form_env(tmp_path: Path) -> None:
+    """The list form of ``environment`` parses identically to the mapping form."""
+    body = "services:\n  mc:\n    image: itzg/minecraft-server\n    environment:\n      - VERSION=1.21.1\n      - TYPE=FORGE\n      - FORGE_VERSION=52.0.1\n"
+    path = _write_compose(tmp_path, body)
+    assert _extract_compose_runtime(path) == ("1.21.1", "forge", "52.0.1")
+
+
+def test_extract_compose_runtime_first_matching_service_wins(tmp_path: Path) -> None:
+    """A later fully-declaring service wins over an earlier partial one."""
+    body = (
+        "services:\n"
+        "  web:\n"
+        "    image: nginx\n"
+        "  mc-broken:\n"
+        "    image: itzg/minecraft-server\n"
+        "    environment:\n"
+        "      VERSION: '1.20'\n"
+        "  mc-good:\n"
+        "    image: itzg/minecraft-server\n"
+        "    environment:\n"
+        "      VERSION: '1.21.1'\n"
+        "      TYPE: FORGE\n"
+        "      FORGE_VERSION: '52.0.1'\n"
+    )
+    path = _write_compose(tmp_path, body)
+    assert _extract_compose_runtime(path) == ("1.21.1", "forge", "52.0.1")
