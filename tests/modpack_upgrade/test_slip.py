@@ -268,3 +268,99 @@ def test_missing_runtime_is_rejected():
     body["content_sha256"] = slip.compute_content_sha256(body)
     with pytest.raises(SchemaError):
         slip.parse_slip(body)
+
+
+# ---------------------------------------------------------------------------
+# Identity bindings (spec Section 5.4)
+# ---------------------------------------------------------------------------
+
+
+def test_meta_created_at_utc_affects_hash():
+    """Changing ``meta.created_at_utc`` changes the content hash.
+
+    Approval is bound to candidate identity; regenerating the slip with a
+    new timestamp invalidates a previous approval. This is deliberate.
+    """
+    body = _base_slip()
+    variant = copy.deepcopy(body)
+    variant["meta"]["created_at_utc"] = "2026-10-17T00:00:00Z"
+    variant["content_sha256"] = slip.compute_content_sha256(variant)
+    assert variant["content_sha256"] != body["content_sha256"]
+
+
+def test_meta_resolver_version_affects_hash():
+    """Changing ``meta.resolver_version`` changes the content hash."""
+    body = _base_slip()
+    variant = copy.deepcopy(body)
+    variant["meta"]["resolver_version"] = "minecraft-upgrade 1.3.1"
+    variant["content_sha256"] = slip.compute_content_sha256(variant)
+    assert variant["content_sha256"] != body["content_sha256"]
+
+
+@pytest.mark.parametrize(
+    "fingerprint_field",
+    [
+        "manifest_sha256",
+        "runtime_sha256",
+        "server_inputs_sha256",
+        "client_inputs_sha256",
+    ],
+)
+def test_fingerprint_change_affects_hash(fingerprint_field: str):
+    """Changing any single fingerprint changes the content hash.
+
+    The four fingerprints are part of the slip identity, so approval is
+    bound to the tested inputs, not just to a list of artifact names.
+    """
+    body = _base_slip()
+    variant = copy.deepcopy(body)
+    variant["fingerprints"][fingerprint_field] = _hex("f")
+    variant["content_sha256"] = slip.compute_content_sha256(variant)
+    assert variant["content_sha256"] != body["content_sha256"]
+
+
+def test_none_mapping_value_hashes_like_absent():
+    """A ``None`` mapping value and its absence produce the same hash.
+
+    Spec Section 5.4: TOML has no null; a programmatically-constructed body with
+    ``{"provider": None}`` MUST hash identically to a TOML-round-tripped
+    body with the key absent.
+    """
+    with_none = _base_slip()
+    with_none["jar"][0]["provider_endpoint"] = None
+    with_none["content_sha256"] = slip.compute_content_sha256(with_none)
+
+    without = _base_slip()
+    del without["jar"][0]["provider_endpoint"]
+    without["content_sha256"] = slip.compute_content_sha256(without)
+
+    assert with_none["content_sha256"] == without["content_sha256"]
+
+
+def test_none_in_typed_array_rejected():
+    """A ``None`` element in a schema-sorted array is rejected.
+
+    Spec Section 5.4: ``None`` mapping values are stripped; ``None`` array
+    elements are rejected. For typed arrays such as ``[[jar]].dependencies``,
+    the schema sort helper runs before canonicalization and raises
+    ``SchemaError``. The rejection is a rejection regardless of which layer
+    catches it first.
+    """
+    body = _base_slip()
+    body["jar"][0]["dependencies"] = [None]
+    with pytest.raises(SchemaError):
+        slip.compute_content_sha256(body)
+
+
+def test_none_in_untyped_array_rejected():
+    """A ``None`` element in an unsorted array is rejected by canonicalization.
+
+    ``[meta]`` is not touched by ``_prepare_canonical_body``, so ``None``
+    inside a ``meta``-nested array reaches the canonicalizer directly, which
+    raises ``TypeError``. Both layers reject; the exception type differs by
+    which guard fires first.
+    """
+    body = _base_slip()
+    body["meta"]["custom_array"] = [None]
+    with pytest.raises(TypeError, match="None"):
+        slip.compute_content_sha256(body)

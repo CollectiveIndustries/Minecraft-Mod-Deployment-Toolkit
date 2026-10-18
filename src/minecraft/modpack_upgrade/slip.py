@@ -192,11 +192,24 @@ class PackingSlip:
 
 
 def _strip_none(value: Any) -> Any:
-    """Recursively drop ``None`` values from dicts.
+    """Recursively drop ``None`` values from mappings.
 
-    TOML has no null; a Python ``None`` stands for an absent key. Stripping
-    it before canonicalization makes programmatically-built bodies hash the
-    same as their TOML-round-tripped equivalents.
+    Spec Section 5.4 distinguishes two cases:
+
+    * A ``None`` **mapping value** is dropped. TOML has no null; a
+      programmatically-constructed body with ``{"provider": None}``
+      MUST hash identically to a TOML-round-tripped body with the key
+      absent.
+    * A ``None`` **array element** is not stripped here. It survives
+      to ``canonical.canonicalize``, which raises ``TypeError``.
+      Removing an element from an array silently changes its
+      cardinality and, for ordered sequences, its meaning; failing
+      validation is the frozen rule.
+
+    ``None`` nested inside a mapping or array inside a mapping is
+    normalized by the same rules applied recursively: dict-internal
+    ``None`` values are stripped, array-internal ``None`` elements are
+    not.
     """
     if isinstance(value, dict):
         return {k: _strip_none(v) for k, v in value.items() if v is not None}

@@ -336,48 +336,51 @@ The enum comments are normative. `config_mode ∈ {merge, delete}`. `kubejs_mode
 
 The canonicalization algorithm is normative.
 
+**Pipeline.** The canonicalization pipeline is:
+
+    TOML parse -> NFC normalization and collision checks -> `None`
+    normalization -> slip-specific array ordering -> RFC 8785 canonical
+    JSON -> UTF-8 -> SHA-256.
+
 **Algorithm:**
 
 1. Parse TOML using Python's standard-library `tomllib`.
 2. Normalize all strings and keys to Unicode NFC.
 3. Reject duplicate keys and keys that collide after normalization.
-4. Drop any `None` values from the body. TOML has no null; a programmatically-constructed body with `None` MUST hash identically to a TOML-round-tripped body with the key absent.
-5. Permit only strings, booleans, safe integers, arrays, and tables in the canonical body. Reject floats and TOML datetime values.
+   Keys are case-sensitive: `"Side"` and `"side"` are distinct, but two
+   keys that normalize to the same NFC string are rejected.
+4. Apply `None` normalization:
+   - A `None` **mapping value** is dropped. TOML has no null; a
+     programmatically-constructed body with `{"provider": None}` MUST
+     hash identically to a TOML-round-tripped body with the key absent.
+   - A `None` **array element** is rejected. Removing an element from
+     an array silently changes its cardinality and, for ordered
+     sequences, its meaning; failing validation is the frozen rule.
+   - `None` nested inside a mapping inside an array, or inside an
+     array inside a mapping, is normalized by the same rules applied
+     recursively: mapping-`None` stripped, array-`None` rejected.
+5. Permit only strings, booleans, safe integers, arrays, and tables in
+   the canonical body. Reject floats and TOML datetime values. A
+   "safe integer" is bounded by RFC 8785 §3.2.2.3:
+   `-(2^53 - 1) <= n <= 2^53 - 1`. Integers outside this range are
+   rejected even though Python's `int` is arbitrary-precision, because
+   canonical JSON is a cross-language interchange format.
 6. Remove the root `content_sha256` field before canonicalization.
-7. Sort object keys according to RFC 8785 (JSON Canonicalization Scheme).
+7. Sort object keys according to RFC 8785 (JSON Canonicalization
+   Scheme).
 8. Apply array ordering rules (below).
 9. Encode as UTF-8 and compute SHA-256.
 
-**Implementation:** Pinned Python `rfc8785` dependency. Exact version pinned in `pdm.lock`. Test vectors verify output stability.
+**Normalization order.** NFC normalization MUST occur before RFC 8785
+serialization. RFC 8785 requires string data to be preserved as
+supplied and does not itself perform Unicode normalization; the
+preceding NFC step is a slip-specific preprocessing rule, not part of
+RFC 8785. An implementation that applied raw RFC 8785 to unnormalized
+input would produce different hashes for equivalent slips and would
+fail to catch NFC-collision keys.
 
-**Array ordering:**
-
-| Field | Rule |
-|---|---|
-| Top-level `[[jar]]` | Set, sorted by NFC-normalized `filename` |
-| `[[jar]].dependencies` | Set, sorted by complete canonical dependency identity |
-| `[[resource_pack]]` | Set, sorted by `instance`, then `filename` |
-| `[[velocity_plugin]]` | Set, sorted by `filename` |
-| `[instances.*].required_sides` | Set, sorted lexicographically after NFC normalization |
-| `[instances.*].config_deletions` | Set, sorted lexicographically after NFC normalization |
-| Client-distribution member manifest | Set, sorted by archive path |
-| Snapshot file manifest | Set, sorted by relative POSIX path |
-| Ordered operational steps, migration actions, user-defined sequences | Preserve declared order |
-
-Duplicate entries within a set are rejected unless the schema explicitly defines deduplication semantics. Duplicate JAR filenames in one release are always rejected.
-
-**Fingerprints:**
-
-| Fingerprint | Source |
-|---|---|
-| `content_sha256` | Canonical slip body |
-| `manifest_sha256` | Raw `modpack.manifest.toml` bytes |
-| `runtime_sha256` | Canonical JSON representation of resolved `[runtime]` descriptor |
-| `server_inputs_sha256` | Canonical manifest of all server-stage input files |
-| `client_inputs_sha256` | Canonical manifest of all client-stage input files |
-| `side_policy_sha256` | Raw `side_overrides.toml` (legacy mode only) |
-
-Each input manifest contains normalized relative path, file kind, file mode where applicable, byte size, and content SHA-256. Ownership, timestamps, and incidental filesystem metadata are excluded.
+**Implementation:** Pinned Python `rfc8785` dependency. Exact version
+pinned in `pdm.lock`. Test vectors verify output stability.
 
 ### 5.5 Deployment modes
 
