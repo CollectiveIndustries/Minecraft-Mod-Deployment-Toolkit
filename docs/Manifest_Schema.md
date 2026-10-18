@@ -1,11 +1,13 @@
 # docs/Manifest_Schema.md
 
-**Status:** Frozen as spec v1.3.1 (slice 7a, rev e)
+**Status:** Frozen as spec v1.3.1 (slice 7a, rev f)
 **File:** `sync/modpack.manifest.toml`
 **Consumer:** `minecraft-upgrade update`
 **Author:** Human (pack maintainer)
 
 **Rev e changes:** Side-handling preflight does not reject `unknown`/absent `.pw.toml` side. `drop` runs land in `resolved` state. Materialize performs full integrity check. In-house identification documented. Pipeline verify line distinguishes external (expected_hashes) and in-house (jar_sha256) verification paths. Command count corrected.
+
+**Rev f changes:** §2.1 added. Documents the `itzg/minecraft-server` env-var convention that `update --release-mode update` reads from Compose to enforce the §8 rule 8 equivalence check. No behavioral change; the implementation shipped in slice 8 and §2.1 now describes it precisely.
 
 ---
 
@@ -64,6 +66,83 @@ minecraft-upgrade update --release-mode upgrade
 
 Persisted in `state.toml`. Re-verified at `acknowledge` AND at
 `materialize` for `update` mode (Compose may change between them).
+
+### §2.1 Compose runtime env-var convention
+
+The `--release-mode update` equivalence check (§8 rule 8) reads the
+effective Compose runtime from the Minecraft service's `environment`
+block, using the `itzg/minecraft-server` image family's env-var
+convention. Any operator using `--release-mode update` must declare
+these keys on the service whose `image` contains the substring
+`"minecraft"` (case-insensitive).
+
+| Runtime field | Env-var key (first non-empty wins) |
+|---|---|
+| Minecraft version | `VERSION`, `MINECRAFT_VERSION` |
+| Loader type | `TYPE` |
+| Loader version | Per loader (see below) |
+
+**Loader-version keys by `TYPE` value:**
+
+| `TYPE` (case-insensitive) | Loader-version keys |
+|---|---|
+| `FORGE` | `FORGE_VERSION`, `FORGEVERSION` |
+| `NEOFORGE` | `NEOFORGE_VERSION`, `NEOFORGEVERSION` |
+| `FABRIC` | `FABRIC_LOADER_VERSION`, `FABRICVERSION` |
+| `QUILT` | `QUILT_LOADER_VERSION`, `QUILT_LOADER` |
+
+**Accepted `environment` shapes.** docker-compose accepts two forms;
+both are supported:
+
+```yaml
+# Mapping form
+environment:
+  VERSION: "1.21.1"
+  TYPE: "FORGE"
+  FORGE_VERSION: "52.0.1"
+
+# List form
+environment:
+  - VERSION=1.21.1
+  - TYPE=FORGE
+  - FORGE_VERSION=52.0.1
+```
+
+List-form entries without a `=` (host-env passthrough, e.g.
+`- VERSION`) are **ignored** — the check does not read host
+environment variables.
+
+**Service selection.** If multiple services have `"minecraft"` in
+their `image`, the first service that declares all three required
+values (version, `TYPE`, loader-version) is used. Services that
+declare only a subset are ignored.
+
+**Failure modes for `--release-mode update`.** Every case below
+produces exit 3:
+
+- No service's `image` contains `"minecraft"`.
+- No candidate service declares all three values.
+- `TYPE` does not normalize to `FORGE`, `NEOFORGE`, `FABRIC`, or
+  `QUILT` (case-insensitive).
+- The resolved Compose runtime disagrees with the manifest
+  `[minecraft]` fields on version, loader, or loader version.
+
+The error messages name the specific env-var keys and the specific
+mismatched field so the operator can fix the Compose file or the
+manifest without guessing.
+
+**`--release-mode upgrade` is unaffected.** In upgrade mode the
+manifest is authoritative and Compose is reconciled at `promote`. The
+env-var convention described here is only consulted by the
+`--release-mode update` equivalence check.
+
+**Non-`itzg` images.** An operator running a different Minecraft
+image family will get exit 3 for `--release-mode update` unless the
+service declares the env-var keys above. This is deliberate:
+"cannot verify equivalence" and "equivalence violated" both refuse
+to proceed. Use `--release-mode upgrade` for non-`itzg` images, or
+declare the keys explicitly (harmless when the image does not
+consume them).
 
 ---
 
@@ -297,7 +376,8 @@ In-house mods:
 5. `[minecraft].loader_version` non-empty string.
 6. `[policy].selection` ∈ three-value enum.
 7. `[policy].no_version` ∈ `{ask, drop, fail}`.
-8. If `--release-mode update`: `[minecraft]` matches effective Compose.
+8. If `--release-mode update`: `[minecraft]` matches effective Compose
+   (§2.1).
 
 Any failure → exit 3. `manifest check` prints all violations.
 
@@ -309,6 +389,7 @@ Any failure → exit 3. `manifest check` prints all violations.
 |---|---|
 | v1.3.1 rev c | State machine named. `drop` → `resolved`. Side preflight relaxed. In-house identification via config. |
 | v1.3.1 rev e | Pipeline verify line distinguishes external (expected_hashes) and in-house (jar_sha256). Command count corrected to five. |
+| v1.3.1 rev f | §2.1 added. Documents the `itzg/minecraft-server` env-var convention consumed by the §8 rule 8 equivalence check. |
 
 ---
 
