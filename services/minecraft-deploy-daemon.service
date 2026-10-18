@@ -1,0 +1,21 @@
+# services/minecraft-deploy-daemon.service
+
+[Unit]
+Description=Minecraft deploy daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=minecraft-deploy
+Group=minecraft-deploy
+WorkingDirectory=/home/admiral/src/minecraft
+ExecStart=/usr/local/bin/pdm run python -m minecraft.deploy_pack.daemon --config-dir config.d
+EnvironmentFile=-/etc/minecraft-deploy/daemon.env
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
