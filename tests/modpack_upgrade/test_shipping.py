@@ -1,6 +1,13 @@
 # tests/modpack_upgrade/test_shipping.py
 
-"""Shipping transaction tests (spec Section 3.5, Section 13.2, Section 13.4; T08, T17)."""
+"""Shipping transaction tests (spec Section 3.5, Section 13.2, Section 13.4; T08, T17).
+
+Covers the full ``ship()`` transaction (happy paths, failure injection,
+rollback, protect patterns) and unit-tests the internal
+``_verify_inventory`` helper directly so every diagnostic shape - exact
+match, empty inventory, missing-only, extra-only, both, and hash
+mismatch - is pinned by a test.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +18,7 @@ from minecraft.modpack_upgrade import shipping  # noqa: F401  (imported for side
 from minecraft.modpack_upgrade.shipping import (
     RealFileOps,
     ShipRequest,
+    _verify_inventory,
     ship,
 )
 
@@ -544,3 +552,89 @@ def test_protect_source_file_is_replaced_despite_protection(tmp_path: Path) -> N
     assert result.updated == ["bob.jar"]
     assert result.protected_kept == []
     assert (target / "bob.jar").read_bytes() == b"new"
+
+
+# ===========================================================================
+# _verify_inventory direct coverage
+# ===========================================================================
+#
+# The ship() transaction already exercises _verify_inventory on the happy
+# path (post-apply verification passes) and on the hash-mismatch failure
+# path (test_verify_failure_rolls_back). These direct tests pin the
+# remaining diagnostic shapes - missing-only, extra-only, both, and the
+# empty-inventory edge case - so a future refactor of the diagnostic text
+# cannot silently change what the operator sees in a rollback failure.
+
+
+def test_verify_inventory_returns_none_on_exact_match(tmp_path: Path) -> None:
+    """An inventory that matches the expected hash map yields no diagnostic."""
+    target = tmp_path / "mods"
+    expected = _seed(target, {"a.jar": b"aaa", "b.jar": b"bbb"})
+
+    assert _verify_inventory(target, expected, RealFileOps()) is None
+
+
+def test_verify_inventory_returns_none_on_empty_inventory(tmp_path: Path) -> None:
+    """An empty expected map and empty target yields no diagnostic."""
+    target = tmp_path / "mods"
+    expected = _seed(target, {})
+
+    assert expected == {}
+    assert _verify_inventory(target, expected, RealFileOps()) is None
+
+
+def test_verify_inventory_reports_missing_files(tmp_path: Path) -> None:
+    """Expected files that are absent from the target are reported as 'missing'."""
+    target = tmp_path / "mods"
+    expected = _seed(target, {"present.jar": b"present"})
+    expected["absent.jar"] = _sha(b"absent")
+
+    diag = _verify_inventory(target, expected, RealFileOps())
+
+    assert diag is not None
+    assert "missing:" in diag
+    assert "absent.jar" in diag
+    assert "unexpected:" not in diag
+
+
+def test_verify_inventory_reports_extra_files(tmp_path: Path) -> None:
+    """Target files not in the expected set are reported as 'unexpected'."""
+    target = tmp_path / "mods"
+    full = _seed(target, {"expected.jar": b"e", "surprise.jar": b"s"})
+    expected = {"expected.jar": full["expected.jar"]}
+
+    diag = _verify_inventory(target, expected, RealFileOps())
+
+    assert diag is not None
+    assert "unexpected:" in diag
+    assert "surprise.jar" in diag
+    assert "missing:" not in diag
+
+
+def test_verify_inventory_reports_missing_and_extra(tmp_path: Path) -> None:
+    """Both missing and unexpected files are reported, joined by '; '."""
+    target = tmp_path / "mods"
+    full = _seed(target, {"present.jar": b"p", "extra.jar": b"x"})
+    expected = {"present.jar": full["present.jar"], "wanted.jar": _sha(b"w")}
+
+    diag = _verify_inventory(target, expected, RealFileOps())
+
+    assert diag is not None
+    assert "missing:" in diag and "wanted.jar" in diag
+    assert "unexpected:" in diag and "extra.jar" in diag
+    assert "; " in diag
+    # Deterministic order: missing section precedes unexpected section.
+    assert diag.index("missing:") < diag.index("unexpected:")
+
+
+def test_verify_inventory_reports_hash_mismatch(tmp_path: Path) -> None:
+    """Same filename set but different content yields a hash-mismatch diagnostic."""
+    target = tmp_path / "mods"
+    _seed(target, {"a.jar": b"actual"})
+    expected = {"a.jar": _sha(b"expected")}
+
+    diag = _verify_inventory(target, expected, RealFileOps())
+
+    assert diag is not None
+    assert "hash mismatch" in diag
+    assert "a.jar" in diag
