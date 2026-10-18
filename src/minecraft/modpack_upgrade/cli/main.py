@@ -40,6 +40,7 @@ from .commands import (
     runtime,
     status,
     stubs,
+    update,
     verify,
 )
 from .errors import UpgradeCliError
@@ -77,19 +78,14 @@ def _cmd_manifest_check(args: argparse.Namespace, config_dir: Path, project_root
 
 
 def _cmd_update(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
-    """Dispatch to the update command (spec Section 15.1.1).
-
-    ``--release-mode`` is required and constrained to ``update`` / ``upgrade``
-    by argparse; this handler re-validates defensively. The resolver body
-    lands in the slice 7b provider-adapters deliverable; until then the
-    command exits 1 with a clear message.
-    """
+    """Dispatch to the update command (spec Section 15.1.1)."""
     release_mode = getattr(args, "release_mode", None)
     if release_mode not in ("update", "upgrade"):
         raise UpgradeCliError(2, "update requires --release-mode {update|upgrade}")
-    return stubs.not_implemented(
-        "update",
-        f"--release-mode {release_mode}: resolver body lands in the slice 7b provider deliverable",
+    return update.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        release_mode=release_mode,
     )
 
 
@@ -265,24 +261,16 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Configure LoggingCore before any code can emit. Idempotent, so a
-    # caller that already configured (tests, embedded use) is unaffected.
     _configure_cli_logging(debug=False)
 
     parser = _build_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
-        # argparse handles --help (exit 0) and argument errors (exit 2)
-        # itself, writing to sys.stdout/sys.stderr internally. We only
-        # translate the exit into our return value.
         code = exc.code
         return code if isinstance(code, int) else 0
 
     if not hasattr(args, "func"):
-        # Defensive: subparsers are required=True, so argparse will have
-        # already exited above. If we ever reach here, show help on stdout
-        # (the standard stream for help) and return the usage-error code.
         parser.print_help()
         return 2
 

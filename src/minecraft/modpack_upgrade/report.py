@@ -95,7 +95,7 @@ class SeedEntry:
     """Represents a seed entry with file metadata, provider information, hashes, side declarations, and optional project and build identifiers."""
 
     filename: str
-    provider: str  # modrinth | curseforge | in-house
+    provider: str
     jar_sha256: str
     side_declared: str
     side_effective: str
@@ -450,6 +450,51 @@ def _resolved_from_dict(d: dict) -> ResolvedEntry:
     )
 
 
+def _lost_from_dict(d: dict) -> LostEntry:
+    # BUG-03: all fields routed through _require so missing keys surface as
+    # SchemaError instead of KeyError.
+    return LostEntry(
+        filename=_require(d, "filename", "[[lost]]."),
+        provider=_require(d, "provider", "[[lost]]."),
+        project_id=_require(d, "project_id", "[[lost]]."),
+        reason=_check_enum(_require(d, "reason", "[[lost]]."), _LOST_REASONS, "[[lost]].reason"),
+        detail=_require(d, "detail", "[[lost]]."),
+    )
+
+
+def _cascade_from_dict(d: dict) -> CascadeEntry:
+    # BUG-03: same treatment as _lost_from_dict.
+    return CascadeEntry(
+        filename=_require(d, "filename", "[[cascade]]."),
+        provider=_require(d, "provider", "[[cascade]]."),
+        project_id=_require(d, "project_id", "[[cascade]]."),
+        reason=_check_enum(_require(d, "reason", "[[cascade]]."), _CASCADE_REASONS, "[[cascade]].reason"),
+        dependency_chain=tuple(_require(d, "dependency_chain", "[[cascade]].")),
+    )
+
+
+def _conflict_from_dict(d: dict) -> ConflictEntry:
+    # BUG-03: same treatment; candidates also use _require so missing
+    # version_id/filename/source surface as SchemaError.
+    raw_candidates = _require(d, "candidates", "[[conflict]].")
+    return ConflictEntry(
+        project_id=_require(d, "project_id", "[[conflict]]."),
+        candidates=tuple(
+            ConflictCandidate(
+                version_id=_require(c, "version_id", "[[conflict]].candidates[]."),
+                filename=_require(c, "filename", "[[conflict]].candidates[]."),
+                source=_require(c, "source", "[[conflict]].candidates[]."),
+            )
+            for c in raw_candidates
+        ),
+        resolution=_check_enum(
+            _require(d, "resolution", "[[conflict]]."),
+            _CONFLICT_RESOLUTIONS,
+            "[[conflict]].resolution",
+        ),
+    )
+
+
 def load_report(path: Path) -> ResolutionReport:
     """Parse a resolution report from disk. Raises ``SchemaError`` on any problem."""
     if not path.is_file():
@@ -493,41 +538,9 @@ def load_report(path: Path) -> ResolutionReport:
         ),
         seed=tuple(_seed_from_dict(e) for e in data.get("seed", [])),
         resolved=tuple(_resolved_from_dict(e) for e in data.get("resolved", [])),
-        lost=tuple(
-            LostEntry(
-                filename=e["filename"],
-                provider=e["provider"],
-                project_id=e["project_id"],
-                reason=_check_enum(e["reason"], _LOST_REASONS, "[[lost]].reason"),
-                detail=e["detail"],
-            )
-            for e in data.get("lost", [])
-        ),
-        cascade=tuple(
-            CascadeEntry(
-                filename=e["filename"],
-                provider=e["provider"],
-                project_id=e["project_id"],
-                reason=_check_enum(e.get("reason"), _CASCADE_REASONS, "[[cascade]].reason"),
-                dependency_chain=tuple(e["dependency_chain"]),
-            )
-            for e in data.get("cascade", [])
-        ),
-        conflict=tuple(
-            ConflictEntry(
-                project_id=e["project_id"],
-                candidates=tuple(
-                    ConflictCandidate(
-                        version_id=c["version_id"],
-                        filename=c["filename"],
-                        source=c["source"],
-                    )
-                    for c in e["candidates"]
-                ),
-                resolution=_check_enum(e["resolution"], _CONFLICT_RESOLUTIONS, "[[conflict]].resolution"),
-            )
-            for e in data.get("conflict", [])
-        ),
+        lost=tuple(_lost_from_dict(e) for e in data.get("lost", [])),
+        cascade=tuple(_cascade_from_dict(e) for e in data.get("cascade", [])),
+        conflict=tuple(_conflict_from_dict(e) for e in data.get("conflict", [])),
         diagnostics=Diagnostics(
             errors=list(diagnostics_raw.get("errors", [])),
             warnings=list(diagnostics_raw.get("warnings", [])),

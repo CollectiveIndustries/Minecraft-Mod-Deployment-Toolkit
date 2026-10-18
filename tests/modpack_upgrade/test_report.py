@@ -323,3 +323,84 @@ def test_load_missing_required_field_raises(tmp_path: Path) -> None:
     p = _write_raw(tmp_path, raw)
     with pytest.raises(SchemaError, match="missing required field"):
         load_report(p)
+
+
+# ---------------------------------------------------------------------------
+# BUG-03 regression: malformed [[lost]] / [[cascade]] / [[conflict]]
+# raise SchemaError, not KeyError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "section,entry_missing",
+    [
+        ("lost", "filename"),
+        ("lost", "provider"),
+        ("lost", "project_id"),
+        ("lost", "reason"),
+        ("lost", "detail"),
+        ("cascade", "filename"),
+        ("cascade", "provider"),
+        ("cascade", "project_id"),
+        ("cascade", "reason"),
+        ("cascade", "dependency_chain"),
+        ("conflict", "project_id"),
+        ("conflict", "candidates"),
+        ("conflict", "resolution"),
+    ],
+)
+def test_load_missing_section_field_raises_schema_error(tmp_path: Path, section: str, entry_missing: str) -> None:
+    """Every documented section field surfaces as SchemaError when absent (BUG-03)."""
+    raw = _minimal_raw()
+    if section == "lost":
+        entry = {
+            "filename": "x.jar",
+            "provider": "modrinth",
+            "project_id": "x",
+            "reason": "no_compatible_version",
+            "detail": "d",
+        }
+        entry.pop(entry_missing)
+        raw["lost"] = [entry]
+    elif section == "cascade":
+        entry = {
+            "filename": "x.jar",
+            "provider": "modrinth",
+            "project_id": "x",
+            "reason": "dependency_unsatisfiable",
+            "dependency_chain": ["a", "b"],
+        }
+        entry.pop(entry_missing)
+        raw["cascade"] = [entry]
+    else:  # conflict
+        entry = {
+            "project_id": "x",
+            "candidates": [
+                {"version_id": "v1", "filename": "a.jar", "source": "seed"},
+            ],
+            "resolution": "seed_version_preferred",
+        }
+        entry.pop(entry_missing)
+        raw["conflict"] = [entry]
+
+    p = _write_raw(tmp_path, raw)
+    with pytest.raises(SchemaError, match="missing required field"):
+        load_report(p)
+
+
+def test_load_missing_conflict_candidate_field_raises_schema_error(tmp_path: Path) -> None:
+    """A missing conflict candidate field surfaces as SchemaError (BUG-03)."""
+    raw = _minimal_raw()
+    raw["conflict"] = [
+        {
+            "project_id": "x",
+            "candidates": [
+                # Missing "source"
+                {"version_id": "v1", "filename": "a.jar"},
+            ],
+            "resolution": "seed_version_preferred",
+        }
+    ]
+    p = _write_raw(tmp_path, raw)
+    with pytest.raises(SchemaError, match="missing required field"):
+        load_report(p)

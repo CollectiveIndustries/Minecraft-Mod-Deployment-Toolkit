@@ -117,12 +117,18 @@ def test_update_requires_release_mode(capsys: pytest.CaptureFixture[str]):
     assert code == 2
 
 
-def test_update_accepts_release_mode_value(capsys: pytest.CaptureFixture[str]):
-    """`update --release-mode upgrade` parses and reaches the resolver stub (exit 1)."""
-    code = main(["update", "--release-mode", "upgrade"])
-    assert code == 1
+def test_update_accepts_release_mode_value(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """`update --release-mode upgrade` parses and reaches the update command.
+
+    Without a project tree the command fails at manifest load (exit 3).
+    Full happy-path coverage lives in test_update_command.py.
+    """
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    code = main(["--config-dir", str(config_dir), "update", "--release-mode", "upgrade"])
+    assert code == 3
     captured = capsys.readouterr()
-    assert "not yet implemented" in captured.err
+    assert "manifest" in captured.err.lower()
 
 
 def test_materialize_requires_run_id(capsys: pytest.CaptureFixture[str]):

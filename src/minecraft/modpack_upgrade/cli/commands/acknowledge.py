@@ -181,7 +181,12 @@ def run(*, config_dir: Path, project_root: Path, run_id: str, accept_losses: boo
         effective_compose_sha256=effective_compose_sha,
     )
 
-    failures = check_integrity(state, integrity_ctx)
+    # BUG-02: any schema violation in the current inputs (manifest, seed,
+    # side_overrides) is an integrity failure -> exit 3, not exit 1.
+    try:
+        failures = check_integrity(state, integrity_ctx)
+    except SchemaError as exc:
+        raise UpgradeCliError(3, f"integrity check failed: {exc}") from exc
     if failures:
         raise UpgradeCliError(3, "integrity check failed:\n  - " + "\n  - ".join(failures))
 

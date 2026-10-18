@@ -23,6 +23,18 @@ class UpgradeConfigError(UpgradeError):
     exit_code = 3
 
 
+class ProviderError(UpgradeError):
+    """A provider API call or artifact download failed (spec Section 16.2 exit 1).
+
+    Covers: network failure, HTTP error, malformed response, declared-hash
+    mismatch on a downloaded artifact, or an oversized download. Never
+    used for a "no compatible version" outcome - that is a resolution
+    result, not an error.
+    """
+
+    exit_code = 1
+
+
 class ResolutionError(UpgradeError):
     """Raised when dependency or version resolution fails."""
 
