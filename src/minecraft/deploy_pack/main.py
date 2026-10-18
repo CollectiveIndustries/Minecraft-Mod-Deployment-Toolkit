@@ -43,7 +43,6 @@ Exit codes (Section 2.4):
 from __future__ import annotations
 
 import argparse
-import logging
 import subprocess
 import sys
 import tomllib
@@ -90,6 +89,9 @@ from .preflight import PreflightError, PreflightPlan, ScopeSet, run_preflight, s
 from .scope_client import ClientScopeResult, deploy_client_scope
 from .scope_resource_pack import ResourcePackScopeResult, deploy_resource_pack_scope
 from .scope_server import ServerScopeResult, deploy_server_scope
+
+_log = _get_loggingcore_logger(__name__)
+_log_cli = _get_loggingcore_logger("minecraft.deploy_pack.cli.main")
 
 _DEFAULT_SLIP_CONFIG: dict[str, str] = {
     "release_slip_dir": "sync/packing_slips",
@@ -471,9 +473,13 @@ def _build_slip_context(config_dir: Path, args: _Args, logger: Any) -> SlipConte
 
 
 def _setup_logging(debug: bool) -> Any:
-    """Configure logging and return this module's logger."""
-    level = logging.DEBUG if debug else logging.INFO
-    logging.getLogger().setLevel(level)
+    """Configure LoggingCore and return this module's logger.
+
+    ``_configure_logging`` installs the RoutingSink (see
+    :mod:`minecraft.common.cli_logging`). Calling it with ``debug=True``
+    after the entry point has already called it with ``debug=False``
+    upgrades the minimum level to DEBUG.
+    """
     _configure_logging(debug=debug)
     return _get_loggingcore_logger(__name__)
 
@@ -522,8 +528,8 @@ def _warn_unfixable(unfixable: list, logger: Any) -> None:
 
 def _prompt_one_jar(jar: Any) -> str | None:
     """Prompt for one jar; returns the review value or None to defer."""
-    print(f"Unmarked: {jar.filename}")
-    print(f"  reason: {jar.reason}")
+    _log_cli.info(f"Unmarked: {jar.filename}")
+    _log_cli.info(f"  reason: {jar.reason}")
     while True:
         try:
             answer = input("  side? [s]erver / [c]lient / [b]oth / [k]skip / [d]efer: ")
@@ -540,7 +546,7 @@ def _prompt_one_jar(jar: Any) -> str | None:
             return "skipped"
         if answer in ("d", ""):
             return None
-        print("  Invalid answer. Try again.")
+        _log_cli.info("  Invalid answer. Try again.")
 
 
 def _prompt_for_unmarked(config: DeploymentConfig, logger: Any) -> None:
@@ -570,7 +576,7 @@ def _prompt_for_unmarked(config: DeploymentConfig, logger: Any) -> None:
     existing = load_side_overrides(overrides_path)
     review = dict(existing.deployment_tool_review)
     logger.info(f"Prompting for {len(fixable)} unmarked jar(s). Answers are written to {overrides_path}.")
-    print()
+    _log_cli.info("")
     for jar in fixable:
         answer = _prompt_one_jar(jar)
         if answer is not None:
@@ -638,21 +644,21 @@ class _RconSet:
 
 
 def _run_debug_deps(config: DeploymentConfig, logger: Any) -> None:
-    """Print dependency closure for both sides (Section 2.5)."""
+    """Emit dependency closure for both sides (Section 2.5)."""
     index_dir = Path(config.modpack_dir) / ".index"
     if not index_dir.is_dir():
-        print(f"Prism index directory not found: {index_dir}", file=sys.stderr)
+        _log_cli.error(f"Prism index directory not found: {index_dir}")
         return
     all_mods = deps.load_prism_index(index_dir)
     if not all_mods:
-        print(f"No mod entries found in {index_dir}", file=sys.stderr)
+        _log_cli.error(f"No mod entries found in {index_dir}")
         return
     overrides_path = Path(config.config_dir) / "side_overrides.toml"
     ovr = load_side_overrides(overrides_path)
     if not ovr.is_empty():
         all_mods = apply_side_overrides(all_mods, ovr)
     seeds = {side: deps.filter_prism_entries_by_side(all_mods, side) for side in ("client", "server")}
-    print(deps.format_diagnostic(all_entries=all_mods, seeds=seeds, modpack_dir=config.modpack_dir, logger=logger))
+    _log_cli.info(deps.format_diagnostic(all_entries=all_mods, seeds=seeds, modpack_dir=config.modpack_dir, logger=logger))
 
 
 def _run_diagnostic_notify(config: DeploymentConfig, logger: Any) -> None:
@@ -942,38 +948,38 @@ def _failure_container_status(
 
 
 def _print_cli_container_status(status: dict[str, str]) -> None:
-    """Print per-container status to CLI, format per Section 5.8."""
+    """Emit per-container status to CLI, format per Section 5.8."""
     for member in sorted(status):
-        print(f"{member}: {status[member]}")
+        _log_cli.info(f"{member}: {status[member]}")
 
 
 def _print_server_write_failure_recovery(config: DeploymentConfig, to_stop: list[str], failure_summary: str) -> None:
-    """Print the Section 4.7 server-scope write-failure recovery block to CLI."""
-    print()
-    print("RECOVERY REQUIRED")
-    print()
-    print("A server-scope write failed. Minecraft containers are stopped and")
-    print("were not automatically restarted.")
-    print()
-    print("Affected instances:")
+    """Emit the Section 4.7 server-scope write-failure recovery block to CLI."""
+    _log_cli.info("")
+    _log_cli.info("RECOVERY REQUIRED")
+    _log_cli.info("")
+    _log_cli.info("A server-scope write failed. Minecraft containers are stopped and")
+    _log_cli.info("were not automatically restarted.")
+    _log_cli.info("")
+    _log_cli.info("Affected instances:")
     containers: list[str] = []
     for member in sorted(to_stop):
         inst = config.instances.get(member)
         container = getattr(inst, "container", None) or member
         containers.append(container)
-        print(f"  {container}: stopped")
-    print()
-    print("Reason:")
-    print(f"  {failure_summary}")
-    print()
-    print("Recovery steps:")
-    print("  1. Investigate the failure and repair the source.")
-    print("  2. Re-run deployment once the source is correct.")
-    print("     Note: a same-day re-run overwrites the day's client ZIP if")
-    print("     --client is in scope, and the day's resource-pack ZIP if")
-    print("     --resource-pack is in scope.")
-    print("  3. Or start containers manually with:")
-    print("       docker start " + " ".join(containers))
+        _log_cli.info(f"  {container}: stopped")
+    _log_cli.info("")
+    _log_cli.info("Reason:")
+    _log_cli.info(f"  {failure_summary}")
+    _log_cli.info("")
+    _log_cli.info("Recovery steps:")
+    _log_cli.info("  1. Investigate the failure and repair the source.")
+    _log_cli.info("  2. Re-run deployment once the source is correct.")
+    _log_cli.info("     Note: a same-day re-run overwrites the day's client ZIP if")
+    _log_cli.info("     --client is in scope, and the day's resource-pack ZIP if")
+    _log_cli.info("     --resource-pack is in scope.")
+    _log_cli.info("  3. Or start containers manually with:")
+    _log_cli.info("       docker start " + " ".join(containers))
 
 
 def _print_recovery_block(
@@ -982,30 +988,30 @@ def _print_recovery_block(
     container_states: dict[str, Any],
     reason: str,
 ) -> None:
-    """Print the Section 8.8 recovery block after a failed pre-hook stop."""
+    """Emit the Section 8.8 recovery block after a failed pre-hook stop."""
     start_failed = list(getattr(recovery, "start_failed", []) or [])
     unreachable = list(getattr(recovery, "unreachable", []) or [])
     affected = sorted(set(start_failed) | set(unreachable))
     if not affected:
         return
-    print()
-    print("RECOVERY REQUIRED")
-    print()
-    print(reason)
-    print()
-    print("Affected instances:")
+    _log_cli.info("")
+    _log_cli.info("RECOVERY REQUIRED")
+    _log_cli.info("")
+    _log_cli.info(reason)
+    _log_cli.info("")
+    _log_cli.info("Affected instances:")
     containers: list[str] = []
     for member in affected:
         inst = config.instances.get(member)
         container = getattr(inst, "container", None) or member
         containers.append(container)
-        print(f"  {container}: stopped")
-    print()
-    print("Recovery steps:")
-    print("  1. Investigate the failure and repair the source.")
-    print("  2. Re-run deployment once the source is correct.")
-    print("  3. Or start containers manually with:")
-    print("       docker start " + " ".join(containers))
+        _log_cli.info(f"  {container}: stopped")
+    _log_cli.info("")
+    _log_cli.info("Recovery steps:")
+    _log_cli.info("  1. Investigate the failure and repair the source.")
+    _log_cli.info("  2. Re-run deployment once the source is correct.")
+    _log_cli.info("  3. Or start containers manually with:")
+    _log_cli.info("       docker start " + " ".join(containers))
 
 
 # ===========================================================================
@@ -1146,7 +1152,7 @@ def _run_notice_phase(state: _RuntimeState) -> int | None:
     outcome = _dispatch_restart_notices(state.config, state.warned_and_running, state.rcon_set, state.logger)
     if outcome.failed and state.config.docker.in_game_notice_required:
         _dispatch_cancel_notice(state.config, outcome.attempted, state.rcon_set, state.logger)
-        print("in_game_notice: RCON notice failed for: " + ", ".join(outcome.failed))
+        _log_cli.info("in_game_notice: RCON notice failed for: " + ", ".join(outcome.failed))
         state.logger.error("restart notice dispatch failed; aborting before any writes")
         return 1
     if outcome.any_delivered:
@@ -1176,7 +1182,7 @@ def _run_stop_phase(state: _RuntimeState) -> int | None:
     state.to_stop = list(state.pre.stopped)
     if state.pre.failed:
         state.logger.error(f"stop phase failed for: {', '.join(state.pre.failed)}")
-        print("pre_hook: docker stop failed for: " + ", ".join(state.pre.failed))
+        _log_cli.info("pre_hook: docker stop failed for: " + ", ".join(state.pre.failed))
         if state.pre.recovery is not None and state.pre.recovery.any_failure:
             _print_recovery_block(
                 state.config,
@@ -1205,7 +1211,7 @@ def _run_write_phase(state: _RuntimeState) -> int | None:
         if state.to_stop:
             _print_server_write_failure_recovery(state.config, state.to_stop, write_msg)
         else:
-            print(f"mid_scope_write: {write_msg}")
+            _log_cli.info(f"mid_scope_write: {write_msg}")
         return 1
 
     recovery = recover_stopped_containers(
@@ -1220,7 +1226,7 @@ def _run_write_phase(state: _RuntimeState) -> int | None:
     status = _failure_container_status(state.plan, state.pre, None, [], [])
     if state.notify:
         _send_failure(state.config, "mid_scope_write", write_msg, status, state.logger)
-    print(f"mid_scope_write: {write_msg}")
+    _log_cli.info(f"mid_scope_write: {write_msg}")
     _print_cli_container_status(status)
     return 1
 
@@ -1257,7 +1263,7 @@ def _run_reload_phase(state: _RuntimeState) -> int | None:
     status = _failure_container_status(state.plan, state.pre, None, state.reloaded, state.reload_failed)
     if state.notify:
         _send_failure(state.config, "reload", msg, status, state.logger)
-    print(f"reload: {msg}")
+    _log_cli.info(f"reload: {msg}")
     _print_cli_container_status(status)
     return 1
 
@@ -1297,7 +1303,7 @@ def _handle_post_failure(state: _RuntimeState, post: PostHookResult) -> int:
     status = _failure_container_status(state.plan, state.pre, post, state.reloaded, state.reload_failed)
     if state.notify:
         _send_failure(state.config, stage, err, status, state.logger)
-    print(f"{stage}: {err}")
+    _log_cli.info(f"{stage}: {err}")
     _print_cli_container_status(status)
     return 1
 
@@ -1543,8 +1549,8 @@ def _validate_cli(args: _Args, parser: argparse.ArgumentParser, remaining: list[
         _validate_args(args, parser)
         _validate_passthrough_flags(remaining)
     except UsageError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        parser.print_usage(sys.stderr)
+        _log_cli.error(f"error: {exc}")
+        parser.print_usage(sys.stderr)  # noqa: TID251 -- argparse's own usage stream
         return 2
     return None
 
@@ -1552,12 +1558,12 @@ def _validate_cli(args: _Args, parser: argparse.ArgumentParser, remaining: list[
 def _dispatch_audit_mods(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
     """Section 2.7: standalone Textual audit UI."""
     if not getattr(prompt_ui, "HAS_TEXTUAL", False):
-        print("error: --audit-mods requires the textual package", file=sys.stderr)
+        _log_cli.error("error: --audit-mods requires the textual package")
         return 1
     try:
         config = _load_config(config_dir, remaining)
     except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _log_cli.error(f"error: {exc}")
         return 3
     return prompt_ui.run_audit(config, logger)
 
@@ -1642,6 +1648,9 @@ def main(argv: list[str] | None = None) -> int:
     """Process entrypoint; maps exceptions to Section 2.4's exit codes."""
     if argv is None:
         argv = sys.argv[1:]
+    # Configure LoggingCore before any logger is used. Idempotent; a later
+    # call inside _run (with --debug) upgrades the minimum level to DEBUG.
+    _configure_logging(debug=False)
     try:
         return _run(argv)
     except SystemExit as exc:
@@ -1650,24 +1659,24 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if isinstance(code, int):
             return code
-        print(code, file=sys.stderr)
+        _log_cli.error(str(code))
         return 0
     except UsageError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _log_cli.error(f"error: {exc}")
         return 2
     except DockerUnavailableError as exc:
-        logging.getLogger("deploy_pack").error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        _log.error(str(exc))
+        _log_cli.error(f"error: {exc}")
         return 1
     except (DockerRuntimeError, RuntimeDeployError) as exc:
-        logging.getLogger("deploy_pack").error(str(exc))
-        print(f"error: {exc}", file=sys.stderr)
+        _log.error(str(exc))
+        _log_cli.error(f"error: {exc}")
         return 1
     except (ConfigError, PreflightError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _log_cli.error(f"error: {exc}")
         return 3
     except DeployPackError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _log_cli.error(f"error: {exc}")
         return getattr(exc, "exit_code", 1)
     except Exception:
         traceback.print_exc()

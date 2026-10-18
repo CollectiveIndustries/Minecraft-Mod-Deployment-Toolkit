@@ -189,7 +189,6 @@ def test_status_with_state(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     (state_dir / "active-release.txt").write_text("v1.0.2\n")
     (state_dir / "last-registry-head.txt").write_text("abc123\n")
     (state_dir / "last-verification.json").write_text('{"release_id": "v1.0.2", "status": "ok", "at_utc": "2026-10-17T00:00:00Z"}')
-    # Point daemon state_dir at our test state dir
     (config_dir / "deploy_pack.toml").write_text(f'[daemon]\nstate_dir = "{state_dir}"\n', encoding="utf-8")
     code = main(["--config-dir", str(config_dir), "status"])
     assert code == 0
@@ -286,17 +285,22 @@ def test_manifest_missing(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
 
 
 def test_manifest_valid(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """A valid manifest parses and reports its top-level keys."""
+    """A valid Section 8 manifest parses and reports its fields."""
     config_dir = _setup_project(tmp_path)
     manifest = tmp_path / "sync" / "modpack.manifest.toml"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text('name = "test"\nversion = "1.0.0"\n', encoding="utf-8")
+    manifest.write_text(
+        '[minecraft]\nversion = "1.21.1"\nloader = "forge"\nloader_version = "52.0.1"\n\n[policy]\nselection = "release_then_beta"\nno_version = "ask"\n',
+        encoding="utf-8",
+    )
     code = main(["--config-dir", str(config_dir), "manifest", "check"])
     assert code == 0
     captured = capsys.readouterr()
-    assert "top_level_keys: 2" in captured.out
-    assert "name" in captured.out
-    assert "version" in captured.out
+    assert "status: valid" in captured.out
+    assert "[minecraft].version: 1.21.1" in captured.out
+    assert "[minecraft].loader: forge" in captured.out
+    assert "[policy].selection: release_then_beta" in captured.out
+    assert "[policy].no_version: ask" in captured.out
 
 
 def test_manifest_invalid_toml(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -315,7 +319,10 @@ def test_manifest_explicit_path(tmp_path: Path, capsys: pytest.CaptureFixture[st
     """An explicit manifest path overrides the default."""
     config_dir = _setup_project(tmp_path)
     custom = tmp_path / "custom-manifest.toml"
-    custom.write_text("only_key = true\n", encoding="utf-8")
+    custom.write_text(
+        '[minecraft]\nversion = "1.20.1"\nloader = "forge"\nloader_version = "47.4.10"\n\n[policy]\nselection = "release_only"\nno_version = "drop"\n',
+        encoding="utf-8",
+    )
     code = main(
         [
             "--config-dir",
@@ -327,4 +334,7 @@ def test_manifest_explicit_path(tmp_path: Path, capsys: pytest.CaptureFixture[st
     )
     assert code == 0
     captured = capsys.readouterr()
-    assert "top_level_keys: 1" in captured.out
+    assert "status: valid" in captured.out
+    assert "[minecraft].version: 1.20.1" in captured.out
+    assert "[policy].selection: release_only" in captured.out
+    assert "[policy].no_version: drop" in captured.out

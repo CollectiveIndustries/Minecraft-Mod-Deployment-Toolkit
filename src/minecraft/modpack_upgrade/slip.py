@@ -38,8 +38,14 @@ _JAR_SIDES = ("both", "server", "client")
 _CONFIG_MODES = ("merge", "delete")
 _KUBEJS_MODES = ("delete",)
 _DEP_NAMESPACES = ("project", "modid")
-_DEP_SOURCES = ("pw_toml", "jar_manifest")
+# Amendments A1.2: provider_metadata joins the source enum.
+_DEP_SOURCES = ("pw_toml", "jar_manifest", "provider_metadata")
+# Amendments A1.3: type is constrained to six values.
+_DEP_TYPES = ("required", "optional", "incompatible", "embedded", "tool", "include")
 _TESTED_WORLDS = ("survival", "creative")
+
+# Backward-compat placeholder for v1.3.0 slips that predate A1.1.
+_ZERO_SHA256 = "0" * 64
 
 
 # ===========================================================================
@@ -72,9 +78,19 @@ class GitInputs:
 
 @dataclass(frozen=True)
 class Fingerprints:
-    """Canonical fingerprints recorded in a packing slip's [fingerprints] table."""
+    """Canonical fingerprints recorded in a packing slip's [fingerprints] table.
+
+    Amendment A1.1: ``resolution_inputs_sha256`` replaces the retired
+    ``side_policy_sha256``; its inputs are covered by ``side_overrides``
+    inside the resolver input snapshot (spec Section 5.4.1).
+
+    For slips created under v1.3.0 that predate A1.1, the field is
+    absent from disk and ``parse_slip`` fills it with a zero-hash
+    placeholder. Newly materialized slips always carry the real value.
+    """
 
     manifest_sha256: str
+    resolution_inputs_sha256: str
     runtime_sha256: str
     server_inputs_sha256: str
     client_inputs_sha256: str
@@ -90,7 +106,12 @@ class TestedInfo:
 
 @dataclass(frozen=True)
 class Dependency:
-    """A single dependency edge on a [[jar]] entry."""
+    """A single dependency edge on a [[jar]] entry.
+
+    ``source`` is one of ``pw_toml`` / ``jar_manifest`` / ``provider_metadata``
+    (Amendments A1.2). ``type`` is one of the six values in ``_DEP_TYPES``
+    (Amendments A1.3).
+    """
 
     namespace: str
     provider: str | None
@@ -458,11 +479,25 @@ def _build_git_inputs(body: dict) -> GitInputs:
 
 
 def _build_fingerprints(body: dict) -> Fingerprints:
-    """Build the [fingerprints] descriptor from ``body``, or raise SchemaError."""
+    """Build the [fingerprints] descriptor from ``body``, or raise SchemaError.
+
+    Amendment A1.1: ``resolution_inputs_sha256`` replaces the retired
+    ``side_policy_sha256``. It is required for slips created under
+    v1.3.1. Slips created under v1.3.0 predate the field; those are
+    accepted with a zero-hash placeholder so historical release bundles
+    remain loadable and their canonical hash still verifies. Newly
+    materialized slips always carry the real value.
+    """
     raw = _require_table(body, "fingerprints")
     path = "[fingerprints]."
+    resolution_inputs = raw.get("resolution_inputs_sha256")
+    if resolution_inputs is None:
+        resolution_inputs = _ZERO_SHA256
+    elif not isinstance(resolution_inputs, str) or _SHA256_RE.fullmatch(resolution_inputs) is None:
+        raise SchemaError(f"{path}resolution_inputs_sha256 must be a lowercase 64-char SHA-256 hex string")
     return Fingerprints(
         manifest_sha256=_require_sha256(raw, "manifest_sha256", path=path),
+        resolution_inputs_sha256=resolution_inputs,
         runtime_sha256=_require_sha256(raw, "runtime_sha256", path=path),
         server_inputs_sha256=_require_sha256(raw, "server_inputs_sha256", path=path),
         client_inputs_sha256=_require_sha256(raw, "client_inputs_sha256", path=path),
@@ -486,7 +521,11 @@ def _build_tested(body: dict) -> TestedInfo:
 
 
 def _build_dependency(raw: dict, index: int) -> Dependency:
-    """Build one dependency edge, or raise SchemaError."""
+    """Build one dependency edge, or raise SchemaError.
+
+    Amendment A1.2: ``source`` accepts ``provider_metadata``. Amendment
+    A1.3: ``type`` is constrained to the six-value enum.
+    """
     path = f"[[jar]].dependencies[{index}]."
     if not isinstance(raw, dict):
         raise SchemaError(f"{path} must be a table")
@@ -496,12 +535,15 @@ def _build_dependency(raw: dict, index: int) -> Dependency:
     source = raw.get("source")
     if source not in _DEP_SOURCES:
         raise SchemaError(f"{path}source must be one of {_DEP_SOURCES}")
+    dep_type = _require_str(raw, "type", path=path)
+    if dep_type not in _DEP_TYPES:
+        raise SchemaError(f"{path}type must be one of {_DEP_TYPES}, got {dep_type!r}")
     return Dependency(
         namespace=namespace,
         provider=_optional_str(raw, "provider", path=path),
         project_id=_optional_str(raw, "project_id", path=path),
         version_id=_optional_str(raw, "version_id", path=path),
-        type=_require_str(raw, "type", path=path),
+        type=dep_type,
         source=source,
     )
 

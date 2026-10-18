@@ -4,14 +4,16 @@
 
 from __future__ import annotations
 
-import sys
+from LoggingCore import get_logger
 
 __all__ = ["not_implemented"]
 
+_log_cli = get_logger("minecraft.modpack_upgrade.cli.commands.stubs")
+
 
 def not_implemented(name: str, hint: str | None = None) -> int:
-    """Print a "not implemented" message and return exit code 1."""
-    print(f"error: {name!r} is not yet implemented", file=sys.stderr)
+    """Emit a "not implemented" message and return exit code 1."""
+    _log_cli.error(f"error: {name!r} is not yet implemented")
     if hint:
-        print(f"  hint: {hint}", file=sys.stderr)
+        _log_cli.error(f"  hint: {hint}")
     return 1

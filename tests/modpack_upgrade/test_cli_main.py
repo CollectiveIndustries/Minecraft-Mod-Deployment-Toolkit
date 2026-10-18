@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from minecraft.modpack_upgrade.cli.main import main
@@ -78,31 +80,73 @@ def test_verify_help_exits_zero(capsys: pytest.CaptureFixture[str]):
 
 
 # ---------------------------------------------------------------------------
-# Stubs
+# Stubs (later-slice commands still not implemented)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "argv",
     [
-        ["update"],
-        ["materialize"],
-        ["iterate"],
         ["build-client"],
         ["snapshot-world"],
         ["build-inhouse", "mymod", "abc123"],
         ["validate", "migration"],
         ["validate", "velocity"],
         ["publish", "v1.0.2"],
-        ["promote", "v1.0.2"],
     ],
 )
 def test_stubs_exit_one(
     argv: list[str],
     capsys: pytest.CaptureFixture[str],
 ):
-    """Every stub command exits 1 with a 'not yet implemented' message."""
+    """Commands still unimplemented exit 1 with a 'not yet implemented' message."""
     code = main(argv)
     assert code == 1
     captured = capsys.readouterr()
     assert "not yet implemented" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Implemented resolver commands (require flags; enforce their own preconditions)
+# ---------------------------------------------------------------------------
+
+
+def test_update_requires_release_mode(capsys: pytest.CaptureFixture[str]):
+    """`update` requires --release-mode; argparse exits 2."""
+    code = main(["update"])
+    assert code == 2
+
+
+def test_update_accepts_release_mode_value(capsys: pytest.CaptureFixture[str]):
+    """`update --release-mode upgrade` parses and reaches the resolver stub (exit 1)."""
+    code = main(["update", "--release-mode", "upgrade"])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "not yet implemented" in captured.err
+
+
+def test_materialize_requires_run_id(capsys: pytest.CaptureFixture[str]):
+    """`materialize` requires --run-id; argparse exits 2."""
+    code = main(["materialize"])
+    assert code == 2
+
+
+def test_iterate_requires_run_id(capsys: pytest.CaptureFixture[str]):
+    """`iterate` requires --run-id; argparse exits 2."""
+    code = main(["iterate"])
+    assert code == 2
+
+
+def test_promote_without_candidate_exits_3(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """`promote` exits 3 when no materialized candidate exists."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (config_dir / "deploy_pack.toml").write_text(
+        f'[daemon]\nstate_dir = "{state_dir}"\n',
+        encoding="utf-8",
+    )
+    code = main(["--config-dir", str(config_dir), "promote", "v1.0.2"])
+    assert code == 3
+    assert "no materialized candidate" in capsys.readouterr().err

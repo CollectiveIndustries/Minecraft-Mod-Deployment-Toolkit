@@ -29,6 +29,20 @@ from .plugins.http import HttpAdminPlugin
 __all__ = ["build_daemon", "main"]
 
 
+def _startup_error(message: str) -> None:
+    """Write a startup error to stderr before LoggingCore is available.
+
+    DaemonCore installs its logging sinks inside ``daemon.run()``. Errors
+    that occur before that call (config load, daemon construction, or the
+    daemon itself raising) cannot route through LoggingCore because no
+    core is configured yet; writing to stderr is the only correct option.
+    This helper is the single allowed exception to the "no direct
+    sys.stderr" rule for this file.
+    """
+    sys.stderr.write(message + "\n")  # noqa: TID251 -- see docstring
+    sys.stderr.flush()  # noqa: TID251 -- see docstring
+
+
 def build_daemon(config: MinecraftDaemonConfig) -> Daemon:
     """Construct a fully wired ``Daemon`` from ``config``.
 
@@ -83,18 +97,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(config_dir)
     except Exception as exc:
-        print(f"config error: {exc}", file=sys.stderr)
+        _startup_error(f"config error: {exc}")
         return 3
 
     try:
         daemon = build_daemon(config)
     except ValueError as exc:
-        print(f"daemon config error: {exc}", file=sys.stderr)
+        _startup_error(f"daemon config error: {exc}")
         return 3
 
     try:
         asyncio.run(daemon.run())
     except DaemonError as exc:
-        print(f"daemon error: {exc}", file=sys.stderr)
+        _startup_error(f"daemon error: {exc}")
         return 1
     return 0

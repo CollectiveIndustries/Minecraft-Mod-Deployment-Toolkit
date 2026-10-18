@@ -60,24 +60,23 @@ Logging
 
 Module logger is ``minecraft.deploy_pack.prompt_ui``. :class:`AuditRow`
 and its methods are pure and emit nothing. The ``AuditApp`` widget
-emits nothing on the hot path (``action_toggle``, ``_refresh_row``,
-``_selected_row`` fire once per keystroke or repaint); only the two
-terminal transitions - :meth:`AuditApp.action_save` and
-:meth:`AuditApp.action_discard` - log at DEBUG. :func:`build_audit_rows`
-logs at INFO with the row count and the distribution of existing
-override sections; :func:`compute_review_entries` logs at DEBUG with
-the number of entries that will be written. :func:`run_audit` is the
-operator-facing surface: INFO on entry with row count, INFO on discard,
-INFO on save with entry count, ERROR before the stderr ``print`` on
-save failure, and ERROR on the defensive ``HAS_TEXTUAL`` check. The
-``HAS_TEXTUAL`` guard is defense-in-depth - ``main.py`` already
-checks the flag before dispatching - but logging it keeps direct
-library use diagnosable.
+emits nothing on the hot path; only the two terminal transitions -
+:meth:`AuditApp.action_save` and :meth:`AuditApp.action_discard` - log
+at DEBUG. :func:`build_audit_rows` logs at INFO with the row count and
+the distribution of existing override sections; :func:`compute_review_entries`
+logs at DEBUG with the number of entries that will be written.
+:func:`run_audit` is the operator-facing surface: INFO on entry with row
+count, INFO on discard, INFO on save with entry count, and ERROR before
+returning 1 on save failure or missing Textual.
+
+User-visible errors in :func:`run_audit` are emitted through the
+CLI-namespaced ``_log_cli`` logger so the routing sink writes them to
+stderr with no prefix. Internal progress uses ``_log`` (diagnostic,
+``[LEVEL] logger.name:`` prefix, stderr).
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -106,6 +105,7 @@ except ImportError:
 from .logging_setup import get_logger
 
 _log = get_logger(__name__)
+_log_cli = get_logger("minecraft.deploy_pack.cli.prompt_ui")
 
 __all__ = ["HAS_TEXTUAL", "AuditRow", "build_audit_rows", "compute_review_entries", "run_audit"]
 if HAS_TEXTUAL:
@@ -117,7 +117,8 @@ VALID_REVIEW_VALUES = ("server", "client", "both", "skipped")
 class AuditRow:
     """One mod's audit state.
 
-    Pure data plus pure methods. No logging: :meth:`toggle` runs once per keystroke and :meth:`from_entry` runs once per Prism entry, so per-call
+    Pure data plus pure methods. No logging: :meth:`toggle` runs once per
+    keystroke and :meth:`from_entry` runs once per Prism entry, so per-call
     logging would drown the sink for no diagnostic gain.
     """
 
@@ -238,7 +239,8 @@ class AuditRow:
 def build_audit_rows(config: DeploymentConfig, logger: Any = None) -> list[AuditRow]:
     """Load every indexed mod and its current override state.
 
-    Logs at INFO with the final row count and the number of rows that carried a pre-existing override from each section.
+    Logs at INFO with the final row count and the number of rows that
+    carried a pre-existing override from each section.
     """
     if logger is None:
         logger = _log
@@ -266,7 +268,8 @@ def build_audit_rows(config: DeploymentConfig, logger: Any = None) -> list[Audit
 def compute_review_entries(rows: list[AuditRow], logger: Any = None) -> dict[str, str]:
     """Build the [deployment_tool_review] dict from the row toggles.
 
-    Rows whose :attr:`AuditRow.review_value` is None are omitted, so saving after toggling D (or clearing all toggles) removes the entry.
+    Rows whose :attr:`AuditRow.review_value` is None are omitted, so saving
+    after toggling D (or clearing all toggles) removes the entry.
     """
     if logger is None:
         logger = _log
@@ -395,20 +398,22 @@ if HAS_TEXTUAL:
 def run_audit(config: DeploymentConfig, logger: Any = None) -> int:
     """Run the audit UI.
 
-    Returns the process exit code.
-        0 on save, discard, or Ctrl+C. 1 only on an unrecoverable error
-        (missing Textual, config parse failure, or save write failure).
+    Returns the process exit code. 0 on save, discard, or Ctrl+C. 1 only
+    on an unrecoverable error (missing Textual, config parse failure, or
+    save write failure).
 
-        The save path is ``overrides.save_side_overrides`` - the same
-        line-based splice used by the CLI. A crash mid-save leaves the
-        original file intact (Section 6.1, Section 4.10).
+    The save path is ``overrides.save_side_overrides`` - the same
+    line-based splice used by the CLI. A crash mid-save leaves the
+    original file intact (Section 6.1, Section 4.10).
+
+    User-visible error messages route through ``_log_cli`` (CLI namespace)
+    so they appear on stderr without the ``[ERROR] logger.name:`` prefix
+    that diagnostic output carries.
     """
     if logger is None:
         logger = _log
     if not HAS_TEXTUAL:
-        msg = "--audit-mods requires the 'textual' package. Install it with: pip install textual"
-        logger.error(f"run_audit: {msg}")
-        print(f"error: {msg}", file=sys.stderr)
+        _log_cli.error("error: --audit-mods requires the 'textual' package. Install it with: pip install textual")
         return 1
     logger.info(f"run_audit: entering; config_dir={config.config_dir} modpack_dir={config.modpack_dir}")
     rows = build_audit_rows(config, logger)
@@ -422,8 +427,7 @@ def run_audit(config: DeploymentConfig, logger: Any = None) -> int:
     try:
         save_side_overrides(overrides_path, entries, logger=logger)
     except Exception as exc:
-        logger.error(f"run_audit: failed to save {overrides_path}: {exc}")
-        print(f"error saving {overrides_path}: {exc}", file=sys.stderr)
+        _log_cli.error(f"error saving {overrides_path}: {exc}")
         return 1
     logger.info(f"run_audit: wrote {len(entries)} review entr(ies) to {overrides_path}")
     return 0

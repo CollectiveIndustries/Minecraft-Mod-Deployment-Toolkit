@@ -82,7 +82,7 @@ filterwarnings = []
 
 markers = [
     "e2e: marks tests as end-to-end (deselect with '-m \"not e2e\"')",
-    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "integration: marks tests as integration (deselect with '-m \"not integration\"')",
 ]
 
 [tool.coverage]
@@ -123,7 +123,8 @@ select = [
     "PLE",     # pylint errors
     "RUF",     # Ruff-specific rules
     "D",       # docstrings
-    "TID",     # tidy-imports / banned APIs
+    "TID",     # tidy-imports / banned API rules
+    "T201",    # prohibit direct print() calls; use LoggingCore
 
     "ANN001",  # function arguments must be annotated
     "ANN002",  # *args must be annotated
@@ -161,7 +162,33 @@ ignore = [
     "ANN204",
     "ANN205",
     "ANN206",
+    "TID251",
 ]
+
+# The RoutingSink implementation writes to ``sys.stdout``/``sys.stderr``
+# directly. That is the entire purpose of a sink: it is the boundary
+# between LoggingCore and a stream. No other file may do this.
+"src/minecraft/common/cli_logging.py" = ["TID251"]
+
+# Dev-only proof-of-concept tools. Human-readable stdout is their
+# interface; a proper logging system is deferred to a future upgrade.
+"src/minecraft/audit_ores.py" = ["T201", "TID251"]
+"src/minecraft/generate_drawers.py" = ["T201", "TID251"]
+"src/minecraft/lookup.py" = ["T201", "TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Allow sibling relative imports, but prohibit imports from parent packages.
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"logging" = { msg = "Use your project's LoggingCore API instead of the standard-library logging module." }
+"builtins.print" = { msg = "Use LoggingCore instead of explicitly calling builtins.print(). Bare print() calls are caught by T201." }
+"pprint.pprint" = { msg = "Use LoggingCore instead of pprint.pprint()." }
+"rich.print" = { msg = "Use LoggingCore instead of rich.print()." }
+"sys.stdout" = { msg = "Use LoggingCore instead of writing directly to sys.stdout." }
+"sys.stderr" = { msg = "Use LoggingCore instead of writing directly to sys.stderr." }
+
+
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

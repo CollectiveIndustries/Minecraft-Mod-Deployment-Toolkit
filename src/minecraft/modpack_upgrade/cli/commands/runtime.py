@@ -3,9 +3,8 @@
 """``minecraft-upgrade runtime inspect`` -- report effective runtime.
 
 Reads the Compose file referenced by ``[docker].compose_file`` in
-``config.d/deploy_pack.toml`` and prints each service's image, platform,
-and container name. This is a read-only inspection -- it does not touch
-containers.
+``config.d/deploy_pack.toml`` and emits each service's image, platform,
+and container name. Read-only: no container is touched.
 """
 
 from __future__ import annotations
@@ -13,10 +12,14 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from LoggingCore import get_logger
+
 from minecraft.deploy_pack.config_model import load_compose
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 
 __all__ = ["run"]
+
+_log_cli = get_logger("minecraft.modpack_upgrade.cli.commands.runtime")
 
 
 def _resolve_compose_file(config_dir: Path, project_root: Path) -> Path:
@@ -42,7 +45,7 @@ def _resolve_compose_file(config_dir: Path, project_root: Path) -> Path:
 
 
 def run(*, config_dir: Path, project_root: Path) -> int:
-    """Print the effective runtime derived from Compose. Returns 0 or 3."""
+    """Emit the effective runtime derived from Compose. Returns 0 or 3."""
     compose_file = _resolve_compose_file(config_dir, project_root)
     if not compose_file.is_file():
         raise UpgradeCliError(3, f"compose file not found: {compose_file}")
@@ -53,12 +56,12 @@ def run(*, config_dir: Path, project_root: Path) -> int:
     compose = result.file
     assert compose is not None
 
-    print(f"compose: {compose.path}")
-    print(f"services: {len(compose.services)}")
-    print()
+    _log_cli.info(f"compose: {compose.path}")
+    _log_cli.info(f"services: {len(compose.services)}")
+    _log_cli.info("")
     for name, svc in compose.services.items():
-        print(f"  [{name}]")
-        print(f"    image: {svc.image or '(unset)'}")
-        print(f"    platform: {svc.platform or '(unset)'}")
-        print(f"    container_name: {svc.container_name or '(unset)'}")
+        _log_cli.info(f"  [{name}]")
+        _log_cli.info(f"    image: {svc.image or '(unset)'}")
+        _log_cli.info(f"    platform: {svc.platform or '(unset)'}")
+        _log_cli.info(f"    container_name: {svc.container_name or '(unset)'}")
     return 0

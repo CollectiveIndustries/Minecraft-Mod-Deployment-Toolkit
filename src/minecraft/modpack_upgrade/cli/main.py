@@ -14,7 +14,9 @@ Section 16.2:
   6  approval blocked
   7  publication failure
 
-Commands not yet implemented exit 1 with a message on stderr.
+All user-facing output flows through LoggingCore with a CLI-namespaced
+logger (see :mod:`minecraft.common.cli_logging`). argparse's own usage
+and help output is emitted by argparse itself and is unaffected.
 """
 
 from __future__ import annotations
@@ -24,15 +26,34 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from LoggingCore import get_logger
+
+from minecraft.common.cli_logging import configure as _configure_cli_logging
 from minecraft.modpack_upgrade import __version__
 
-from .commands import manifest, runtime, status, stubs, verify
+from .commands import (
+    acknowledge,
+    iterate,
+    manifest,
+    materialize,
+    promote,
+    runtime,
+    status,
+    stubs,
+    verify,
+)
 from .errors import UpgradeCliError
 
 __all__ = ["main"]
 
+_log_cli = get_logger("minecraft.modpack_upgrade.cli.main")
 
 _CommandHandler = Callable[[argparse.Namespace, Path, Path], int]
+
+
+# ---------------------------------------------------------------------------
+# Command dispatchers
+# ---------------------------------------------------------------------------
 
 
 def _cmd_verify(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
@@ -55,6 +76,49 @@ def _cmd_manifest_check(args: argparse.Namespace, config_dir: Path, project_root
     return manifest.run(config_dir=config_dir, project_root=project_root, path=args.path)
 
 
+def _cmd_update(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the update command (spec Section 15.1.1).
+
+    ``--release-mode`` is required and constrained to ``update`` / ``upgrade``
+    by argparse; this handler re-validates defensively. The resolver body
+    lands in the slice 7b provider-adapters deliverable; until then the
+    command exits 1 with a clear message.
+    """
+    release_mode = getattr(args, "release_mode", None)
+    if release_mode not in ("update", "upgrade"):
+        raise UpgradeCliError(2, "update requires --release-mode {update|upgrade}")
+    return stubs.not_implemented(
+        "update",
+        f"--release-mode {release_mode}: resolver body lands in the slice 7b provider deliverable",
+    )
+
+
+def _cmd_acknowledge(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the acknowledge command (spec Section 15.1.2)."""
+    return acknowledge.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        run_id=args.run_id,
+        accept_losses=args.accept_losses,
+        operator=args.operator,
+    )
+
+
+def _cmd_materialize(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the materialize command (spec Section 15.1.4)."""
+    return materialize.run(config_dir=config_dir, project_root=project_root, run_id=args.run_id)
+
+
+def _cmd_iterate(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the iterate command (spec Section 15.1.6)."""
+    return iterate.run(config_dir=config_dir, project_root=project_root, run_id=args.run_id)
+
+
+def _cmd_promote(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the promote command (spec Section 15.1.7)."""
+    return promote.run(config_dir=config_dir, project_root=project_root, tag=args.tag)
+
+
 def _cmd_stub(name: str, hint: str = "") -> _CommandHandler:
     """Return a stub handler for a not-yet-implemented command."""
 
@@ -62,6 +126,11 @@ def _cmd_stub(name: str, hint: str = "") -> _CommandHandler:
         return stubs.not_implemented(name, hint or None)
 
     return _run
+
+
+# ---------------------------------------------------------------------------
+# Parser construction
+# ---------------------------------------------------------------------------
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -101,7 +170,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # -- manifest check ----------------------------------------------
     p_manifest = sub.add_parser("manifest", help="Manifest validation")
     p_manifest_sub = p_manifest.add_subparsers(dest="manifest_action", metavar="<action>", required=True)
-    p_manifest_check = p_manifest_sub.add_parser("check", help="Validate manifest syntax (spec Section 15.1)")
+    p_manifest_check = p_manifest_sub.add_parser("check", help="Validate manifest syntax and schema (spec Section 15.1)")
     p_manifest_check.add_argument(
         "path",
         nargs="?",
@@ -110,20 +179,54 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_manifest_check.set_defaults(func=_cmd_manifest_check)
 
-    # -- stubs -------------------------------------------------------
-    p_update = sub.add_parser("update", help="Query providers, resolve, write candidate slip")
-    p_update.set_defaults(func=_cmd_stub("update"))
+    # -- update ------------------------------------------------------
+    p_update = sub.add_parser("update", help="Resolve versions; write report + state (spec 15.1.1)")
+    p_update.add_argument(
+        "--release-mode",
+        required=True,
+        choices=["update", "upgrade"],
+        help="Runtime authority selector (spec 5.6)",
+    )
+    p_update.set_defaults(func=_cmd_update)
 
+    # -- acknowledge -------------------------------------------------
+    p_ack = sub.add_parser("acknowledge", help="Verify and record loss acceptance (spec 15.1.2)")
+    p_ack.add_argument("run_id", help="Run ID to acknowledge")
+    p_ack.add_argument(
+        "--accept-losses",
+        action="store_true",
+        help="Non-interactive acceptance of all losses",
+    )
+    p_ack.add_argument(
+        "--operator",
+        default="interactive-cli",
+        help="Operator identity recorded in acknowledgment.json",
+    )
+    p_ack.set_defaults(func=_cmd_acknowledge)
+
+    # -- materialize -------------------------------------------------
+    p_mat = sub.add_parser("materialize", help="Verify, download, seal slip (spec 15.1.4)")
+    p_mat.add_argument("--run-id", required=True, help="Run ID to materialize")
+    p_mat.set_defaults(func=_cmd_materialize)
+
+    # -- iterate -----------------------------------------------------
+    p_iter = sub.add_parser("iterate", help="Boot finalized candidate (spec 15.1.6)")
+    p_iter.add_argument("--run-id", required=True, help="Run ID to iterate")
+    p_iter.set_defaults(func=_cmd_iterate)
+
+    # -- promote -----------------------------------------------------
+    p_promote = sub.add_parser(
+        "promote",
+        help="Write slip and print git instructions (does not commit/tag/push)",
+    )
+    p_promote.add_argument("tag", help="Release tag to promote")
+    p_promote.set_defaults(func=_cmd_promote)
+
+    # -- stubs (later slices) ----------------------------------------
     p_build = sub.add_parser("build-inhouse", help="Build an in-house mod JAR")
     p_build.add_argument("mod", help="Mod slug")
     p_build.add_argument("revision", help="Git revision to build")
     p_build.set_defaults(func=_cmd_stub("build-inhouse"))
-
-    p_materialize = sub.add_parser("materialize", help="Download and verify artifacts")
-    p_materialize.set_defaults(func=_cmd_stub("materialize"))
-
-    p_iterate = sub.add_parser("iterate", help="Run DEV boot loop")
-    p_iterate.set_defaults(func=_cmd_stub("iterate"))
 
     p_client = sub.add_parser("build-client", help="Produce candidate client ZIP")
     p_client.set_defaults(func=_cmd_stub("build-client"))
@@ -149,14 +252,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_publish.add_argument("release_id", help="Release ID to publish")
     p_publish.set_defaults(func=_cmd_stub("publish"))
 
-    p_promote = sub.add_parser(
-        "promote",
-        help="Write slip and print git instructions (does not commit/tag/push)",
-    )
-    p_promote.add_argument("tag", help="Release tag to promote")
-    p_promote.set_defaults(func=_cmd_stub("promote"))
-
     return parser
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -164,15 +265,25 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
+    # Configure LoggingCore before any code can emit. Idempotent, so a
+    # caller that already configured (tests, embedded use) is unaffected.
+    _configure_cli_logging(debug=False)
+
     parser = _build_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
+        # argparse handles --help (exit 0) and argument errors (exit 2)
+        # itself, writing to sys.stdout/sys.stderr internally. We only
+        # translate the exit into our return value.
         code = exc.code
         return code if isinstance(code, int) else 0
 
     if not hasattr(args, "func"):
-        parser.print_help(sys.stderr)
+        # Defensive: subparsers are required=True, so argparse will have
+        # already exited above. If we ever reach here, show help on stdout
+        # (the standard stream for help) and return the usage-error code.
+        parser.print_help()
         return 2
 
     config_dir = Path(args.config_dir).resolve()
@@ -183,8 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args, config_dir, project_root)
     except UpgradeCliError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
+        _log_cli.error(f"error: {exc.message}")
         return exc.exit_code
     except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        _log_cli.error(f"error: {exc}")
         return 1
