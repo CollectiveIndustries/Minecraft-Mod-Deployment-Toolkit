@@ -25,6 +25,7 @@ license = { text = "MIT" }
 [project.scripts]
 deploy-pack = "minecraft.deploy_pack.deploy_pack:cli"
 lookup-assets = "minecraft.lookup:main"
+minecraft-upgrade = "minecraft.modpack_upgrade.cli.main:main"
 
 [project.optional-dependencies]
 dev = [
