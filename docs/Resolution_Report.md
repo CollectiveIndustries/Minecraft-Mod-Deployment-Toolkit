@@ -1,11 +1,13 @@
 # docs/Resolution_Report.md
 
-**Status:** Frozen as spec v1.3.1 (slice 7a, rev e)
+**Status:** Frozen as spec v1.3.1 (slice 7a, rev f)
 **File:** `www/runs/<run-id>/resolution-report.toml`
 **Author:** Resolver (written by `update`)
 **Consumer:** `acknowledge`, `materialize`, Discord link, human review
 
 **Rev e changes:** `expected_hashes` array replaces `expected_sha256`. `unmarked` removed (no such array; sides are provisional and non-preflight). In-house identity documented. State values align with Manifest_Schema §4. §3.2 clarifies that `[[seed]].jar_sha256` is the sole in-house identity when `build_id` is absent. §6.5 defensive drop check covers `[[cascade]]`.
+
+**Rev f changes:** §3.1 marked `[[conflict]]` as reserved for v1.3.2. The v1.3.1 resolver does not detect conflicts; the section is schema-frozen but always absent. No behavioral change.
 
 ---
 
@@ -164,6 +166,19 @@ provider_requests_made = 143
 - `[[cascade]].reason` = `"dependency_unsatisfiable"`
 - `[[conflict]].resolution` ∈ `"seed_version_preferred"` | `"blocked"`
 - `expected_hashes[].algorithm` ∈ `"sha512"` | `"sha256"` | `"sha1"` | `"md5"`
+
+> **`[[conflict]]` is reserved for v1.3.2.** The v1.3.1 resolver does
+> not detect conflicts — a project is enqueued once and short-circuits
+> on any subsequent visit, so two different pinned versions of the same
+> project cannot currently race. `[[conflict]]` is therefore **always
+> absent** from v1.3.1 reports. The schema above (including the
+> `resolution` enum and the `candidates[]` shape) is frozen so that
+> future version-pinning support can emit entries without a schema
+> bump. Writers MUST NOT emit `[[conflict]]` in v1.3.1; readers accept
+> it defensively (see `report._conflict_from_dict`) so a future
+> producer does not require a reader upgrade. Consumers that key on
+> `[[conflict]]` should treat absence as "no conflict detected", not as
+> "conflict detection skipped."
 
 ### §3.2 Absent optional fields
 
@@ -375,6 +390,7 @@ link access only.
 | v1.3.1 rev c | `expected_hashes` array. `unmarked` removed. In-house identity. Staging. State alignment. |
 | v1.3.1 rev d | Dual external/in-house examples. §3.2 per-provider optional fields. §6.5 defensive drop check covers `[[cascade]]`. |
 | v1.3.1 rev e | §3.2 clarifies `[[seed]].jar_sha256` is sole in-house identity when `build_id` absent. |
+| v1.3.1 rev f | §3.1 marks `[[conflict]]` reserved for v1.3.2. No behavioral change; the section was always absent in v1.3.1. |
 
 ---
 
