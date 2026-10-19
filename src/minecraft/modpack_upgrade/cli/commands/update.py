@@ -8,6 +8,14 @@ per Section A6 (0 resolved, 6 awaiting acknowledgment, 4 failed, 3 preflight,
 1 provider error).
 
 Does NOT materialize. Downloads happen at ``materialize``.
+
+The compose env-var convention (``_ENV_MC_VERSION``, ``_ENV_LOADER``,
+``_ENV_LOADER_VERSION_BY_LOADER``) and the parsing helpers
+(``_env_as_mapping``, ``_pick_first``, ``_normalize_loader``) are owned
+by :mod:`._compose` so ``update``, ``materialize``, and ``promote`` share
+a single interpretation. The names are re-exported here for backward
+compatibility with tests that import from ``update`` directly; the
+canonical definitions live in ``_compose``.
 """
 
 from __future__ import annotations
@@ -17,7 +25,6 @@ import hashlib
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import yaml
 from LoggingCore import get_logger
@@ -37,6 +44,14 @@ from minecraft.modpack_upgrade.seed import load_seed
 from minecraft.modpack_upgrade.state import RunState, save_state
 
 from . import _compose
+from ._compose import (
+    _ENV_LOADER,
+    _ENV_LOADER_VERSION_BY_LOADER,
+    _ENV_MC_VERSION,
+    _env_as_mapping,
+    _normalize_loader,
+    _pick_first,
+)
 
 __all__ = ["run"]
 
@@ -60,67 +75,14 @@ _EXIT_BY_REPORT_STATUS: dict[str, int] = {
 # ---------------------------------------------------------------------------
 # Manifest vs. Compose equivalence (Manifest_Schema Section 2, Section 8 rule 8)
 # ---------------------------------------------------------------------------
+#
+# The env-var convention and its parsing helpers are owned by
+# ``_compose`` and imported above. The helpers below are update-specific
+# orchestration: extract the runtime tuple, then enforce equality with
+# the manifest (Section 8 rule 8).
 
 
-# Env-var conventions accepted for the ``itzg/minecraft-server`` image family.
-# See Project_Specs.md and the `itzg/minecraft-server` docs for the canonical
-# key names. Both common forms (``VERSION`` and the loader-specific
-# ``FORGE_VERSION`` / ``FABRIC_LOADER_VERSION`` / ...) are accepted.
-_ENV_MC_VERSION: tuple[str, ...] = ("VERSION", "MINECRAFT_VERSION")
-_ENV_LOADER: tuple[str, ...] = ("TYPE",)
-_ENV_LOADER_VERSION_BY_LOADER: dict[str, tuple[str, ...]] = {
-    "forge": ("FORGE_VERSION", "FORGEVERSION"),
-    "neoforge": ("NEOFORGE_VERSION", "NEOFORGEVERSION"),
-    "fabric": ("FABRIC_LOADER_VERSION", "FABRICVERSION"),
-    "quilt": ("QUILT_LOADER_VERSION", "QUILT_LOADER"),
-}
-
-
-def _env_as_mapping(raw_env: Any) -> dict[str, str]:
-    """Normalize a compose service's ``environment`` field to a mapping.
-
-    docker-compose accepts two forms:
-
-      environment:
-        VERSION: "1.21.1"          # mapping
-
-      environment:
-        - VERSION=1.21.1           # list of "KEY=VALUE"
-
-    Bare list entries (``- VERSION``) that reference the host env are
-    dropped: this layer has no business reading host env vars.
-    """
-    out: dict[str, str] = {}
-    if isinstance(raw_env, dict):
-        for key, value in raw_env.items():
-            out[str(key)] = "" if value is None else str(value)
-    elif isinstance(raw_env, list):
-        for item in raw_env:
-            if not isinstance(item, str) or "=" not in item:
-                continue
-            key, _, value = item.partition("=")
-            out[key] = value
-    return out
-
-
-def _pick_first(env: Mapping[str, str], keys: tuple[str, ...]) -> str | None:
-    """Return the first non-empty value among ``keys`` in ``env``, or None."""
-    for key in keys:
-        value = env.get(key)
-        if value:
-            return value
-    return None
-
-
-def _normalize_loader(value: str) -> str | None:
-    """Map the compose ``TYPE`` value to the manifest loader enum."""
-    lowered = value.strip().lower()
-    if lowered in ("forge", "neoforge", "fabric", "quilt"):
-        return lowered
-    return None
-
-
-def _extract_from_env(env: Mapping[str, str]) -> tuple[str, str, str] | None:
+def _extract_from_env(env: dict[str, str]) -> tuple[str, str, str] | None:
     """Return ``(mc_version, loader, loader_version)`` from an env mapping.
 
     Returns ``None`` when any of the three values is not declared - the

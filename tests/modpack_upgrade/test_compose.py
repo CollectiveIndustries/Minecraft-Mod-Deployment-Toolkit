@@ -1,12 +1,19 @@
 # tests/modpack_upgrade/test_compose.py
 
-"""Unit tests for ``cli.commands._compose`` (Slice 8 pair 3).
+"""Unit tests for ``cli.commands._compose`` (Slice 8 pair 3; extended Slice 9 Turn 3).
 
 The module under test is the single source of truth for compose-file
-resolution and hashing across ``acknowledge``, ``materialize``, and
-``update``. These tests exercise every branch of ``resolve_compose_path``
-and every failure mode of ``compute_compose_sha256`` directly, so the
-downstream callers only need delegation smoke tests.
+resolution, hashing, and reconciliation across ``acknowledge``,
+``materialize``, ``update``, and ``promote``. These tests exercise every
+branch of ``resolve_compose_path`` and every failure mode of
+``compute_compose_sha256`` directly, so the downstream callers only need
+delegation smoke tests.
+
+The reconciliation API (``reconcile_compose`` / ``apply_compose_diff``
+and the ``ComposeRuntime`` / ``EnvChange`` / ``ComposeDiff`` types) has
+its own test file: ``test_compose_reconcile.py``. This file tests only
+the path-resolution and hashing surface plus the module's ``__all__``
+contract.
 """
 
 from __future__ import annotations
@@ -231,5 +238,20 @@ def test_compute_sha256_does_not_cache_negative_results(tmp_path: Path) -> None:
 
 
 def test_module_dunder_all() -> None:
-    """__all__ exports exactly the two public helpers."""
-    assert set(_compose.__all__) == {"compute_compose_sha256", "resolve_compose_path"}
+    """__all__ names exactly the module's public helpers and dataclasses.
+
+    Two groups are exported:
+
+      * path/hash helpers used by ``acknowledge``, ``materialize``, and
+        ``update``;
+      * reconciliation API used by ``promote`` (Slice 9 Turn 3 onward).
+    """
+    path_hash_helpers = {"compute_compose_sha256", "resolve_compose_path"}
+    reconciliation_api = {
+        "ComposeDiff",
+        "ComposeRuntime",
+        "EnvChange",
+        "apply_compose_diff",
+        "reconcile_compose",
+    }
+    assert set(_compose.__all__) == path_hash_helpers | reconciliation_api

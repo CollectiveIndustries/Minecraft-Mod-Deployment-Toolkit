@@ -407,9 +407,7 @@ def test_upgrade_mode_does_not_check_compose_equivalence(tmp_path: Path) -> None
 # pin only the wiring: a future refactor that re-introduces a local copy of
 # ``resolve_compose_path`` or ``compute_compose_sha256`` on ``update.py``
 # would fail these, even if the local copy happened to behave identically
-# today. They also make the pair-7 removal of the deprecated wrappers on
-# ``acknowledge.py`` safe: if ``update.py`` still depended on them, these
-# spies would stop firing when the wrappers are deleted.
+# today.
 
 
 def test_update_mode_delegates_compose_resolution_to_shared_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -481,15 +479,32 @@ def test_update_mode_delegates_compose_sha_to_shared_module(tmp_path: Path, monk
 
 
 # ---------------------------------------------------------------------------
+# Slice 9 Turn 5: env-var helpers now live on _compose
+# ---------------------------------------------------------------------------
+
+
+def test_env_as_mapping_is_the_shared_compose_implementation() -> None:
+    """update._env_as_mapping is the same function object as _compose._env_as_mapping.
+
+    Turn 5 removed the local definition from ``update.py`` and imports the
+    shared helper from :mod:`._compose`. The 13 parametrized cases above
+    exercise the shared implementation transitively, because
+    ``update._env_as_mapping`` resolves to the same function object.
+    This test pins that identity so a future refactor cannot silently
+    re-introduce a local copy that diverges from ``_compose``.
+    """
+    assert _env_as_mapping is _compose._env_as_mapping
+
+
+# ---------------------------------------------------------------------------
 # Slice 8 pair 9a: _env_as_mapping branch coverage
 # ---------------------------------------------------------------------------
 #
-# Every branch of the compose-environment normaliser is exercised directly.
-# The end-to-end paths through ``_extract_compose_runtime`` and ``run()``
-# already cover the dict-with-string-values happy path; these cases pin the
-# remaining coercion and rejection branches so a future refactor cannot
-# silently change e.g. ``None`` -> absent vs. ``""`` or start reading the
-# host environment for bare list entries.
+# These parametrized cases exercise the shared ``_env_as_mapping`` helper
+# (owned by ``_compose`` since Slice 9 Turn 5). They continue to run here
+# because ``update._env_as_mapping`` is the same function object; the
+# ``test_env_as_mapping_is_the_shared_compose_implementation`` test pins
+# that identity.
 
 
 @pytest.mark.parametrize(
@@ -529,10 +544,11 @@ def test_env_as_mapping(raw: Any, expected: dict[str, str]) -> None:
 # Slice 8 pair 9a: _extract_compose_runtime branch coverage
 # ---------------------------------------------------------------------------
 #
-# Every branch of the compose-runtime extractor is exercised directly.
-# The end-to-end paths through ``run()`` already cover the "mapping form,
-# matching image, all three values present" happy path; these cases pin
-# the failure paths and alternate env shapes.
+# These remain in ``update.py`` because they test update-specific
+# orchestration. The extraction helpers themselves (``_env_as_mapping``,
+# ``_pick_first``, ``_normalize_loader``) live in ``_compose`` and are
+# imported here; the aggregation in ``_extract_compose_runtime`` is
+# update-specific and stays put.
 
 
 def _write_compose(tmp_path: Path, body: str) -> Path:
