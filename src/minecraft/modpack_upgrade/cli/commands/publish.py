@@ -11,7 +11,15 @@ key, records git provenance, atomically commits the bundle to
 ``www/releases/<release-id>/``, and appends one signed entry to the
 release registry at ``sync/packing_slips/release-index.jsonl``.
 
-Preconditions and pipeline:
+``--verify-only <release-id>`` verifies an already-published release
+without republishing: walks the registry chain from genesis, checks the
+entry signature against the trusted keys, verifies the bundle manifest's
+hash matches the entry's recorded value, and verifies the manifest's
+signature. This is the operator-facing entry point for chain-walk
+verification; the underlying primitives live in
+:mod:`minecraft.modpack_upgrade.registry_verify`.
+
+Preconditions and pipeline (publish, not verify-only):
 
   * **T1** -- slip exists; slip's ``content_sha256`` verifies; slip's
     ``release_id`` matches the argument; no bundle directory already
@@ -36,10 +44,14 @@ Preconditions and pipeline:
     real ``signature`` (base64) and ``key_id`` (sha256 of the raw
     Ed25519 point); a ``bundle-manifest.sig`` sidecar carries the same
     base64 signature per Section 6.4. Registry entries carry real
-    ``signature`` and ``key_id``. Verification (chain walk) is T3.
+    ``signature`` and ``key_id``.
+  * **Slice 11 T3** -- ``--verify-only`` flag; ``entry_hash`` and
+    signature both cover all of :data:`registry_verify.CHAIN_FIELDS`
+    (previously ``tag_object_format`` was in the signature but not the
+    entry hash -- inconsistency closed, no production entries affected).
 
-Precondition ordering
----------------------
+Precondition ordering (publish, not verify-only)
+------------------------------------------------
 
 The preconditions run in this order:
 
@@ -71,22 +83,23 @@ cover a **projection** of the stored object, not the object itself:
   * **Bundle manifest:** projection = manifest minus ``signature`` and
     ``key_id``. A consumer verifying the manifest strips these two
     fields, canonicalizes, and verifies.
-  * **Registry entry:** projection = entry minus ``signature``,
-    ``key_id``, and ``entry_hash``. A consumer verifying the entry
-    strips those three fields, canonicalizes, verifies the Ed25519
-    signature, AND confirms ``sha256(projection) == entry_hash``.
+  * **Registry entry:** projection = :data:`registry_verify.CHAIN_FIELDS`
+    extracted from the entry. A consumer verifying the entry strips
+    ``signature``, ``key_id``, and ``entry_hash``, canonicalizes the
+    remaining chain fields, verifies the Ed25519 signature, AND
+    confirms ``sha256(chain_fields) == entry_hash``.
 
-This is the standard "sign the payload, store the envelope" pattern
-(JWS RFC 7515, SIGstore). It resolves the chicken-and-egg: the signature
-cannot cover the field that holds it.
+The chain-fields extraction and hash computation are shared between
+``publish`` (writer) and :mod:`registry_verify` (reader) by importing
+from the latter, so the two sides cannot drift.
 
 The self-reference paradox is resolved the same way for the manifest's
 ``files`` list: it excludes ``bundle-manifest.json`` **and**
 ``bundle-manifest.sig``. A manifest cannot honestly hash a file whose
 contents depend on the manifest's own hash.
 
-Signing key
------------
+Signing key (publish only)
+--------------------------
 
 Loaded from ``[publication].signing_key_env`` in ``config.d/upgrade.toml``
 (default env-var name: ``RELEASE_SIGNING_KEY``). Env var may contain a
@@ -96,6 +109,10 @@ path to a PEM-encoded Ed25519 private key or the PEM text inline. See
 **A valid key must be present before publish runs.** Signing is not
 optional: an unsigned release is not a release. Missing key = exit 3
 before any staging is done.
+
+``--verify-only`` does NOT require the signing key -- verification uses
+trusted public keys, not the private signing key. It DOES require
+``[registry].trusted_keys_path`` (default ``config.d/trusted_keys.toml``).
 
 Run discovery
 -------------
@@ -107,12 +124,6 @@ does not store the run-id elsewhere. To find the approval source,
 ``resolution_inputs_sha256`` matches
 ``slip.fingerprints.resolution_inputs_sha256`` **and** whose
 ``status == "materialized"``.
-
-Under normal usage this is unique: one update+materialize cycle per
-release. If two cycles ran with identical resolver inputs (same
-manifest, same seed, same overrides) they share
-``resolution_inputs_sha256``, and publish refuses with exit 3 rather
-than picking arbitrarily.
 
 Approval sources
 ----------------
@@ -133,9 +144,9 @@ Registry and chain
 
 One JSON line appended to ``sync/packing_slips/release-index.jsonl``.
 The entry's ``previous_entry_hash`` is the last line's ``entry_hash``
-(or 64 zeroes for the first entry). ``entry_hash`` is the SHA-256 of the
-projection (see above), and the entry's ``signature`` is Ed25519 over
-the same projection.
+(or 64 zeroes for the first entry). ``entry_hash`` and ``signature``
+both cover the same :data:`registry_verify.CHAIN_FIELDS` projection --
+see :mod:`registry_verify` for the canonical definitions.
 
 Deferred until the underlying features exist:
 
@@ -144,15 +155,14 @@ Deferred until the underlying features exist:
     ``client-distribution-manifest.json`` is a placeholder.
   * ``[inputs.git]`` tree enforcement (Section 6.3 #7) -- prod-deploy
     concern (Section 5.3 rule 4).
-  * Chain-walk verification and trusted-keys pinning -- Slice 11 T3.
 
 Exit codes:
 
-  * ``0`` -- publish succeeded end-to-end: signed bundle committed,
-    signed registry entry appended.
+  * ``0`` -- publish succeeded end-to-end (or ``--verify-only`` passed
+    all checks).
   * ``3`` -- a precondition, signing-config, assembly, manifest, git-ref,
-    or verification failure. Staging is cleaned up; no bundle is
-    committed.
+    verification, or (for ``--verify-only``) trusted-keys/config failure.
+    Staging is cleaned up; no bundle is committed.
   * ``7`` -- registry append failure *after* a bundle was committed.
     The bundle is rolled back on a best-effort basis; if rollback
     fails too, the operator must remove ``www/releases/<id>/`` manually.
@@ -163,7 +173,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import datetime
-import hashlib
 import json
 import shutil
 import subprocess
@@ -178,9 +187,17 @@ from minecraft.deploy_pack.daemon.config import load_config as load_daemon_confi
 from minecraft.deploy_pack.files import compute_sha256
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 from minecraft.modpack_upgrade.errors import SigningError
+from minecraft.modpack_upgrade.registry_verify import (
+    ChainVerification,
+    ReleaseVerification,
+    compute_entry_hash,
+    verify_release,
+)
 from minecraft.modpack_upgrade.signing import (
     SigningKey,
+    TrustedKeys,
     load_signing_key,
+    load_trusted_keys,
     sign_json,
     verify_json,
 )
@@ -220,6 +237,7 @@ _MANIFEST_NAMES: frozenset[str] = frozenset(
 _GENESIS_HASH = "0" * 64
 
 _DEFAULT_SIGNING_KEY_ENV = "RELEASE_SIGNING_KEY"
+_DEFAULT_TRUSTED_KEYS_FILENAME = "trusted_keys.toml"
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +297,7 @@ def _registry_path(project_root: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Config (Slice 11 T2)
+# Config
 # ---------------------------------------------------------------------------
 
 
@@ -306,6 +324,34 @@ def _resolve_signing_key_env_name(config_dir: Path) -> str:
     if not isinstance(raw, str) or not raw:
         return _DEFAULT_SIGNING_KEY_ENV
     return raw
+
+
+def _resolve_trusted_keys_path(config_dir: Path, project_root: Path) -> Path:
+    """Return the trusted-keys path for ``--verify-only``.
+
+    Reads ``[registry].trusted_keys_path`` from ``config.d/upgrade.toml``.
+    Relative paths resolve against ``project_root`` (matching how
+    ``[docker].compose_file`` is resolved elsewhere). Missing file,
+    missing section, or malformed value all fall back to
+    ``<config_dir>/trusted_keys.toml`` -- the documented default.
+    """
+    default = config_dir / _DEFAULT_TRUSTED_KEYS_FILENAME
+    toml_path = config_dir / "upgrade.toml"
+    if not toml_path.is_file():
+        return default
+    try:
+        with open(toml_path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return default
+    registry = data.get("registry", {})
+    if not isinstance(registry, dict):
+        return default
+    raw = registry.get("trusted_keys_path")
+    if not isinstance(raw, str) or not raw:
+        return default
+    path = Path(raw)
+    return path if path.is_absolute() else project_root / path
 
 
 # ---------------------------------------------------------------------------
@@ -785,8 +831,6 @@ def _finalize_bundle(
         _describe_file(staging_dir / _CLIENT_DISTRIBUTION_MANIFEST, _CLIENT_DISTRIBUTION_MANIFEST),
     ]
 
-    # The signed projection: everything in the manifest EXCEPT the two
-    # fields the signature itself needs (chicken-and-egg).
     projection = {
         "schema_version": 1,
         "release_id": slip.release_id,
@@ -800,9 +844,6 @@ def _finalize_bundle(
     signature_bytes = sign_json(signing_key, projection)
     signature_b64 = base64.b64encode(signature_bytes).decode("ascii")
 
-    # Sidecar per Section 6.4. Written before the manifest (order is
-    # irrelevant; the sidecar is excluded from the manifest's own file
-    # list either way).
     _write_sig_sidecar(staging_dir / _BUNDLE_MANIFEST_SIG, signature_b64)
 
     bundle_manifest = {
@@ -812,10 +853,6 @@ def _finalize_bundle(
     }
     _write_json_atomic(staging_dir / _BUNDLE_MANIFEST, bundle_manifest)
 
-    # Self-check: if the signature doesn't round-trip against the
-    # projection we just signed, either signing.py or canonical.py is
-    # broken -- better to know before commit than to leave a corrupt
-    # bundle on disk and discover it at pull time.
     if not verify_json(signing_key.public_key, projection, signature_bytes):
         raise UpgradeCliError(
             3,
@@ -831,29 +868,8 @@ def _finalize_bundle(
 
 
 # ---------------------------------------------------------------------------
-# Registry append (T5 + Slice 11 T2)
+# Registry append (T5 + Slice 11 T2 + T3)
 # ---------------------------------------------------------------------------
-
-
-def _compute_entry_hash(entry: dict) -> str:
-    """Deterministic SHA-256 over the chain-relevant fields of one entry.
-
-    Deliberately excludes ``signature`` and ``key_id`` so that a future
-    re-signing (same underlying fields, new key) does not invalidate
-    the chain linkage. Also excludes ``entry_hash`` itself -- the field
-    is the output of this function.
-    """
-    chain_fields = {
-        "schema_version": entry["schema_version"],
-        "release_id": entry["release_id"],
-        "tag_object_sha": entry["tag_object_sha"],
-        "commit_sha": entry["commit_sha"],
-        "slip_content_sha256": entry["slip_content_sha256"],
-        "bundle_manifest_sha256": entry["bundle_manifest_sha256"],
-        "previous_entry_hash": entry["previous_entry_hash"],
-    }
-    text = json.dumps(chain_fields, sort_keys=True)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _last_entry_hash(registry_path: Path) -> str:
@@ -897,11 +913,13 @@ def _append_registry_entry(
 ) -> str:
     """Append one signed entry to ``release-index.jsonl``; return its ``entry_hash``.
 
-    The signed projection and the ``entry_hash`` computation both cover
-    the same ``chain_fields`` dict (excluding ``signature``, ``key_id``,
-    and ``entry_hash``). A verifier strips those three fields, checks
-    ``sha256(projection) == entry_hash``, and verifies the Ed25519
-    signature against the trusted public key for ``key_id``.
+    The ``entry_hash`` and ``signature`` cover the same
+    :data:`registry_verify.CHAIN_FIELDS` projection -- see
+    :mod:`registry_verify` for the canonical field set and hash
+    computation. This function builds the chain_fields dict explicitly
+    (as the *writer*, we know every field), then delegates the hash and
+    signature to the shared primitives so verification agrees by
+    construction.
 
     Raises :class:`UpgradeCliError(7)` on any I/O failure. The caller is
     responsible for rolling back the committed bundle if this raises.
@@ -917,7 +935,7 @@ def _append_registry_entry(
         "bundle_manifest_sha256": bundle_manifest_sha256,
         "previous_entry_hash": previous,
     }
-    entry_hash = _compute_entry_hash(chain_fields)
+    entry_hash = compute_entry_hash(chain_fields)
     signature_bytes = sign_json(signing_key, chain_fields)
     signature_b64 = base64.b64encode(signature_bytes).decode("ascii")
     entry = {
@@ -983,6 +1001,63 @@ def _print_committed_summary(bundle_dir: Path, registry_path: Path, entry_hash: 
     _log_cli.info("")
 
 
+def _print_chain_summary(chain: ChainVerification) -> None:
+    """Print chain-verification results."""
+    status = "OK" if chain.ok else "FAILED"
+    _log_cli.info(f"  chain: {chain.entry_count} entry/entries, status={status}")
+    if chain.ok:
+        _log_cli.info(f"    head: {chain.last_entry_hash}")
+    else:
+        for failure in chain.failures:
+            release_ctx = f" release={failure.release_id!r}" if failure.release_id is not None else ""
+            _log_cli.info(f"    [{failure.reason}] index={failure.index}{release_ctx}")
+            _log_cli.info(f"      {failure.detail}")
+
+
+def _print_verify_result(result: ReleaseVerification) -> None:
+    """Print the results of a ``--verify-only`` run."""
+    _log_cli.info(f"verify: release {result.release_id!r}")
+    _print_chain_summary(result.chain)
+    _log_cli.info(f"  release entry present: {result.release_present}")
+    _log_cli.info(f"  bundle present: {result.bundle_present}")
+    if result.bundle_failures:
+        _log_cli.info("  bundle failures:")
+        for failure in result.bundle_failures:
+            _log_cli.info(f"    - {failure}")
+    _log_cli.info("")
+    _log_cli.info(f"overall: {'OK' if result.ok else 'FAILED'}")
+
+
+# ---------------------------------------------------------------------------
+# Verify-only path
+# ---------------------------------------------------------------------------
+
+
+def _load_trusted_keys_for_verify(config_dir: Path, project_root: Path) -> TrustedKeys:
+    """Load trusted keys for ``--verify-only``. Raise ``UpgradeCliError(3)`` on failure."""
+    path = _resolve_trusted_keys_path(config_dir, project_root)
+    try:
+        return load_trusted_keys(path)
+    except SigningError as exc:
+        raise UpgradeCliError(3, str(exc)) from exc
+
+
+def _run_verify_only(*, config_dir: Path, project_root: Path, release_id: str) -> int:
+    """Execute ``publish --verify-only``. Returns 0 (all ok) or 3 (any failure)."""
+    trusted = _load_trusted_keys_for_verify(config_dir, project_root)
+    registry_path = _registry_path(project_root)
+    bundle_dir = _bundle_dir(project_root, release_id)
+
+    result = verify_release(
+        release_id,
+        registry_path=registry_path,
+        bundle_dir=bundle_dir,
+        trusted=trusted,
+    )
+    _print_verify_result(result)
+    return 0 if result.ok else 3
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -994,12 +1069,22 @@ def run(
     project_root: Path,
     release_id: str,
     env: Mapping[str, str] | None = None,
+    verify_only: bool = False,
 ) -> int:
     """Execute ``minecraft-upgrade publish``. Returns 0 on success, 3, or 7.
 
-    See the module docstring for what signing means and how the signature
-    projection is constructed, plus the precondition ordering rationale.
+    See the module docstring for what signing means, how the signature
+    projection is constructed, and what ``verify_only=True`` does. The
+    two modes are entirely disjoint: ``verify_only=True`` does not touch
+    the signing key, staging directory, or bundle.
     """
+    if verify_only:
+        return _run_verify_only(
+            config_dir=config_dir,
+            project_root=project_root,
+            release_id=release_id,
+        )
+
     slip_path = _slip_path(config_dir, release_id)
     bundle_dir = _bundle_dir(project_root, release_id)
     staging_dir = _staging_dir(project_root, release_id)
@@ -1064,8 +1149,6 @@ def run(
     finally:
         _cleanup_dir(staging_dir)
 
-    # Registry append last; roll back the committed bundle on failure
-    # so a retry starts clean.
     try:
         entry_hash = _append_registry_entry(
             registry_path,

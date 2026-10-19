@@ -122,6 +122,7 @@ def _cmd_publish(args: argparse.Namespace, config_dir: Path, project_root: Path)
         config_dir=config_dir,
         project_root=project_root,
         release_id=args.release_id,
+        verify_only=args.verify_only,
     )
 
 
@@ -231,6 +232,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # -- publish -----------------------------------------------------
     p_publish = sub.add_parser("publish", help="Create immutable release bundle (spec 15.1.8)")
     p_publish.add_argument("release_id", help="Release ID to publish")
+    p_publish.add_argument(
+        "--verify-only",
+        action="store_true",
+        help=(
+            "Verify an existing published release's chain and bundle instead "
+            "of publishing. Uses trusted_keys from [registry].trusted_keys_path "
+            "(default: config.d/trusted_keys.toml)."
+        ),
+    )
     p_publish.set_defaults(func=_cmd_publish)
 
     # -- stubs (later slices) ----------------------------------------

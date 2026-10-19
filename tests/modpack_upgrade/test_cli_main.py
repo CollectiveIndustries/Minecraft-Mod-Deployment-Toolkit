@@ -188,3 +188,23 @@ def test_publish_missing_slip_exits_3(tmp_path: Path, capsys: pytest.CaptureFixt
     assert code == 3
     captured = capsys.readouterr()
     assert "slip not found" in captured.err
+
+
+def test_publish_verify_only_without_trusted_keys_exits_3(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """`publish --verify-only` with no trusted keys file exits 3.
+
+    --verify-only skips the signing key entirely; it only needs the
+    trusted public keys. Without ``config.d/trusted_keys.toml`` (and no
+    ``[registry].trusted_keys_path`` override), the load fails with a
+    clear "trusted keys file not found" message before chain walking.
+    """
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    (config_dir / "deploy_pack.toml").write_text(
+        f'[daemon]\nstate_dir = "{tmp_path / "state"}"\n',
+        encoding="utf-8",
+    )
+    code = main(["--config-dir", str(config_dir), "publish", "v1.0.0", "--verify-only"])
+    assert code == 3
+    captured = capsys.readouterr()
+    assert "trusted keys file not found" in captured.err

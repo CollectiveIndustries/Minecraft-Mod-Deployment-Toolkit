@@ -1,8 +1,9 @@
 # tests/modpack_upgrade/test_publish.py
 
-"""Tests for ``minecraft-upgrade publish`` (Slice 10 complete + Slice 11 T2).
+"""Tests for ``minecraft-upgrade publish`` (Slice 10 complete + Slice 11 T2 + T3).
 
-Full pipeline exercised end-to-end, **with real Ed25519 signing**:
+Full pipeline exercised end-to-end, with real Ed25519 signing and both
+the publish path and the ``--verify-only`` path:
 
   * T1 preconditions: slip exists / verifies / release_id matches / no
     existing bundle
@@ -15,17 +16,15 @@ Full pipeline exercised end-to-end, **with real Ed25519 signing**:
   * T5: approval.json sourced from the materialized run; bundle-manifest
     extended with audit fields; registry entry appended with chained
     entry_hash
-  * **Slice 11 T2:** bundle-manifest.json carries real ``signature``
-    (base64) and ``key_id`` (hex); ``bundle-manifest.sig`` sidecar
-    contains the same base64; the signature verifies against the signing
-    key's public key over the projection (manifest minus signature and
-    key_id). Registry entries carry real ``signature`` and ``key_id``.
+  * Slice 11 T2: bundle-manifest carries real ``signature`` + ``key_id``;
+    sidecar ``bundle-manifest.sig``; registry entries signed; signatures
+    verify against the signing key's public key.
+  * Slice 11 T3: ``--verify-only`` walks the chain and verifies the
+    bundle without republishing.
 
-Signature verification helper (``_verify_manifest_signature``) and
-``_verify_registry_entry_signature`` implement the exact projection rule
-documented in ``publish.py`` -- if this file's tests pass but a real
-consumer applies a different strip rule, they'll disagree; the shared
-rule is deliberately tested end-to-end here.
+Signature verification helpers (``_verify_manifest_signature`` /
+``_verify_registry_entry_signature``) implement the exact projection
+rules documented in ``publish.py`` and ``registry_verify.py``.
 """
 
 from __future__ import annotations
@@ -42,11 +41,13 @@ import tomli_w
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from minecraft.modpack_upgrade import signing as signing_mod
 from minecraft.modpack_upgrade import slip as slip_mod
 from minecraft.modpack_upgrade.cli.commands import publish as publish_mod
 from minecraft.modpack_upgrade.cli.commands.publish import run
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
-from minecraft.modpack_upgrade.signing import SigningKey, verify_json
+from minecraft.modpack_upgrade.registry_verify import CHAIN_FIELDS
+from minecraft.modpack_upgrade.signing import verify_json
 from minecraft.modpack_upgrade.state import RunState, save_state
 
 # ---------------------------------------------------------------------------
@@ -285,14 +286,7 @@ def _setup_publish_env(
 
 @pytest.fixture(autouse=True)
 def signing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ed25519PrivateKey:
-    """Provide a valid Ed25519 signing key via the ``RELEASE_SIGNING_KEY`` env var.
-
-    Autouse: every test in this module gets a working signing key without
-    having to declare the fixture. Tests that need to inspect the key
-    can declare ``signing_key`` as a parameter and receive the private
-    key. Tests that want to break signing override the env var
-    (``monkeypatch.delenv`` or ``monkeypatch.setenv`` to garbage).
-    """
+    """Provide a valid Ed25519 signing key via the ``RELEASE_SIGNING_KEY`` env var."""
     key = Ed25519PrivateKey.generate()
     pem_path = tmp_path / "signing-key.pem"
     pem_path.write_bytes(
@@ -306,29 +300,38 @@ def signing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ed25519Priva
     return key
 
 
-# ---------------------------------------------------------------------------
-# Signature verification helpers (mirror publish.py's projection rule)
-# ---------------------------------------------------------------------------
+def _write_trusted_keys_file(config_dir: Path, private_key: Ed25519PrivateKey) -> Path:
+    """Write ``config_dir/trusted_keys.toml`` pinning ``private_key``'s public key."""
+    raw_pub = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    key_id = hashlib.sha256(raw_pub).hexdigest()
+    pem = (
+        private_key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("utf-8")
+    )
+    path = config_dir / "trusted_keys.toml"
+    path.write_bytes(tomli_w.dumps({"keys": {key_id: pem}}).encode("utf-8"))
+    return path
 
 
-def _public_key_of(private_key: Ed25519PrivateKey):
-    """Extract the Ed25519 public key from a private key."""
-    return private_key.public_key()
+# ---------------------------------------------------------------------------
+# Signature verification helpers (mirror the projection rules)
+# ---------------------------------------------------------------------------
 
 
 def _verify_manifest_signature(bundle_dir: Path, private_key: Ed25519PrivateKey) -> None:
-    """Assert that ``bundle-manifest.json`` verifies against ``private_key``.
-
-    Implements the exact projection rule from ``publish.py``: strip
-    ``signature`` and ``key_id``, canonicalize the rest, verify. A
-    consumer applying the same rule will reach the same conclusion.
-    """
+    """Assert ``bundle-manifest.json`` verifies against ``private_key``."""
     manifest = json.loads((bundle_dir / "bundle-manifest.json").read_text())
     signature_b64 = manifest.pop("signature")
     key_id_in_file = manifest.pop("key_id")
     signature_bytes = base64.b64decode(signature_b64)
 
-    # key_id equals sha256 of the raw public key bytes.
     raw_pub = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
@@ -336,33 +339,16 @@ def _verify_manifest_signature(bundle_dir: Path, private_key: Ed25519PrivateKey)
     expected_key_id = hashlib.sha256(raw_pub).hexdigest()
     assert key_id_in_file == expected_key_id
 
-    # Signature verifies over the stripped projection.
     assert verify_json(private_key.public_key(), manifest, signature_bytes) is True
 
 
 def _verify_registry_entry_signature(entry: dict, private_key: Ed25519PrivateKey) -> None:
-    """Assert that a registry entry's ``signature`` verifies against ``private_key``.
-
-    Implements the projection rule: strip ``signature``, ``key_id``, and
-    ``entry_hash``; canonicalize; verify Ed25519. Also confirms that
-    ``sha256(canonical_projection)`` equals ``entry_hash``.
-    """
-    projection = {
-        "schema_version": entry["schema_version"],
-        "release_id": entry["release_id"],
-        "tag_object_sha": entry["tag_object_sha"],
-        "tag_object_format": entry["tag_object_format"],
-        "commit_sha": entry["commit_sha"],
-        "slip_content_sha256": entry["slip_content_sha256"],
-        "bundle_manifest_sha256": entry["bundle_manifest_sha256"],
-        "previous_entry_hash": entry["previous_entry_hash"],
-    }
+    """Assert a registry entry's signature verifies against ``private_key``."""
+    projection = {name: entry[name] for name in CHAIN_FIELDS}
     signature_bytes = base64.b64decode(entry["signature"])
 
-    # Signature verifies.
     assert verify_json(private_key.public_key(), projection, signature_bytes) is True
 
-    # Key_id matches the public key.
     raw_pub = private_key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
@@ -720,7 +706,6 @@ def test_run_happy_path_appends_one_signed_registry_entry(tmp_path: Path, signin
     assert len(entry["slip_content_sha256"]) == 64
     assert len(entry["bundle_manifest_sha256"]) == 64
 
-    # Signature and key_id are real values now.
     assert isinstance(entry["signature"], str)
     assert len(base64.b64decode(entry["signature"])) == 64
     assert re.fullmatch(r"[0-9a-f]{64}", entry["key_id"]) is not None
@@ -764,7 +749,6 @@ def test_bundle_manifest_exists_and_parses(tmp_path: Path, signing_key: Ed25519P
     assert isinstance(manifest["files"], list)
     assert manifest["files"]
 
-    # Signature and key_id are real values now.
     assert isinstance(manifest["signature"], str)
     assert len(base64.b64decode(manifest["signature"])) == 64
     assert re.fullmatch(r"[0-9a-f]{64}", manifest["key_id"]) is not None
@@ -788,7 +772,6 @@ def test_bundle_manifest_sig_sidecar_exists_and_matches(tmp_path: Path, signing_
     sidecar = (bundle_dir / "bundle-manifest.sig").read_text().strip()
 
     assert sidecar == manifest["signature"]
-    # And the sidecar's base64 decodes to a 64-byte Ed25519 signature.
     assert len(base64.b64decode(sidecar)) == 64
 
 
@@ -853,7 +836,7 @@ def test_manifest_hashes_match_disk(tmp_path: Path) -> None:
     manifest = json.loads((bundle_dir / "bundle-manifest.json").read_text())
     for entry in manifest["files"]:
         file_path = bundle_dir / entry["path"]
-        assert file_path.is_file(), f"manifest entry missing: {entry['path']}"
+        assert file_path.is_file()
         assert file_path.stat().st_size == entry["size_bytes"]
         actual_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
         assert actual_sha == entry["sha256"]
@@ -943,7 +926,6 @@ def test_registry_chain_links_two_entries(tmp_path: Path, signing_key: Ed25519Pr
     config_dir, project_root, _ = _setup_publish_env(tmp_path, release_id="v1.0.0", run_id="run-a")
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
-    # Prepare v1.0.1 with a DIFFERENT fingerprint so run discovery is unambiguous.
     state_dir = project_root / "state"
     body_b = _build_release_slip_raw(
         release_id="v1.0.1",
@@ -969,26 +951,8 @@ def test_registry_chain_links_two_entries(tmp_path: Path, signing_key: Ed25519Pr
     assert entries[1]["entry_hash"] != entries[0]["entry_hash"]
     assert entries[0]["previous_entry_hash"] == "0" * 64
 
-    # Both entries' signatures verify.
     for entry in entries:
         _verify_registry_entry_signature(entry, signing_key)
-
-
-def test_registry_entry_hash_is_deterministic() -> None:
-    """Given the same chain fields, entry_hash is reproducible."""
-    entry = {
-        "schema_version": 1,
-        "release_id": "v1.0.0",
-        "tag_object_sha": "a" * 40,
-        "commit_sha": "b" * 40,
-        "slip_content_sha256": "c" * 64,
-        "bundle_manifest_sha256": "d" * 64,
-        "previous_entry_hash": "0" * 64,
-    }
-    h1 = publish_mod._compute_entry_hash(entry)
-    h2 = publish_mod._compute_entry_hash(entry)
-    assert h1 == h2
-    assert len(h1) == 64
 
 
 # ---------------------------------------------------------------------------
@@ -1006,7 +970,6 @@ def test_run_missing_signing_env_raises_3(tmp_path: Path, monkeypatch: pytest.Mo
     assert ei.value.exit_code == 3
     assert "RELEASE_SIGNING_KEY" in str(ei.value)
 
-    # Nothing was staged or committed.
     assert not (project_root / "www" / "releases" / "v1.0.0").exists()
     assert not (project_root / "www" / "releases" / "v1.0.0.staging").exists()
 
@@ -1048,7 +1011,6 @@ def test_finalize_bundle_self_check_catches_forged_signature(tmp_path: Path, sig
     """If signing produces a bad signature, the self-check refuses to commit."""
 
     def _fake_sign_json(_key: object, _obj: object) -> bytes:
-        # 64-byte garbage that cannot verify.
         return b"\x00" * 64
 
     monkeypatch.setattr(publish_mod, "sign_json", _fake_sign_json)
@@ -1059,9 +1021,79 @@ def test_finalize_bundle_self_check_catches_forged_signature(tmp_path: Path, sig
     assert ei.value.exit_code == 3
     assert "self-check" in str(ei.value)
 
-    # Nothing was committed; staging was cleaned up.
     assert not (project_root / "www" / "releases" / "v1.0.0").exists()
     assert not (project_root / "www" / "releases" / "v1.0.0.staging").exists()
+
+
+# ---------------------------------------------------------------------------
+# Slice 11 T3: --verify-only path
+# ---------------------------------------------------------------------------
+
+
+def test_verify_only_on_freshly_published_release(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """Publish, then --verify-only, then assert exit 0 and OK output."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    _write_trusted_keys_file(config_dir, signing_key)
+
+    assert run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0") == 0
+
+    code = run(
+        config_dir=config_dir,
+        project_root=project_root,
+        release_id="v1.0.0",
+        verify_only=True,
+    )
+    assert code == 0
+
+
+def test_verify_only_unknown_release_exits_3(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """--verify-only for a release not in the registry -> exit 3."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    _write_trusted_keys_file(config_dir, signing_key)
+
+    code = run(
+        config_dir=config_dir,
+        project_root=project_root,
+        release_id="v9.9.9",
+        verify_only=True,
+    )
+    assert code == 3
+
+
+def test_verify_only_broken_chain_exits_3(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """--verify-only on a corrupted registry -> exit 3."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    _write_trusted_keys_file(config_dir, signing_key)
+
+    assert run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0") == 0
+    (project_root / "sync" / "packing_slips" / "release-index.jsonl").write_text("not json\n", encoding="utf-8")
+    code = run(
+        config_dir=config_dir,
+        project_root=project_root,
+        release_id="v1.0.0",
+        verify_only=True,
+    )
+    assert code == 3
+
+
+def test_verify_only_does_not_require_signing_key(
+    tmp_path: Path,
+    signing_key: Ed25519PrivateKey,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verification uses trusted public keys only; signing key not required."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    _write_trusted_keys_file(config_dir, signing_key)
+    assert run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0") == 0
+
+    monkeypatch.delenv("RELEASE_SIGNING_KEY", raising=False)
+    code = run(
+        config_dir=config_dir,
+        project_root=project_root,
+        release_id="v1.0.0",
+        verify_only=True,
+    )
+    assert code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1329,7 +1361,7 @@ def test_append_registry_entry_oserror_raises_7(
         return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr("builtins.open", _fail)
-    sk = SigningKey.from_private_key(signing_key)
+    sk = signing_mod.SigningKey.from_private_key(signing_key)
     with pytest.raises(UpgradeCliError) as ei:
         publish_mod._append_registry_entry(
             registry,
