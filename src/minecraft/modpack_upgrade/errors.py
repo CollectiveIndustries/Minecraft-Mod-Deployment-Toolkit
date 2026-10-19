@@ -59,6 +59,16 @@ class PublicationError(UpgradeError):
     exit_code = 7
 
 
+class SigningError(UpgradeConfigError):
+    """Signing key or trusted-keys configuration is invalid or missing.
+
+    Covers: env var unset, key file missing or unreadable, malformed PEM,
+    non-Ed25519 key, trusted-keys file absent or invalid, key-id/content-
+    hash mismatch. Exit 3 (config layer) because these are operator-fixable
+    setup problems, not transient runtime failures.
+    """
+
+
 class SchemaError(UpgradeConfigError):
     """A TOML document does not conform to its schema."""
 
