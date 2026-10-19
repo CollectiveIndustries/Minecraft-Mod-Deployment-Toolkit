@@ -7,11 +7,41 @@ Implements ``DaemonCore.Plugin``. Wraps FastAPI + uvicorn. Endpoints:
   GET  /status    -- daemon status (health + Minecraft-specific fields)
   POST /verify    -- verify a release without side effects
   POST /publish   -- verify and record a publication receipt
-  POST /deploy    -- 501 (deployment orchestration lands in a later slice)
+  POST /deploy    -- verify then dispatch to the deployment gate
 
 All POSTs require an ``Idempotency-Key`` header. All routes require auth.
 DaemonCore provides state, audit, and the daemon's aggregated health
 through the ``DaemonContext``; the plugin reads them at request time.
+
+Slice 12 changes
+----------------
+The plugin accepts two optional keyword-only parameters,
+``registry_path`` and ``trusted_keys_path``. When both are present, the
+three POST routes run the full chain-walk + bundle-signature
+verification via :mod:`minecraft.modpack_upgrade.registry_verify`. When
+either is ``None``, the plugin preserves the slice-11 behavior:
+
+  * ``/verify`` and ``/publish`` run local-only checks
+    (slip schema + hash + bundle-directory existence).
+  * ``/deploy`` returns 501 without running verification at all - the
+    historical behavior before slice 12.
+
+Production (``daemon/main.py``) always supplies both, so the live
+daemon gets the full verification path.
+
+``/deploy`` dispatch
+--------------------
+When both paths are configured, ``/deploy`` runs ``verify_release``
+and dispatches on the structured outcome:
+
+  * chain broken           -> ``RegistryChainFailedError``  (409 / code 26)
+  * bundle/slip blocked    -> ``VerificationBlockedError``  (409 / code 20)
+  * verification passes    -> ``NotImplementedError``       (501 / code 30)
+
+The "verification passes -> 501" path is deliberate: deployment
+orchestration (Section 12.4 steps 11-19) is a later slice. This endpoint is
+the verification gate; the actual ship / lock / journal / world-backup
+sequence is not wired in this build.
 """
 
 from __future__ import annotations
@@ -36,6 +66,8 @@ from minecraft.deploy_pack.daemon.auth import Authenticator
 from minecraft.deploy_pack.daemon.errors import (
     MinecraftDaemonError,
     NotImplementedError,
+    RegistryChainFailedError,
+    VerificationBlockedError,
 )
 from minecraft.deploy_pack.daemon.idempotency import SQLiteIdempotency
 from minecraft.deploy_pack.daemon.schemas import (
@@ -80,14 +112,25 @@ class HttpAdminPlugin:
         idempotency: SQLiteIdempotency,
         slip_dir: Path,
         release_store: Path,
+        registry_path: Path | None = None,
+        trusted_keys_path: Path | None = None,
     ) -> None:
-        """Configure the plugin. No network activity until ``start``."""
+        """Configure the plugin. No network activity until ``start``.
+
+        ``registry_path`` and ``trusted_keys_path`` are both optional. When
+        both are supplied, chain-walk and bundle-signature verification
+        run on every POST route. When either is omitted, the plugin falls
+        back to slice-11 local-only behavior. ``daemon/main.py`` always
+        supplies both from :class:`MinecraftDaemonConfig`.
+        """
         self._host = host
         self._port = port
         self._auth = auth
         self._idempotency = idempotency
         self._slip_dir = slip_dir
         self._release_store = release_store
+        self._registry_path = registry_path
+        self._trusted_keys_path = trusted_keys_path
         self._ctx: DaemonContext | None = None
         self._app: FastAPI | None = None
         self._server: uvicorn.Server | None = None
@@ -253,6 +296,19 @@ class HttpAdminPlugin:
             elif value is not None:
                 await ctx.state.set(key, value)
 
+        def _run_verify(body: VerifyRequest) -> VerificationResult:
+            """Run verification with the plugin's configured paths."""
+            return verify_release(
+                release_id=body.release_id,
+                release_pointer=body.release_pointer,
+                expected_commit_sha=body.expected_commit_sha,
+                expected_slip_sha256=body.expected_slip_sha256,
+                slip_dir=self._slip_dir,
+                release_store=self._release_store,
+                registry_path=self._registry_path,
+                trusted_keys_path=self._trusted_keys_path,
+            )
+
         # --------------------------------------------------------------
         # GET /status
         # --------------------------------------------------------------
@@ -298,14 +354,7 @@ class HttpAdminPlugin:
             body_dict = body.model_dump()
 
             async def _execute() -> tuple[int, dict[str, Any]]:
-                result = verify_release(
-                    release_id=body.release_id,
-                    release_pointer=body.release_pointer,
-                    expected_commit_sha=body.expected_commit_sha,
-                    expected_slip_sha256=body.expected_slip_sha256,
-                    slip_dir=self._slip_dir,
-                    release_store=self._release_store,
-                )
+                result = _run_verify(body)
                 await _record_audit(
                     {
                         "event": "verify",
@@ -344,14 +393,7 @@ class HttpAdminPlugin:
             body_dict = body.model_dump()
 
             async def _execute() -> tuple[int, dict[str, Any]]:
-                result = verify_release(
-                    release_id=body.release_id,
-                    release_pointer=body.release_pointer,
-                    expected_commit_sha=body.expected_commit_sha,
-                    expected_slip_sha256=body.expected_slip_sha256,
-                    slip_dir=self._slip_dir,
-                    release_store=self._release_store,
-                )
+                result = _run_verify(body)
                 receipt = str(uuid.uuid4()) if result.status == "ok" else None
                 await _record_audit(
                     {
@@ -387,12 +429,57 @@ class HttpAdminPlugin:
             body: DeployRequest,
             idempotency_key: str = Header(..., alias="Idempotency-Key"),
         ) -> JSONResponse:
-            """Deployment orchestration is not implemented in this build."""
+            """Verify the release, then dispatch to the deployment gate.
+
+            Slice 12 behavior depends on how the plugin was constructed:
+
+            * **Verification paths absent** (both ``registry_path`` and
+              ``trusted_keys_path`` are ``None``): the endpoint raises
+              ``NotImplementedError`` (501/code 30) without running
+              verification. This preserves pre-slice-12 semantics for
+              any test or embedding that constructs the plugin without
+              the new keyword arguments.
+
+            * **Verification paths present**: run
+              :func:`verify_release` and dispatch:
+
+              - chain failure       -> 409 / code 26
+              - bundle or slip fail -> 409 / code 20
+              - verification passes -> 501 / code 30
+                (deployment orchestration is a later slice)
+
+            The gate exists so acceptance tests T10 (registry chain
+            tampering) and T22 (bundle tampering) can prove that the
+            daemon refuses bad releases *before* any deployment work
+            begins.
+            """
             _require_auth(request)
-            del idempotency_key  # consumed for API consistency, unused
+            del idempotency_key  # deployment orchestration is a later slice
+
+            if self._registry_path is None or self._trusted_keys_path is None:
+                # Pre-slice-12 behavior: immediate 501 with no verification.
+                raise NotImplementedError(
+                    "deployment orchestration is not implemented in this daemon build",
+                    detail=(f"requested release: {body.release_id or body.release_pointer}"),
+                )
+
+            result = _run_verify(body)
+
+            if not result.chain_ok:
+                raise RegistryChainFailedError(
+                    f"registry chain verification failed for {result.release_id!r}",
+                    detail=f"chain_failures={sorted(set(result.chain_failures))}",
+                )
+
+            if result.status != "ok":
+                raise VerificationBlockedError(
+                    f"release {result.release_id!r} failed verification",
+                    detail="reasons=" + "; ".join(result.reasons),
+                )
+
             raise NotImplementedError(
                 "deployment orchestration is not implemented in this daemon build",
-                detail=(f"requested release: {body.release_id or body.release_pointer}"),
+                detail=f"verified release: {result.release_id!r}",
             )
 
         return app

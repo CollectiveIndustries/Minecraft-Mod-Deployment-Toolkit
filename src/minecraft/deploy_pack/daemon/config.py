@@ -6,6 +6,20 @@ Reads the ``[daemon]`` table from ``config.d/deploy_pack.toml``. Missing
 keys fall back to defaults. Secret material (the bearer token) is NOT
 read here; the HTTP plugin reads it from an environment variable named
 by ``bearer_token_env`` when it constructs the authenticator.
+
+Slice 12 additions
+------------------
+``trusted_keys_path`` and ``registry_path`` are read by
+:mod:`minecraft.deploy_pack.daemon.verify` to perform chain-walk and
+bundle-signature verification (Upgrade_System_specifications Section 7.1-7.5,
+Section 12.4 steps 3-4). ``journal_path`` and ``world_backup_root`` are
+reserved for the deployment orchestration slice (Section 12.4 steps 11-19).
+
+Defaults match the DEV-side ``publish`` command so a shared checkout
+finds the same files: ``trusted_keys_path`` defaults to
+``config.d/trusted_keys.toml`` (config_dir-relative),
+``registry_path`` defaults to ``sync/packing_slips/release-index.jsonl``
+(project-root-relative).
 """
 
 from __future__ import annotations
@@ -29,6 +43,11 @@ _DEFAULTS: dict[str, str] = {
     "idempotency_path": "/var/lib/minecraft-deploy/idempotency.sqlite",
     "audit_path": "/var/lib/minecraft-deploy/audit.jsonl",
     "lock_path": "/var/lib/minecraft-deploy/daemon.lock",
+    # Slice 12 additions
+    "trusted_keys_path": "config.d/trusted_keys.toml",
+    "registry_path": "sync/packing_slips/release-index.jsonl",
+    "journal_path": "/var/lib/minecraft-deploy/operation.jsonl",
+    "world_backup_root": "/srv/minecraft/backups/world",
 }
 
 
@@ -49,6 +68,11 @@ class MinecraftDaemonConfig:
     idempotency_path: Path
     audit_path: Path
     lock_path: Path
+    # Slice 12 additions
+    trusted_keys_path: Path
+    registry_path: Path
+    journal_path: Path
+    world_backup_root: Path
 
 
 def _read_daemon_section(toml_path: Path) -> dict:
@@ -109,4 +133,8 @@ def load_config(config_dir: Path, daemon_version: str = "1.3.0") -> MinecraftDae
         idempotency_path=_resolve_path(_get("idempotency_path"), project_root),
         audit_path=_resolve_path(_get("audit_path"), project_root),
         lock_path=_resolve_path(_get("lock_path"), project_root),
+        trusted_keys_path=_resolve_path(_get("trusted_keys_path"), project_root),
+        registry_path=_resolve_path(_get("registry_path"), project_root),
+        journal_path=_resolve_path(_get("journal_path"), project_root),
+        world_backup_root=_resolve_path(_get("world_backup_root"), project_root),
     )

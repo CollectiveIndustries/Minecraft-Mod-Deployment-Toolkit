@@ -2,15 +2,49 @@
 
 """Release verification for the Minecraft deploy daemon.
 
-Local checks only; registry chain and bundle-manifest signature
-verification land in later slices. This module returns a plain
-:class:`VerificationResult` describing every check performed and any
-reasons the release is blocked. It does not raise on verification
-failure -- every failure is a block.
+Slice 11 was local-only (slip schema + content hash + file existence).
+Slice 12 adds chain-walk and bundle-manifest signature verification via
+:mod:`minecraft.modpack_upgrade.registry_verify`. The local checks stay
+in place and run first - they give the operator a stable diagnostic on
+the most common failure modes (missing slip, malformed schema, hash
+drift) before chain verification is attempted.
+
+Which checks run
+----------------
+When ``registry_path`` and ``trusted_keys_path`` are both provided:
+  * local slip checks (unchanged from slice 11)
+  * trusted-keys load  (Section 7.5)
+  * chain walk         (Section 7.1-7.3)
+  * release-in-chain   (Section 7.3)
+  * bundle present
+  * bundle manifest hash  (Section 6.4)
+  * bundle manifest signature  (Section 6.4)
+
+When either is absent: local slip checks only (backward compat with
+slice-11 tests and the daemon's pre-slice-12 default).
+
+Contract: ``verify_release`` never raises on verification failure -
+every failure is a block. Callers that want a hard stop (`/deploy` per
+Section 12.4) translate ``result.chain_ok`` / ``result.status`` into typed
+errors at the plugin layer.
+
+Structured result
+-----------------
+``VerificationResult`` carries:
+
+  * ``status``           - ``"ok"`` or ``"blocked"`` (the wire field)
+  * ``checks``           - per-check pass/fail (informational)
+  * ``reasons``          - human-readable block reasons
+  * ``chain_ok``         - True iff chain walk succeeded (or skipped)
+  * ``chain_failures``   - structured reason codes from ChainFailure
+
+``chain_ok`` and ``chain_failures`` are slice-12 additions used by
+:class:`HttpAdminPlugin`'s ``/deploy`` handler to dispatch to
+``RegistryChainFailedError`` (409/code 26) versus
+``VerificationBlockedError`` (409/code 20).
 
 Exception hierarchy note
 ------------------------
-
 ``slip_mod``'s exception hierarchy is::
 
     UpgradeConfigError
@@ -34,8 +68,16 @@ from minecraft.modpack_upgrade import slip as slip_mod
 from minecraft.modpack_upgrade.errors import (
     HashMismatchError,
     SchemaError,
+    SigningError,
     SlipError,
 )
+from minecraft.modpack_upgrade.registry_verify import (
+    ReleaseVerification,
+)
+from minecraft.modpack_upgrade.registry_verify import (
+    verify_release as chain_verify_release,
+)
+from minecraft.modpack_upgrade.signing import load_trusted_keys
 
 __all__ = ["VerificationResult", "verify_release"]
 
@@ -49,11 +91,19 @@ class VerificationResult:
     content_sha256: str | None = None
     checks: dict[str, bool] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
+    # Slice 12: structured chain outcome for /deploy dispatch.
+    chain_ok: bool = True
+    chain_failures: list[str] = field(default_factory=list)
 
     def block(self, reason: str) -> None:
         """Record ``reason`` and flip status to blocked."""
         self.reasons.append(reason)
         self.status = "blocked"
+
+
+# ---------------------------------------------------------------------------
+# Local slip checks (unchanged from slice 11)
+# ---------------------------------------------------------------------------
 
 
 def _resolve_pointer(slip_dir: Path, pointer: str) -> tuple[str | None, str | None]:
@@ -111,7 +161,7 @@ def _check_commit_sha(
 
 
 def _check_bundle_exists(result: VerificationResult, release_store: Path, release_id: str) -> None:
-    """Populate the ``bundle_exists`` check."""
+    """Populate the ``bundle_exists`` check (local-only mode)."""
     bundle_root = release_store / release_id
     exists = bundle_root.is_dir() and (bundle_root / "artifacts").is_dir()
     result.checks["bundle_exists"] = exists
@@ -120,7 +170,7 @@ def _check_bundle_exists(result: VerificationResult, release_store: Path, releas
 
 
 def _check_bundle_manifest_present(result: VerificationResult, release_store: Path, release_id: str) -> None:
-    """Populate the ``bundle_manifest_present`` check (existence only for now)."""
+    """Populate the ``bundle_manifest_present`` check (existence only, local-only mode)."""
     manifest = release_store / release_id / "bundle-manifest.json"
     result.checks["bundle_manifest_present"] = manifest.is_file()
 
@@ -144,6 +194,70 @@ def _load_slip_or_block(result: VerificationResult, slip_path: Path) -> slip_mod
         return None
 
 
+# ---------------------------------------------------------------------------
+# Slice 12: chain walk + bundle-manifest verification
+# ---------------------------------------------------------------------------
+
+
+def _verify_chain_and_bundle(
+    result: VerificationResult,
+    *,
+    release_id: str,
+    registry_path: Path,
+    bundle_dir: Path,
+    trusted_keys_path: Path,
+) -> None:
+    """Run Section 7.1-Section 7.3 chain walk and Section 6.4 bundle verification.
+
+    Populates ``checks``, ``chain_ok``, ``chain_failures``, and ``reasons``.
+    Sets ``status = "blocked"`` for any failure.
+    """
+    try:
+        trusted = load_trusted_keys(trusted_keys_path)
+    except SigningError as exc:
+        result.checks["trusted_keys"] = False
+        result.block(f"trusted_keys_error: {exc}")
+        return
+    result.checks["trusted_keys"] = True
+
+    verification: ReleaseVerification = chain_verify_release(
+        release_id,
+        registry_path=registry_path,
+        bundle_dir=bundle_dir,
+        trusted=trusted,
+    )
+
+    result.checks["chain"] = verification.chain.ok
+    result.checks["release_present"] = verification.release_present
+    result.checks["bundle_present"] = verification.bundle_present
+    result.checks["bundle_manifest"] = not verification.bundle_failures
+
+    # Chain break is a hard stop: nothing past it is verifiable.
+    if not verification.chain.ok:
+        result.chain_ok = False
+        for failure in verification.chain.failures:
+            result.chain_failures.append(failure.reason)
+            result.reasons.append(f"chain_failure[{failure.reason}] index={failure.index} {failure.release_id or '(unknown)'}: {failure.detail}")
+        result.status = "blocked"
+        return
+
+    if not verification.release_present:
+        result.block(f"release {release_id!r} is not in the registry chain")
+        return
+
+    if not verification.bundle_present:
+        result.block(f"bundle directory missing for {release_id!r}")
+        return
+
+    for failure in verification.bundle_failures:
+        result.block(failure)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
 def verify_release(
     *,
     release_id: str | None,
@@ -152,11 +266,20 @@ def verify_release(
     expected_slip_sha256: str | None,
     slip_dir: Path,
     release_store: Path,
+    registry_path: Path | None = None,
+    trusted_keys_path: Path | None = None,
 ) -> VerificationResult:
-    """Run the full local verification pass.
+    """Run the full verification pass.
+
+    Local slip checks always run. When ``registry_path`` and
+    ``trusted_keys_path`` are both provided, chain walk and bundle
+    verification run on top (slice 12). When either is ``None``, only
+    the slice-11 local checks run (backward compat).
 
     Returns :class:`VerificationResult` with status ``ok`` or ``blocked``.
-    Does not raise on verification failure -- every failure is a block.
+    Does not raise on verification failure - every failure is a block.
+    The caller (`/deploy` in ``http.py``) translates
+    ``chain_ok`` / ``status`` into typed errors per Section 12.4.
     """
     result = VerificationResult(status="ok")
 
@@ -183,6 +306,18 @@ def verify_release(
 
     _check_slip_sha(result, expected_slip_sha256)
     _check_commit_sha(result, slip_obj, expected_commit_sha)
-    _check_bundle_exists(result, release_store, result.release_id)
-    _check_bundle_manifest_present(result, release_store, result.release_id)
+
+    if registry_path is not None and trusted_keys_path is not None:
+        _verify_chain_and_bundle(
+            result,
+            release_id=result.release_id,
+            registry_path=registry_path,
+            bundle_dir=release_store / result.release_id,
+            trusted_keys_path=trusted_keys_path,
+        )
+    else:
+        # Backward-compatible slice-11 local checks.
+        _check_bundle_exists(result, release_store, result.release_id)
+        _check_bundle_manifest_present(result, release_store, result.release_id)
+
     return result
