@@ -15,11 +15,13 @@ bundle-signature verification (Upgrade_System_specifications Section 7.1-7.5,
 Section 12.4 steps 3-4). ``journal_path`` and ``world_backup_root`` are
 reserved for the deployment orchestration slice (Section 12.4 steps 11-19).
 
-Defaults match the DEV-side ``publish`` command so a shared checkout
-finds the same files: ``trusted_keys_path`` defaults to
-``config.d/trusted_keys.toml`` (config_dir-relative),
-``registry_path`` defaults to ``sync/packing_slips/release-index.jsonl``
-(project-root-relative).
+Slice 13 additions
+------------------
+``source_host``, ``source_user``, ``source_path``, and ``ssh_key``
+describe the DEV-side rsync target that prod pulls from (Section 12.5). An
+empty ``source_host`` disables deployment orchestration: ``/deploy``
+returns 501. The other three have sensible defaults so that only
+``source_host`` must be set explicitly to enable pull.
 """
 
 from __future__ import annotations
@@ -48,6 +50,11 @@ _DEFAULTS: dict[str, str] = {
     "registry_path": "sync/packing_slips/release-index.jsonl",
     "journal_path": "/var/lib/minecraft-deploy/operation.jsonl",
     "world_backup_root": "/srv/minecraft/backups/world",
+    # Slice 13 additions (pull source; empty source_host disables /deploy)
+    "source_host": "",
+    "source_user": "deploy",
+    "source_path": "/srv/minecraft-dev/www/releases",
+    "ssh_key": "~/.ssh/id_deploy_warehouse_ro",
 }
 
 
@@ -73,6 +80,11 @@ class MinecraftDaemonConfig:
     registry_path: Path
     journal_path: Path
     world_backup_root: Path
+    # Slice 13 additions
+    source_host: str
+    source_user: str
+    source_path: Path
+    ssh_key: Path
 
 
 def _read_daemon_section(toml_path: Path) -> dict:
@@ -137,4 +149,8 @@ def load_config(config_dir: Path, daemon_version: str = "1.3.0") -> MinecraftDae
         registry_path=_resolve_path(_get("registry_path"), project_root),
         journal_path=_resolve_path(_get("journal_path"), project_root),
         world_backup_root=_resolve_path(_get("world_backup_root"), project_root),
+        source_host=_get("source_host"),
+        source_user=_get("source_user"),
+        source_path=Path(_get("source_path")),
+        ssh_key=Path(_get("ssh_key")).expanduser(),
     )
