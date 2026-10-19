@@ -18,9 +18,15 @@ The upgrade-mode reconciliation invalidates the sealed candidate slip's
 a new ``compose_tree`` and a new ``content_sha256``. This happens before
 the slip is copied to the release registry, so the release slip is what
 was actually tested against the reconciled compose. A spec amendment
-note will follow in the Slice 9 SITREP; Section 4.3 of the base spec's
-"candidate slip is immutable" invariant applies to the pre-promote
-materialized form, which this command supersedes for upgrade releases.
+note accompanies this behavior in ``Upgrade_System_specifications.md``
+Section 4.3 and ``Resolution_Report.md`` Section 8.1.
+
+Git operations (``git add``, ``git hash-object``) delegate to
+:mod:`PlatformCore.git` so the shared repository API stays the single
+source of truth for path normalization, `--` separators, and timeout
+pass-through. This module is a thin application adapter that translates
+``PlatformCore.git``'s exceptions into the CLI's ``UpgradeCliError(3)``
+so that exit-code semantics stay with the application.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from pathlib import Path
 
 import tomli_w
 from LoggingCore import get_logger
+from PlatformCore.git import hash_object, stage_paths
 
 from minecraft.deploy_pack.daemon.config import load_config as load_daemon_config
 from minecraft.modpack_upgrade import slip as slip_mod
@@ -50,25 +57,34 @@ _log_cli = get_logger("minecraft.modpack_upgrade.cli.commands.promote")
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
+#
+# Thin application adapters over PlatformCore.git. The shared layer owns
+# path normalization, the ``--`` separator, and timeout pass-through; this
+# layer owns the CLI contract -- specifically, that any git failure
+# becomes ``UpgradeCliError(3)`` so main.py's dispatcher returns the right
+# exit code. The individual message strings are preserved from the
+# pre-migration implementation so operator-facing text does not regress.
 
 
 def _git_add(project_root: Path, paths: list[Path]) -> None:
-    """Stage the given paths in the project git repo."""
+    """Stage the given paths in the project git repo.
+
+    Path containment violations (a path that is not under ``project_root``)
+    raise ``ValueError`` from ``Path.relative_to`` *before* git is invoked,
+    matching the pre-migration behavior; that ``ValueError`` propagates
+    uncaught and becomes exit 1 via main.py's generic exception handler.
+    All git-level failures become ``UpgradeCliError(3)``.
+    """
     rel = [str(p.relative_to(project_root)) for p in paths]
     if not rel:
         return
     try:
-        result = subprocess.run(
-            ["git", "add", *rel],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        stage_paths(rel, repo_path=str(project_root), timeout=30)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip() if exc.stderr else str(exc)
+        raise UpgradeCliError(3, f"git add failed: {stderr}") from exc
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise UpgradeCliError(3, f"git add failed: {exc}") from exc
-    if result.returncode != 0:
-        raise UpgradeCliError(3, f"git add failed: {result.stderr.strip()}")
 
 
 def _git_blob_hash(project_root: Path, relpath: str) -> str:
@@ -79,7 +95,11 @@ def _git_blob_hash(project_root: Path, relpath: str) -> str:
     commit. Distinct from ``git rev-parse HEAD:<relpath>`` which reads
     the *committed* blob (the "before commit" state).
 
-    Raises :class:`UpgradeCliError(3)` on any failure - promote is a
+    ``relpath`` is interpreted as repo-relative to ``project_root``.
+    ``PlatformCore.git.hash_object`` computes the blob hash without
+    writing to the object store (``write=False``).
+
+    Raises :class:`UpgradeCliError(3)` on any failure. Promote is a
     staging step whose whole point is to prepare the git commit, so a
     missing git binary or a non-repo working directory is a hard error
     rather than a silent placeholder. Contrast with
@@ -87,18 +107,12 @@ def _git_blob_hash(project_root: Path, relpath: str) -> str:
     is useful even without git (the tree hashes are descriptive).
     """
     try:
-        result = subprocess.run(
-            ["git", "hash-object", relpath],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        hash_value = hash_object(relpath, repo_path=str(project_root), timeout=10)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip() if exc.stderr else str(exc)
+        raise UpgradeCliError(3, f"git hash-object failed for {relpath}: {stderr}") from exc
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise UpgradeCliError(3, f"git hash-object unavailable for {relpath}: {exc}") from exc
-    if result.returncode != 0:
-        raise UpgradeCliError(3, f"git hash-object failed for {relpath}: {result.stderr.strip()}")
-    hash_value = result.stdout.strip()
     if not hash_value:
         raise UpgradeCliError(3, f"git hash-object returned empty output for {relpath}")
     return hash_value

@@ -25,9 +25,12 @@ diffing must pass an explicit drifted ``compose_body``; the fixture is
 deliberately conservative so most tests read cleanly.
 
 ``_git_add`` and ``_git_blob_hash`` are monkeypatched at the module
-level: real git is exercised indirectly via the ``_git_add`` fake,
-and blob hashes are deterministic per-test values rather than
-depending on a real repository.
+level for the behavior tests, so those tests focus on orchestration,
+not on git mechanics. Slice 9 Turn C1 additionally adds integration
+tests (bottom of file) that call the real ``_git_add`` and
+``_git_blob_hash`` against a real ``tmp_path`` git repository. Those
+tests close the ~10% coverage gap on the two function bodies after the
+migration to ``PlatformCore.git``.
 
 Every test that wires ``_wire_git`` captures its return value, even
 when only one half is used. For pre-condition failure tests, the
@@ -37,6 +40,7 @@ anything - a stronger check than merely "raised exit 3."
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -162,8 +166,8 @@ def _setup_promote_env(
 
     When ``release_mode == "update"``, the state includes a placeholder
     ``effective_compose_sha256``. ``state.load_state`` requires this field
-    for update mode (Resolution_Report Section 6.1); promote itself does not
-    read it, so any non-None value suffices.
+    for update mode (Resolution_Report Section 6.1); promote itself does
+    not read it, so any non-None value suffices.
 
     Returns ``(config_dir, project_root, run_id)``.
     """
@@ -536,3 +540,146 @@ def test_refuses_to_overwrite_different_slip(tmp_path: Path, _wire_git: tuple[li
     assert ei.value.exit_code == 3
     assert "refusing to overwrite" in str(ei.value)
     assert added == []
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: real _git_add / _git_blob_hash against a real repo
+# ---------------------------------------------------------------------------
+#
+# The `_wire_git` fixture used above monkeypatches `_git_add` and
+# `_git_blob_hash`, so those function bodies were not exercised by the
+# behavior tests above (which is why the coverage report flagged them at
+# ~10%). These tests call the functions directly against a real git
+# repository. No monkeypatch of the internal helpers; `subprocess.run` is
+# used only as ground-truth verification, not as a replacement for the
+# code under test.
+#
+# PlatformCore.git.stage_paths / hash_object are the shared implementation
+# this migration targets (Slice 9 Turn C1); these tests pin the application
+# adapter layer that translates their exceptions into UpgradeCliError(3).
+
+
+def _init_git_repo(repo: Path) -> None:
+    """Initialize a real git repo with a local identity (no global config needed)."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+
+
+@pytest.fixture
+def real_git_repo(tmp_path: Path) -> Path:
+    """Provide a real, initialized git repo under tmp_path."""
+    repo = tmp_path / "git-repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    return repo
+
+
+def test_git_add_stages_files(real_git_repo: Path) -> None:
+    """_git_add stages files via PlatformCore.git.stage_paths."""
+    (real_git_repo / "a.txt").write_bytes(b"a")
+    (real_git_repo / "sub").mkdir()
+    (real_git_repo / "sub" / "b.txt").write_bytes(b"b")
+
+    promote._git_add(
+        real_git_repo,
+        [real_git_repo / "a.txt", real_git_repo / "sub" / "b.txt"],
+    )
+
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=real_git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert sorted(result.stdout.splitlines()) == ["a.txt", "sub/b.txt"]
+
+
+def test_git_add_empty_list_is_noop(real_git_repo: Path) -> None:
+    """An empty paths list makes no git call and stages nothing."""
+    promote._git_add(real_git_repo, [])
+
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=real_git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == ""
+
+
+def test_git_add_translates_calledprocesserror(real_git_repo: Path) -> None:
+    """A git failure (nonexistent path) is translated to UpgradeCliError(3)."""
+    with pytest.raises(UpgradeCliError) as ei:
+        promote._git_add(real_git_repo, [real_git_repo / "does-not-exist.txt"])
+    assert ei.value.exit_code == 3
+    assert "git add failed" in str(ei.value)
+
+
+def test_git_add_translates_filenotfound(real_git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing git binary (FileNotFoundError) is translated to UpgradeCliError(3)."""
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("simulated: git binary not found")
+
+    monkeypatch.setattr(promote, "stage_paths", _raise)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        promote._git_add(real_git_repo, [real_git_repo / "a.txt"])
+    assert ei.value.exit_code == 3
+    assert "git add failed" in str(ei.value)
+    assert "simulated: git binary not found" in str(ei.value)
+
+
+def test_git_blob_hash_returns_real_hash(real_git_repo: Path) -> None:
+    """_git_blob_hash returns the same hash git itself computes."""
+    target = real_git_repo / "content.bin"
+    target.write_bytes(b"the quick brown fox")
+
+    wrapper_hash = promote._git_blob_hash(real_git_repo, "content.bin")
+
+    raw = subprocess.run(
+        ["git", "hash-object", "content.bin"],
+        cwd=real_git_repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert wrapper_hash == raw.stdout.strip()
+    assert len(wrapper_hash) == 40
+
+
+def test_git_blob_hash_translates_calledprocesserror(real_git_repo: Path) -> None:
+    """A git failure (nonexistent file) is translated to UpgradeCliError(3)."""
+    with pytest.raises(UpgradeCliError) as ei:
+        promote._git_blob_hash(real_git_repo, "does-not-exist.bin")
+    assert ei.value.exit_code == 3
+    assert "git hash-object failed" in str(ei.value)
+    assert "does-not-exist.bin" in str(ei.value)
+
+
+def test_git_blob_hash_translates_filenotfound(real_git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing git binary (FileNotFoundError) is translated to UpgradeCliError(3)."""
+
+    def _raise(*args: object, **kwargs: object) -> str:
+        raise FileNotFoundError("simulated: git binary not found")
+
+    monkeypatch.setattr(promote, "hash_object", _raise)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        promote._git_blob_hash(real_git_repo, "content.bin")
+    assert ei.value.exit_code == 3
+    assert "git hash-object unavailable" in str(ei.value)
+    assert "simulated: git binary not found" in str(ei.value)
+
+
+def test_git_blob_hash_empty_output_translated(real_git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty hash result (defensive) is translated to UpgradeCliError(3)."""
+    monkeypatch.setattr(promote, "hash_object", lambda *a, **kw: "")
+
+    with pytest.raises(UpgradeCliError) as ei:
+        promote._git_blob_hash(real_git_repo, "content.bin")
+    assert ei.value.exit_code == 3
+    assert "empty output" in str(ei.value)

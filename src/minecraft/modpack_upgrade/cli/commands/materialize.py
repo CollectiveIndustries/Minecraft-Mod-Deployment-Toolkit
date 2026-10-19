@@ -16,6 +16,7 @@ from pathlib import Path
 
 import tomli_w
 from LoggingCore import get_logger
+from PlatformCore.git import path_object_id
 
 from minecraft.deploy_pack.config_model import load_compose
 from minecraft.deploy_pack.daemon.config import load_config as load_daemon_config
@@ -465,20 +466,34 @@ def _resolve_runtime(config_dir: Path, project_root: Path, report: ResolutionRep
 
 
 def _git_tree_hash(project_root: Path, relpath: str) -> str:
-    """Return ``git rev-parse HEAD:<relpath>``, or a zero placeholder."""
+    """Return ``git rev-parse HEAD:<relpath>``, or a zero placeholder.
+
+    Delegates to :func:`PlatformCore.git.path_object_id` so the shared
+    repository API owns command construction, path normalization, and
+    timeout semantics. The fail-open behavior is preserved here because
+    it is application policy, not a repository operation:
+
+    * Materialize runs on fresh candidate directories that may legitimately
+      have no git metadata (a candidate built outside a git checkout). The
+      tree hashes in the slip are *descriptive*, not *enforced* -- a
+      candidate with ``"0" * 64`` tree hashes is still a valid, loadable
+      slip.
+    * ``promote._git_blob_hash`` (Turn C1) intentionally does the opposite
+      and raises ``UpgradeCliError(3)`` on any git failure, because promote
+      exists to stage a git commit and cannot proceed without one.
+
+    On success the result is a git object ID (40-char blob for a file,
+    40-char tree for a directory). On any of ``CalledProcessError``
+    (rev not found / path not in tree / not a repo), ``FileNotFoundError``
+    (git binary missing), or ``subprocess.TimeoutExpired`` (git timed out),
+    returns ``"0" * 64``. An empty hash (defensive) also yields the
+    placeholder.
+    """
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", f"HEAD:{relpath}"],
-            cwd=str(project_root),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        hash_value = path_object_id(relpath, rev="HEAD", repo_path=str(project_root), timeout=10)
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         return "0" * 64
-    if result.returncode != 0:
-        return "0" * 64
-    return result.stdout.strip() or "0" * 64
+    return hash_value or "0" * 64
 
 
 def _resolve_git_tree_hashes(project_root: Path) -> dict[str, str]:
