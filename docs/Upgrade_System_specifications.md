@@ -1,4 +1,4 @@
-# Minecraft Upgrade System — Specification v1.3.1
+# docs/Upgrade_System_specifications.md
 
 **Status:** Design of record. Architecture frozen. Slices 1–6 implemented and passing (1436 tests, 91.08% coverage). Slice 7a documentation frozen at rev e. Production readiness requires slices 7b–17, all §20 acceptance tests, and exercising the migration runbook.
 
@@ -205,7 +205,19 @@ The `latest` server's Git inputs are **not** recorded in a pointer. `latest` rea
 - `latest-slip` is DEV-local and not Git-tracked.
 - Candidate slips (`/var/lib/minecraft-upgrade/candidates/<run-id>/packing_slip.toml`) are DEV-local. Only `promote` copies them to `sync/packing_slips/<tag>.toml`.
 <!-- REVIEW-FIX 4: candidate-slip immutability restored as an explicit invariant -->
-- A sealed candidate slip is **immutable**. After `materialize` writes `candidates/<run-id>/packing_slip.toml`, no command modifies it in place. A change to any input produces a new run-id and a new slip. `promote` copies; it does not edit.
+<!-- Slice 9 T4 (2026-10-18): promote --release-mode upgrade re-seals the candidate slip once, by design. -->
+- A sealed candidate slip is **immutable between `materialize` and `promote`**. After `materialize` writes `candidates/<run-id>/packing_slip.toml`, no command modifies it in place until `promote` runs. A change to any input between those two commands produces a new run-id and a new slip; the affected command exits 3 with a diagnostic before mutating anything.
+
+  `promote --release-mode upgrade` is the **single deliberate exception**. Upgrade-mode releases declare the slip's `[runtime]` as authoritative for the target runtime; `promote` must reconcile the effective Compose file against that runtime before the release can be tagged. Doing so changes the Compose file's working-tree blob hash, which `[inputs.git].compose_tree` records. Reconciliation therefore:
+
+  1. Applies the Compose env-var diff atomically (`_compose.apply_compose_diff`) — verify-before-write, temp-then-`os.replace`.
+  2. Recomputes `[inputs.git].compose_tree` via `git hash-object` on the working-tree Compose file.
+  3. Recomputes `content_sha256` over the updated slip body.
+  4. Re-seals the slip in place, atomically.
+
+  The pre-promote slip is superseded. The **re-sealed** slip — not the pre-promote version — is what `promote` copies to `sync/packing_slips/<tag>.toml`. Rollback to a pre-promote slip is not supported; each upgrade release is a fresh identity, and any `compose_tree` or `content_sha256` change produced by a `--release-mode upgrade` promote yields a new release identity distinct from any prior candidate.
+
+  `promote --release-mode update` does **not** re-seal. Update-mode releases treat the effective Compose as runtime authority and never modify it, so the materialized slip is what gets promoted verbatim.
 - No symlinks in the `mods/` deployment path. Shipping writes real files.
 - One physical copy per unique artifact per host, except the deployed copy in `mods/`.
 - Prod's release store is populated **only** by pulling bundles from DEV. It is never populated by provider API calls.
@@ -2062,7 +2074,7 @@ See §16.
 |---|---|
 | Slice 7b implementation (resolver, provider adapters, four CLI commands) | Not started |
 | `docs/Manifest_Schema.md` | Frozen (rev e) |
-| `docs/Resolution_Report.md` | Frozen (rev e) |
+| `docs/Resolution_Report.md` | Frozen (rev g) |
 | `docs/Side_Determination.md` | Frozen (rev e) |
 | Migration runbook | Not written |
 | Prod daemon API contract | Not frozen |

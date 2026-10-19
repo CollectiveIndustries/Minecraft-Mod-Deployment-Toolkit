@@ -1,6 +1,6 @@
 # docs/Resolution_Report.md
 
-**Status:** Frozen as spec v1.3.1 (slice 7a, rev f)
+**Status:** Frozen as spec v1.3.1 (slice 7a, rev g)
 **File:** `www/runs/<run-id>/resolution-report.toml`
 **Author:** Resolver (written by `update`)
 **Consumer:** `acknowledge`, `materialize`, Discord link, human review
@@ -8,6 +8,8 @@
 **Rev e changes:** `expected_hashes` array replaces `expected_sha256`. `unmarked` removed (no such array; sides are provisional and non-preflight). In-house identity documented. State values align with Manifest_Schema §4. §3.2 clarifies that `[[seed]].jar_sha256` is the sole in-house identity when `build_id` is absent. §6.5 defensive drop check covers `[[cascade]]`.
 
 **Rev f changes:** §3.1 marked `[[conflict]]` as reserved for v1.3.2. The v1.3.1 resolver does not detect conflicts; the section is schema-frozen but always absent. No behavioral change.
+
+**Rev g changes:** §8.1 added. Documents candidate-slip immutability and the `promote --release-mode upgrade` re-seal exception; cross-references `Upgrade_System_specifications.md` §4.3.
 
 ---
 
@@ -381,6 +383,26 @@ www/runs/<run-id>/                 # DEV-local; published for Discord link
 `candidates/` are DEV-local. `www/runs/` is DEV-local, published for
 link access only.
 
+### §8.1 Candidate-slip immutability and the promote re-seal exception
+
+`candidates/<run-id>/packing_slip.toml` is sealed by `materialize` and
+is **immutable until `promote` runs**. A change to any resolver input
+between `materialize` and `promote` invalidates the run — the affected
+command (`promote`, in practice) exits 3 with a diagnostic before
+mutating anything.
+
+`promote --release-mode upgrade` is the single deliberate exception. It
+reconciles the effective Compose file against the slip's `[runtime]`,
+refreshes `[inputs.git].compose_tree` to the working-tree blob hash,
+recomputes `content_sha256`, and re-seals the slip atomically before
+copying it to `sync/packing_slips/<tag>.toml`. The re-sealed slip is
+what appears in the release registry; the pre-promote slip is
+superseded and is not retained as a rollback target. `promote
+--release-mode update` does not re-seal.
+
+See `Upgrade_System_specifications.md` §4.3 for the normative invariant
+that frames this behavior.
+
 ---
 
 ## §9. Version history
@@ -391,6 +413,7 @@ link access only.
 | v1.3.1 rev d | Dual external/in-house examples. §3.2 per-provider optional fields. §6.5 defensive drop check covers `[[cascade]]`. |
 | v1.3.1 rev e | §3.2 clarifies `[[seed]].jar_sha256` is sole in-house identity when `build_id` absent. |
 | v1.3.1 rev f | §3.1 marks `[[conflict]]` reserved for v1.3.2. No behavioral change; the section was always absent in v1.3.1. |
+| v1.3.1 rev g | §8.1 added. Documents candidate-slip immutability and the `promote --release-mode upgrade` re-seal exception; cross-references `Upgrade_System_specifications.md` §4.3. |
 
 ---
 
