@@ -92,7 +92,6 @@ def test_verify_help_exits_zero(capsys: pytest.CaptureFixture[str]):
         ["build-inhouse", "mymod", "abc123"],
         ["validate", "migration"],
         ["validate", "velocity"],
-        ["publish", "v1.0.2"],
     ],
 )
 def test_stubs_exit_one(
@@ -156,3 +155,28 @@ def test_promote_without_candidate_exits_3(tmp_path: Path, capsys: pytest.Captur
     code = main(["--config-dir", str(config_dir), "promote", "v1.0.2"])
     assert code == 3
     assert "no materialized candidate" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# publish (Slice 10 Turn 1: preconditions only)
+# ---------------------------------------------------------------------------
+
+
+def test_publish_requires_release_id(capsys: pytest.CaptureFixture[str]):
+    """`publish` without a release-id argument exits 2 (usage)."""
+    code = main(["publish"])
+    assert code == 2
+
+
+def test_publish_missing_slip_exits_3(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """`publish` with no slip for the release-id exits 3."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    (config_dir / "deploy_pack.toml").write_text(
+        f'[daemon]\nstate_dir = "{tmp_path / "state"}"\n',
+        encoding="utf-8",
+    )
+    code = main(["--config-dir", str(config_dir), "publish", "v1.0.0"])
+    assert code == 3
+    captured = capsys.readouterr()
+    assert "slip not found" in captured.err

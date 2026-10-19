@@ -37,6 +37,7 @@ from .commands import (
     manifest,
     materialize,
     promote,
+    publish,
     runtime,
     status,
     stubs,
@@ -113,6 +114,15 @@ def _cmd_iterate(args: argparse.Namespace, config_dir: Path, project_root: Path)
 def _cmd_promote(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
     """Dispatch to the promote command (spec Section 15.1.7)."""
     return promote.run(config_dir=config_dir, project_root=project_root, tag=args.tag)
+
+
+def _cmd_publish(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the publish command (spec Section 15.1.8)."""
+    return publish.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        release_id=args.release_id,
+    )
 
 
 def _cmd_stub(name: str, hint: str = "") -> _CommandHandler:
@@ -218,6 +228,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_promote.add_argument("tag", help="Release tag to promote")
     p_promote.set_defaults(func=_cmd_promote)
 
+    # -- publish -----------------------------------------------------
+    p_publish = sub.add_parser("publish", help="Create immutable release bundle (spec 15.1.8)")
+    p_publish.add_argument("release_id", help="Release ID to publish")
+    p_publish.set_defaults(func=_cmd_publish)
+
     # -- stubs (later slices) ----------------------------------------
     p_build = sub.add_parser("build-inhouse", help="Build an in-house mod JAR")
     p_build.add_argument("mod", help="Mod slug")
@@ -243,10 +258,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_validate_migration.set_defaults(func=_cmd_stub("validate migration"))
     p_validate_velocity = p_validate_sub.add_parser("velocity", help="Isolated proxy integration")
     p_validate_velocity.set_defaults(func=_cmd_stub("validate velocity"))
-
-    p_publish = sub.add_parser("publish", help="Create immutable release bundle")
-    p_publish.add_argument("release_id", help="Release ID to publish")
-    p_publish.set_defaults(func=_cmd_stub("publish"))
 
     return parser
 
