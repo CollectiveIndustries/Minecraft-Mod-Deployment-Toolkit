@@ -1,6 +1,6 @@
 # tests/modpack_upgrade/test_publish.py
 
-"""Tests for ``minecraft-upgrade publish`` (Slice 10, complete).
+"""Tests for ``minecraft-upgrade publish`` (Slice 10, complete + cleanup).
 
 Full pipeline exercised end-to-end:
 
@@ -22,16 +22,13 @@ Exit 0 on success; exit 3 on preconditions / assembly / manifest / git
 failures; exit 7 on registry append failure with best-effort bundle
 rollback.
 
-The fixture simulates the full post-promote state: slip on disk, a
-``materialized`` run with matching ``resolution_inputs_sha256``, and a
-real git repo with the release tag. Tests that need to break one of
-those pass the corresponding flag (``create_run=False``,
-``create_git=False``, etc.).
-
-Note on run discovery: ``_find_materialized_run_for_slip`` matches
-materialized runs by ``resolution_inputs_sha256``. Two publishes in the
-same tree with identical resolver inputs would be ambiguous, so the
-chain-link test overrides the second slip's fingerprint.
+Cleanup turn: every defensive branch in ``_find_materialized_run_for_slip``,
+``_last_entry_hash``, ``_resolve_git_refs``, and ``_append_registry_entry``
+has a targeted test. These are branches that fire when the world is
+broken (malformed state, unreadable registry, git unavailable,
+unexpected tag SHA) -- the exact inputs most likely to be untested in
+practice and most likely to hide a traceback behind a user-facing
+message.
 """
 
 from __future__ import annotations
@@ -48,6 +45,7 @@ from minecraft.modpack_upgrade import slip as slip_mod
 from minecraft.modpack_upgrade.cli.commands import publish as publish_mod
 from minecraft.modpack_upgrade.cli.commands.publish import run
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
+from minecraft.modpack_upgrade.slip import parse_slip
 from minecraft.modpack_upgrade.state import RunState, save_state
 
 # ---------------------------------------------------------------------------
@@ -230,11 +228,6 @@ def _setup_publish_env(
     """Set up a project tree ready for ``publish``.
 
     Returns ``(config_dir, project_root, slip_path)``.
-
-    Defaults simulate the full post-promote state: a materialized run
-    with matching ``resolution_inputs_sha256``, and a real git repo with
-    the release tag. Tests that want to break one of these pass the
-    corresponding flag.
     """
     config_dir = tmp_path / "config.d"
     config_dir.mkdir()
@@ -882,6 +875,283 @@ def test_registry_entry_hash_is_deterministic() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cleanup: _find_materialized_run_for_slip branch coverage
+# ---------------------------------------------------------------------------
+
+
+def test_runs_dir_missing_raises_3(tmp_path: Path) -> None:
+    """No ``runs/`` directory at all -> exit 3 with 'no runs directory' message."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path, create_run=False)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "no runs directory" in str(ei.value)
+
+
+def test_file_in_runs_dir_is_skipped(tmp_path: Path) -> None:
+    """A regular file inside ``runs/`` is skipped (only directories are scanned)."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    # The fixture already created state/runs/run-abc/. Add a stray file.
+    (project_root / "state" / "runs" / "stray_file.txt").write_text("not a run dir\n")
+
+    code = run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert code == 0
+
+
+def test_run_dir_without_state_toml_skipped(tmp_path: Path) -> None:
+    """A run directory with no ``state.toml`` is skipped."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    (project_root / "state" / "runs" / "run-empty").mkdir(parents=True)
+
+    code = run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert code == 0
+
+
+def test_malformed_state_toml_skipped(tmp_path: Path) -> None:
+    """A run directory with malformed ``state.toml`` is skipped."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    bad_run = project_root / "state" / "runs" / "run-bad"
+    bad_run.mkdir(parents=True)
+    (bad_run / "state.toml").write_text("not = valid = toml\n", encoding="utf-8")
+
+    code = run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert code == 0
+
+
+def test_fingerprint_mismatch_raises_3(tmp_path: Path) -> None:
+    """A materialized run whose fingerprint differs from the slip's -> no match -> exit 3."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path, create_run=False)
+    # Only create a run with a DIFFERENT fingerprint.
+    _write_materialized_run(
+        project_root / "state",
+        run_id="run-other",
+        resolution_inputs_sha256=_hex("0"),
+    )
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "no materialized run" in str(ei.value)
+
+
+def test_multiple_matching_runs_raises_3(tmp_path: Path) -> None:
+    """Two materialized runs with the same fingerprint -> exit 3 (ambiguous)."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path, run_id="run-a")
+    _write_materialized_run(
+        project_root / "state",
+        run_id="run-b",
+        resolution_inputs_sha256=_hex("7"),  # same as fixture default
+    )
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "ambiguous" in str(ei.value)
+    # No bundle committed.
+    assert not (project_root / "www" / "releases" / "v1.0.0").exists()
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: _last_entry_hash branch coverage
+# ---------------------------------------------------------------------------
+
+
+def test_last_entry_hash_missing_file_returns_genesis(tmp_path: Path) -> None:
+    """A missing registry file returns the genesis hash (all zeroes)."""
+    assert publish_mod._last_entry_hash(tmp_path / "nope.jsonl") == "0" * 64
+
+
+def test_last_entry_hash_empty_file_returns_genesis(tmp_path: Path) -> None:
+    """A registry file with only blank lines returns the genesis hash."""
+    p = tmp_path / "empty.jsonl"
+    p.write_text("\n\n\n", encoding="utf-8")
+    assert publish_mod._last_entry_hash(p) == "0" * 64
+
+
+def test_last_entry_hash_unreadable_raises_7(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ``OSError`` on registry read -> exit 7."""
+    p = tmp_path / "unreadable.jsonl"
+    p.write_text('{"entry_hash": "' + "a" * 64 + '"}\n', encoding="utf-8")
+    real_open = open
+
+    def _fail(path: object, *args: object, **kwargs: object) -> object:
+        if str(path) == str(p):
+            raise OSError("permission denied")
+        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("builtins.open", _fail)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._last_entry_hash(p)
+    assert ei.value.exit_code == 7
+    assert "could not read registry" in str(ei.value)
+
+
+def test_last_entry_hash_malformed_json_raises_7(tmp_path: Path) -> None:
+    """A registry whose last line is not valid JSON -> exit 7."""
+    p = tmp_path / "bad.jsonl"
+    p.write_text("not json\n", encoding="utf-8")
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._last_entry_hash(p)
+    assert ei.value.exit_code == 7
+    assert "malformed JSON" in str(ei.value)
+
+
+def test_last_entry_hash_non_dict_raises_7(tmp_path: Path) -> None:
+    """A registry whose last line is a JSON array (not object) -> exit 7."""
+    p = tmp_path / "list.jsonl"
+    p.write_text('["not", "a", "dict"]\n', encoding="utf-8")
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._last_entry_hash(p)
+    assert ei.value.exit_code == 7
+    assert "not a JSON object" in str(ei.value)
+
+
+def test_last_entry_hash_invalid_entry_hash_raises_7(tmp_path: Path) -> None:
+    """A registry whose last entry has a wrong-length entry_hash -> exit 7."""
+    p = tmp_path / "short.jsonl"
+    p.write_text('{"entry_hash": "abc"}\n', encoding="utf-8")
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._last_entry_hash(p)
+    assert ei.value.exit_code == 7
+    assert "invalid entry_hash" in str(ei.value)
+
+
+def test_last_entry_hash_valid_returns_entry_hash(tmp_path: Path) -> None:
+    """A well-formed last entry returns its recorded entry_hash."""
+    p = tmp_path / "good.jsonl"
+    expected = "b" * 64
+    p.write_text(
+        json.dumps({"entry_hash": expected, "release_id": "v1.0.0"}) + "\n",
+        encoding="utf-8",
+    )
+    assert publish_mod._last_entry_hash(p) == expected
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: _resolve_git_refs branch coverage
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_git_refs_filenotfound_on_tag_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing git binary on the tag lookup -> exit 3."""
+
+    def _raise(*args: object, **kwargs: object) -> tuple[int, str, str]:
+        raise FileNotFoundError("git not on PATH")
+
+    monkeypatch.setattr(publish_mod, "run_git", _raise)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._resolve_git_refs(tmp_path, "v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "failed" in str(ei.value)
+
+
+def test_resolve_git_refs_timeout_on_tag_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout on the tag lookup -> exit 3."""
+
+    def _raise(*args: object, **kwargs: object) -> tuple[int, str, str]:
+        raise subprocess.TimeoutExpired(cmd=["git"], timeout=10)
+
+    monkeypatch.setattr(publish_mod, "run_git", _raise)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._resolve_git_refs(tmp_path, "v1.0.0")
+    assert ei.value.exit_code == 3
+
+
+def test_resolve_git_refs_unexpected_sha_length_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tag SHA whose length isn't 40 or 64 -> exit 3 with a clear message."""
+
+    def _fake(cmd: list[str], **kwargs: object) -> tuple[int, str, str]:
+        return (0, "abc\n", "")
+
+    monkeypatch.setattr(publish_mod, "run_git", _fake)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._resolve_git_refs(tmp_path, "v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "unexpected tag SHA length" in str(ei.value)
+
+
+def test_resolve_git_refs_filenotfound_on_commit_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing git binary on the commit resolution -> exit 3."""
+    calls = {"n": 0}
+
+    def _fake(cmd: list[str], **kwargs: object) -> tuple[int, str, str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return (0, "a" * 40 + "\n", "")
+        raise FileNotFoundError("git gone")
+
+    monkeypatch.setattr(publish_mod, "run_git", _fake)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._resolve_git_refs(tmp_path, "v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "failed" in str(ei.value)
+
+
+def test_resolve_git_refs_timeout_on_commit_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout on the commit resolution -> exit 3."""
+    calls = {"n": 0}
+
+    def _fake(cmd: list[str], **kwargs: object) -> tuple[int, str, str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return (0, "a" * 40 + "\n", "")
+        raise subprocess.TimeoutExpired(cmd=["git"], timeout=10)
+
+    monkeypatch.setattr(publish_mod, "run_git", _fake)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._resolve_git_refs(tmp_path, "v1.0.0")
+    assert ei.value.exit_code == 3
+
+
+def test_resolve_git_refs_rc_nonzero_on_commit_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero return code on the commit resolution -> exit 3."""
+    calls = {"n": 0}
+
+    def _fake(cmd: list[str], **kwargs: object) -> tuple[int, str, str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return (0, "a" * 40 + "\n", "")
+        return (1, "", "commit not found")
+
+    monkeypatch.setattr(publish_mod, "run_git", _fake)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._resolve_git_refs(tmp_path, "v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "could not resolve commit" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# Cleanup: _append_registry_entry branch coverage
+# ---------------------------------------------------------------------------
+
+
+def test_append_registry_entry_oserror_raises_7(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ``OSError`` while opening the registry for append -> exit 7."""
+    slip = parse_slip(_build_release_slip_raw())
+    registry = tmp_path / "reg.jsonl"
+    real_open = open
+
+    def _fail(path: object, *args: object, **kwargs: object) -> object:
+        if str(path) == str(registry):
+            raise OSError("disk full")
+        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("builtins.open", _fail)
+    with pytest.raises(UpgradeCliError) as ei:
+        publish_mod._append_registry_entry(
+            registry,
+            slip=slip,
+            tag_object_sha="a" * 40,
+            tag_object_format="sha1",
+            commit_sha="b" * 40,
+            bundle_manifest_sha256="c" * 64,
+        )
+    assert ei.value.exit_code == 7
+    assert "could not append" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
 # Failure paths
 # ---------------------------------------------------------------------------
 
@@ -893,7 +1163,7 @@ def test_run_no_materialized_run_raises_3(tmp_path: Path) -> None:
     with pytest.raises(UpgradeCliError) as ei:
         run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
     assert ei.value.exit_code == 3
-    assert "no runs directory" in str(ei.value) or "no materialized run" in str(ei.value)
+    assert "no runs directory" in str(ei.value)
 
 
 def test_run_run_status_not_materialized_raises_3(tmp_path: Path) -> None:
@@ -992,7 +1262,6 @@ def test_registry_append_failure_rolls_back_bundle(tmp_path: Path, monkeypatch: 
         run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
     assert ei.value.exit_code == 7
     assert "simulated registry failure" in str(ei.value)
-    # Bundle rolled back.
     assert not (project_root / "www" / "releases" / "v1.0.0").exists()
 
 
