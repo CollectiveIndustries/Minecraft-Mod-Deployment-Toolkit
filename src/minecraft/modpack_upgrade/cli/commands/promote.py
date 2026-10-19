@@ -7,26 +7,34 @@
   the slip's ``[runtime]``, update ``[inputs.git].compose_tree``, and
   recompute ``content_sha256``. The re-sealed slip is what gets copied to
   the release registry.
-* Copy slip to ``sync/packing_slips/<tag>.toml``.
+* Copy slip to ``sync/packing_slips/<tag>.toml``, re-sealing it with
+  ``release_id = <tag>`` so the release slip's identity matches its
+  filename and the release registry (Upgrade_System_specifications
+  Section 5.2, Section 5.3 rule 1).
 * Copy candidate metadata ``.pw.toml`` files to ``sync/downloads/.index/``.
 * ``git add`` those paths (plus ``docker-compose.yml`` when reconciliation
   modified it).
 * Emit exact commit/tag/push instructions and STOP.
 
-The upgrade-mode reconciliation invalidates the sealed candidate slip's
-``content_sha256`` identity by construction - the slip is re-sealed with
-a new ``compose_tree`` and a new ``content_sha256``. This happens before
-the slip is copied to the release registry, so the release slip is what
-was actually tested against the reconciled compose. A spec amendment
-note accompanies this behavior in ``Upgrade_System_specifications.md``
-Section 4.3 and ``Resolution_Report.md`` Section 8.1.
+Two distinct identities
+-----------------------
+
+The **candidate** slip at ``candidates/<run-id>/packing_slip.toml`` has
+``release_id = <run-id>`` -- its identity is the resolver run that
+produced it. The **release** slip at ``sync/packing_slips/<tag>.toml``
+has ``release_id = <tag>`` -- its identity is the operator-chosen tag
+that the release registry, publication, and Phase B approval all bind
+to. ``promote`` is the boundary where one becomes the other.
+
+Upgrade-mode reconciliation refreshes the candidate slip's
+``compose_tree`` in place (Section 4.3 of the specs, deliberate
+exception). The release slip's ``release_id`` refresh is a separate,
+unconditional re-seal applied to the copy -- it happens for both update
+and upgrade modes, and the candidate slip keeps ``release_id =
+<run-id>`` regardless.
 
 Git operations (``git add``, ``git hash-object``) delegate to
-:mod:`PlatformCore.git` so the shared repository API stays the single
-source of truth for path normalization, `--` separators, and timeout
-pass-through. This module is a thin application adapter that translates
-``PlatformCore.git``'s exceptions into the CLI's ``UpgradeCliError(3)``
-so that exit-code semantics stay with the application.
+:mod:`PlatformCore.git`; see Turn C1 for the migration rationale.
 """
 
 from __future__ import annotations
@@ -57,13 +65,6 @@ _log_cli = get_logger("minecraft.modpack_upgrade.cli.commands.promote")
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
-#
-# Thin application adapters over PlatformCore.git. The shared layer owns
-# path normalization, the ``--`` separator, and timeout pass-through; this
-# layer owns the CLI contract -- specifically, that any git failure
-# becomes ``UpgradeCliError(3)`` so main.py's dispatcher returns the right
-# exit code. The individual message strings are preserved from the
-# pre-migration implementation so operator-facing text does not regress.
 
 
 def _git_add(project_root: Path, paths: list[Path]) -> None:
@@ -102,9 +103,7 @@ def _git_blob_hash(project_root: Path, relpath: str) -> str:
     Raises :class:`UpgradeCliError(3)` on any failure. Promote is a
     staging step whose whole point is to prepare the git commit, so a
     missing git binary or a non-repo working directory is a hard error
-    rather than a silent placeholder. Contrast with
-    ``materialize._git_tree_hash``, which fails open because materialize
-    is useful even without git (the tree hashes are descriptive).
+    rather than a silent placeholder.
     """
     try:
         hash_value = hash_object(relpath, repo_path=str(project_root), timeout=10)
@@ -129,6 +128,31 @@ def _write_slip_atomic(path: Path, raw: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
+
+
+def _reseal_release_slip(dst_slip: Path, tag: str) -> None:
+    """Re-seal ``dst_slip`` with ``release_id = tag``.
+
+    The candidate slip uses ``release_id = <run-id>``; the release slip
+    must use ``release_id = <tag>`` so its identity matches the release
+    registry (Upgrade_System_specifications Section 5.2 and Section 5.3
+    rule 1). Called after the copy, only when the two identities differ
+    (idempotent when the operator re-runs promote with an already-tagged
+    release).
+
+    The re-seal updates ``release_id`` and recomputes ``content_sha256``;
+    no other fields are touched. ``parse_slip`` re-validates as
+    defence-in-depth before the write.
+    """
+    raw = tomllib.loads(dst_slip.read_text(encoding="utf-8"))
+    if raw.get("release_id") == tag:
+        return
+    raw["release_id"] = tag
+    new_content_sha = slip_mod.compute_content_sha256(raw)
+    raw["content_sha256"] = new_content_sha
+    slip_mod.parse_slip(raw)  # schema validation; defensive
+    _write_slip_atomic(dst_slip, raw)
+    _log_cli.info(f"re-sealed release slip: release_id={tag!r} content_sha256={new_content_sha[:12]}...")
 
 
 def _reconcile_for_upgrade(
@@ -251,7 +275,7 @@ def run(*, config_dir: Path, project_root: Path, tag: str) -> int:
     except Exception as exc:
         raise UpgradeCliError(3, f"could not load candidate slip: {exc}") from exc
 
-    # Upgrade mode: reconcile compose, re-seal slip if needed.
+    # Upgrade mode: reconcile compose, re-seal candidate slip if needed.
     compose_to_stage: Path | None = None
     if state.release_mode == "upgrade":
         slip, compose_to_stage = _reconcile_for_upgrade(
@@ -268,6 +292,11 @@ def run(*, config_dir: Path, project_root: Path, tag: str) -> int:
         raise UpgradeCliError(3, f"refusing to overwrite existing different slip at {dst_slip}")
     shutil.copy2(slip_path, dst_slip)
     _log_cli.info(f"copied slip: {slip_path} -> {dst_slip}")
+
+    # Release slip carries the tag as release_id (Section 5.2, Section 5.3
+    # rule 1). The candidate slip keeps release_id = <run-id> -- its
+    # identity is the resolver run, not the operator-chosen tag.
+    _reseal_release_slip(dst_slip, tag)
 
     metadata_dir = candidate_dir / "metadata"
     index_dir = project_root / "sync" / "downloads" / ".index"

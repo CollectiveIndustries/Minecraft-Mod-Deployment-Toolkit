@@ -405,7 +405,13 @@ def test_upgrade_mode_resealed_slip_reloads_cleanly(tmp_path: Path, _wire_git: t
 
 
 def test_upgrade_mode_reseal_preserves_other_fields(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
-    """Re-sealing preserves release_id, runtime, and other tree hashes."""
+    """Re-sealing preserves runtime and other tree hashes; release_id becomes the tag.
+
+    Slice 10 Turn 0: promote re-seals the release slip with
+    ``release_id = tag``. The candidate slip keeps ``release_id = <run-id>``
+    (identity is the resolver run, not the operator's tag); every other
+    field is untouched by the re-seal.
+    """
     _, blob_state = _wire_git
     blob_state["value"] = "new_tree_hash"
     config_dir, project_root, _ = _setup_promote_env(
@@ -417,7 +423,7 @@ def test_upgrade_mode_reseal_preserves_other_fields(tmp_path: Path, _wire_git: t
     run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
 
     copied = tomllib.loads((project_root / "sync" / "packing_slips" / "v1.0.0.toml").read_text())
-    assert copied["release_id"] == "run-1"
+    assert copied["release_id"] == "v1.0.0"
     assert copied["runtime"]["minecraft_version"] == "1.21.1"
     assert copied["runtime"]["loader_type"] == "forge"
     assert copied["runtime"]["loader_version"] == "52.0.1"
@@ -683,3 +689,60 @@ def test_git_blob_hash_empty_output_translated(real_git_repo: Path, monkeypatch:
         promote._git_blob_hash(real_git_repo, "content.bin")
     assert ei.value.exit_code == 3
     assert "empty output" in str(ei.value)
+
+
+# ---------------------------------------------------------------------------
+# Slice 10 Turn 0: release slip's release_id is the tag, not the run-id
+# ---------------------------------------------------------------------------
+#
+# The candidate slip uses release_id = <run-id> (set by materialize; identity
+# of the resolver run). The release slip uses release_id = <tag> (set by
+# promote; identity that the release registry, publication, and Phase B
+# approval all bind to). Upgrade_System_specifications Section 5.2 and
+# Section 5.3 rule 1.  Covered for both modes because the re-seal is
+# unconditional in the release path.
+
+
+@pytest.mark.parametrize("release_mode", ["update", "upgrade"])
+def test_release_slip_has_tag_as_release_id(
+    tmp_path: Path,
+    _wire_git: tuple[list[Path], dict[str, str]],
+    release_mode: str,
+) -> None:
+    """The release slip's release_id is the operator-chosen tag, not the run-id."""
+    _, _ = _wire_git
+    config_dir, project_root, run_id = _setup_promote_env(tmp_path, release_mode=release_mode)
+
+    run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
+
+    # Release slip: release_id == tag.
+    released = slip_mod.load_slip(project_root / "sync" / "packing_slips" / "v1.0.0.toml")
+    assert released.release_id == "v1.0.0"
+
+    # Candidate slip: release_id == run-id (unchanged identity).
+    candidate = slip_mod.load_slip(project_root / "state" / "candidates" / run_id / "packing_slip.toml")
+    assert candidate.release_id == run_id
+
+
+@pytest.mark.parametrize("release_mode", ["update", "upgrade"])
+def test_release_slip_content_sha256_verifies_after_reseal(
+    tmp_path: Path,
+    _wire_git: tuple[list[Path], dict[str, str]],
+    release_mode: str,
+) -> None:
+    """The re-sealed release slip's content_sha256 verifies (load_slip succeeds)."""
+    _, blob_state = _wire_git
+    blob_state["value"] = "consistent_tree_hash"
+    config_dir, project_root, _ = _setup_promote_env(
+        tmp_path,
+        release_mode=release_mode,
+        slip_compose_tree="consistent_tree_hash",
+    )
+
+    run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
+
+    # load_slip recomputes content_sha256 over the body and raises on
+    # mismatch; a clean load is proof the re-seal recomputed it correctly.
+    released = slip_mod.load_slip(project_root / "sync" / "packing_slips" / "v1.0.0.toml")
+    assert released.release_id == "v1.0.0"
+    assert len(released.content_sha256) == 64
