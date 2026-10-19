@@ -1,6 +1,6 @@
 # tests/modpack_upgrade/test_compose_reconcile.py
 
-"""Unit tests for compose reconciliation (Slice 9 Turn 3).
+r"""Unit tests for compose reconciliation (Slice 9 Turns 3 and 7).
 
 Covers the four new pieces of ``cli.commands._compose``:
 
@@ -8,10 +8,25 @@ Covers the four new pieces of ``cli.commands._compose``:
   * :func:`reconcile_compose` - read-only diff computation
   * :func:`apply_compose_diff` - atomic write with verify-before-write
 
-Every branch of the diff computation and every failure mode of the
-writer is exercised. The module uses ``yaml`` (PyYAML) directly rather
-than ``load_compose`` because reconciliation must preserve arbitrary
-structure, not just the fields ``load_compose`` models.
+Turn 3 exercised the happy paths and the reconcile-side failure modes.
+Turn 7 adds the ``apply_compose_diff`` failure paths: every ``try`` /
+``except`` in the writer has a targeted test, so a future refactor
+cannot silently change the diagnostic an operator sees when pre-commit
+verification fails.
+
+Note on the "malformed YAML" fixtures: ``yaml.safe_load`` returns a
+scalar string for many payloads that *look* malformed (e.g.
+``":::not yaml"`` yields the string ``":::not yaml"``). Payloads that
+must fail at the *parse* step use an unterminated flow sequence
+(``"key: [unclosed\\n"``), which raises :class:`yaml.YAMLError`.
+Payloads that must fail at the *semantic* step (non-mapping top-level,
+missing services table) are tested separately in
+:func:`test_reconcile_*` above and covered by
+``test_apply_needed_but_service_vanished_raises`` below.
+
+The module uses ``yaml`` (PyYAML) directly rather than ``load_compose``
+because reconciliation must preserve arbitrary structure, not just the
+fields ``load_compose`` models.
 """
 
 from __future__ import annotations
@@ -21,6 +36,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from minecraft.modpack_upgrade.cli.commands import _compose
 from minecraft.modpack_upgrade.cli.commands._compose import (
     ComposeDiff,
     ComposeRuntime,
@@ -313,7 +329,7 @@ def test_reconcile_unknown_target_loader_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# apply_compose_diff
+# apply_compose_diff - happy paths
 # ---------------------------------------------------------------------------
 
 
@@ -430,11 +446,6 @@ services:
     assert on_disk["services"]["mc-survival"]["environment"]["VERSION"] == "1.21.2"
 
 
-# ---------------------------------------------------------------------------
-# End-to-end
-# ---------------------------------------------------------------------------
-
-
 def test_reconcile_apply_reconcile_cycle_is_stable(tmp_path: Path) -> None:
     """Reconcile -> apply -> reconcile yields an empty diff at every subsequent cycle."""
     config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
@@ -450,3 +461,224 @@ def test_reconcile_apply_reconcile_cycle_is_stable(tmp_path: Path) -> None:
 
     third = reconcile_compose(config_dir, project_root, target)
     assert third.needed is False
+
+
+# ---------------------------------------------------------------------------
+# apply_compose_diff - failure paths (Slice 9 Turn 7)
+# ---------------------------------------------------------------------------
+#
+# Every try/except in apply_compose_diff has a targeted test. The
+# "verify-*" cases construct ComposeDiff/EnvChange by hand rather than
+# via reconcile_compose, because a real reconcile never produces a pure
+# removal-only diff (removals always accompany the TYPE swap, so the
+# TYPE update check fires first). Building the diff manually exercises
+# the frozen dataclasses and pins the exact verify order.
+
+
+def test_apply_noop_but_file_disappeared_raises(tmp_path: Path) -> None:
+    """A no-op diff whose target file was deleted between reconcile and apply -> exit 3."""
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime())
+    assert diff.needed is False
+    (project_root / "docker-compose.yml").unlink()
+
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "disappeared between reconcile and apply" in str(ei.value)
+
+
+def test_apply_needed_but_file_disappeared_raises(tmp_path: Path) -> None:
+    """A needed diff whose target file was deleted -> exit 3 with read diagnostic."""
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime(mc="1.21.2"))
+    assert diff.needed is True
+    (project_root / "docker-compose.yml").unlink()
+
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "could not read" in str(ei.value)
+
+
+def test_apply_needed_but_file_became_malformed_yaml_raises(tmp_path: Path) -> None:
+    """A needed diff whose file was corrupted to invalid YAML between calls -> exit 3.
+
+    The corruption must actually fail ``yaml.safe_load``. Payloads like
+    ``":::not yaml"`` parse cleanly as a plain scalar and land on the
+    "top-level is not a mapping" guard instead; an unterminated flow
+    sequence is used here to reach the parse-error branch this test
+    targets.
+    """
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime(mc="1.21.2"))
+    assert diff.needed is True
+    (project_root / "docker-compose.yml").write_text("key: [unclosed\n", encoding="utf-8")
+
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "not valid YAML" in str(ei.value)
+
+
+def test_apply_needed_but_service_vanished_raises(tmp_path: Path) -> None:
+    """A needed diff whose file no longer declares a minecraft service -> exit 3."""
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime(mc="1.21.2"))
+    assert diff.needed is True
+    (project_root / "docker-compose.yml").write_text("services:\n  web:\n    image: nginx:latest\n", encoding="utf-8")
+
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "no service declares an image containing 'minecraft'" in str(ei.value)
+
+
+def test_apply_serialize_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``yaml.safe_dump`` failure -> exit 3 with serialize diagnostic."""
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime(mc="1.21.2"))
+    assert diff.needed is True
+
+    def _raise(*args: object, **kwargs: object) -> str:
+        raise yaml.YAMLError("simulated dump failure")
+
+    monkeypatch.setattr(_compose.yaml, "safe_dump", _raise)
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "could not serialize" in str(ei.value)
+
+
+def test_apply_verify_reparse_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The verify pass's ``yaml.safe_load`` failing on the serialized output -> exit 3.
+
+    ``apply_compose_diff`` calls ``yaml.safe_load`` exactly twice: once
+    for the original, once for the serialized output. Patching to raise
+    on the second call exercises the re-parse branch.
+    """
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime(mc="1.21.2"))
+    assert diff.needed is True
+
+    real_safe_load = _compose.yaml.safe_load
+    call_count = [0]
+
+    def _patched(payload: object) -> object:
+        call_count[0] += 1
+        if call_count[0] >= 2:
+            raise yaml.YAMLError("simulated verify reparse failure")
+        return real_safe_load(payload)
+
+    monkeypatch.setattr(_compose.yaml, "safe_load", _patched)
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "failed to re-parse" in str(ei.value)
+
+
+def test_apply_verify_remove_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A removal that survives serialization triggers the verify-remove branch.
+
+    A real reconcile pairs every removal with the TYPE update (loader
+    swap), so the TYPE check would fire first. This test constructs a
+    diff with only a removal, then monkeypatches ``safe_dump`` to return
+    the original bytes unchanged (i.e., pretend the serializer did not
+    drop the key). Verify then sees the key still present and raises.
+    """
+    _, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    compose_path = project_root / "docker-compose.yml"
+    diff = ComposeDiff(
+        compose_path=compose_path,
+        target=_runtime(),
+        current=_runtime(),
+        changes=(EnvChange(key="FORGE_VERSION", old_value="52.0.1", new_value=None),),
+    )
+    assert diff.needed is True
+
+    original_text = compose_path.read_text(encoding="utf-8")
+    monkeypatch.setattr(_compose.yaml, "safe_dump", lambda *a, **kw: original_text)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "failed to remove" in str(ei.value)
+    assert "FORGE_VERSION" in str(ei.value)
+
+
+def test_apply_verify_update_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An update that survives serialization triggers the verify-update branch.
+
+    Mirrors ``test_apply_verify_remove_failure_raises`` but for an
+    update: ``safe_dump`` returns the original bytes unchanged, so
+    verify sees the old value and raises with the expected/got
+    diagnostic.
+    """
+    _, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    compose_path = project_root / "docker-compose.yml"
+    diff = ComposeDiff(
+        compose_path=compose_path,
+        target=_runtime(),
+        current=_runtime(),
+        changes=(EnvChange(key="VERSION", old_value="1.21.1", new_value="1.21.2"),),
+    )
+    assert diff.needed is True
+
+    original_text = compose_path.read_text(encoding="utf-8")
+    monkeypatch.setattr(_compose.yaml, "safe_dump", lambda *a, **kw: original_text)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "failed for 'VERSION'" in str(ei.value)
+    assert "expected '1.21.2'" in str(ei.value)
+    assert "got '1.21.1'" in str(ei.value)
+
+
+def test_apply_temp_write_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure writing the temp file -> exit 3; compose file is untouched."""
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime(mc="1.21.2"))
+    assert diff.needed is True
+    original_bytes = (project_root / "docker-compose.yml").read_bytes()
+
+    real_write_bytes = Path.write_bytes
+
+    def _patched(self: Path, data: bytes) -> int:
+        if self.suffix == ".tmp":
+            raise OSError("simulated temp write failure")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", _patched)
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "could not write temp compose file" in str(ei.value)
+    # Compose file was not touched.
+    assert (project_root / "docker-compose.yml").read_bytes() == original_bytes
+
+
+def test_apply_replace_failure_raises_and_cleans_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failure in ``os.replace`` -> exit 3, temp file cleaned up, compose untouched."""
+    config_dir, project_root = _setup(tmp_path, _FORGE_COMPOSE)
+    diff = reconcile_compose(config_dir, project_root, _runtime(mc="1.21.2"))
+    assert diff.needed is True
+    original_bytes = (project_root / "docker-compose.yml").read_bytes()
+
+    real_replace = Path.replace
+
+    def _patched(self: Path, target: Path) -> Path:
+        if self.suffix == ".tmp":
+            raise OSError("simulated replace failure")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _patched)
+    with pytest.raises(UpgradeCliError) as ei:
+        apply_compose_diff(diff)
+    assert ei.value.exit_code == 3
+    assert "could not replace compose file" in str(ei.value)
+    # Temp file cleaned up by the suppress(OSError) block.
+    tmp_file = project_root / "docker-compose.yml.tmp"
+    assert not tmp_file.exists()
+    # Compose file untouched (replace failed before the rename).
+    assert (project_root / "docker-compose.yml").read_bytes() == original_bytes
