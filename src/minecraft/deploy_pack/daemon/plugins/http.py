@@ -7,41 +7,25 @@ Implements ``DaemonCore.Plugin``. Wraps FastAPI + uvicorn. Endpoints:
   GET  /status    -- daemon status (health + Minecraft-specific fields)
   POST /verify    -- verify a release without side effects
   POST /publish   -- verify and record a publication receipt
-  POST /deploy    -- verify then dispatch to the deployment gate
+  POST /deploy    -- verify then dispatch to the deployment orchestrator
 
 All POSTs require an ``Idempotency-Key`` header. All routes require auth.
 DaemonCore provides state, audit, and the daemon's aggregated health
 through the ``DaemonContext``; the plugin reads them at request time.
 
-Slice 12 changes
+Slice 13 changes
 ----------------
-The plugin accepts two optional keyword-only parameters,
-``registry_path`` and ``trusted_keys_path``. When both are present, the
-three POST routes run the full chain-walk + bundle-signature
-verification via :mod:`minecraft.modpack_upgrade.registry_verify`. When
-either is ``None``, the plugin preserves the slice-11 behavior:
+The plugin accepts an optional ``deploy_callable`` parameter: a
+``Callable[[str], DeployOutcome]`` that runs the deployment for a
+release_id. When supplied (production wiring, slice 14), a verified
+``/deploy`` invokes it and dispatches on the outcome. When absent
+(the default for tests and pre-slice-14 production), the endpoint
+falls through to the 501 that pre-slice-13 builds returned.
 
-  * ``/verify`` and ``/publish`` run local-only checks
-    (slip schema + hash + bundle-directory existence).
-  * ``/deploy`` returns 501 without running verification at all - the
-    historical behavior before slice 12.
-
-Production (``daemon/main.py``) always supplies both, so the live
-daemon gets the full verification path.
-
-``/deploy`` dispatch
---------------------
-When both paths are configured, ``/deploy`` runs ``verify_release``
-and dispatches on the structured outcome:
-
-  * chain broken           -> ``RegistryChainFailedError``  (409 / code 26)
-  * bundle/slip blocked    -> ``VerificationBlockedError``  (409 / code 20)
-  * verification passes    -> ``NotImplementedError``       (501 / code 30)
-
-The "verification passes -> 501" path is deliberate: deployment
-orchestration (Section 12.4 steps 11-19) is a later slice. This endpoint is
-the verification gate; the actual ship / lock / journal / world-backup
-sequence is not wired in this build.
+The verification gate is unchanged from slice 12: chain failures yield
+``RegistryChainFailedError`` (409/26); bundle/slip verification failures
+yield ``VerificationBlockedError`` (409/20). The deployment dispatch
+follows only after verification passes.
 """
 
 from __future__ import annotations
@@ -63,15 +47,22 @@ from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
 
 from minecraft.deploy_pack.daemon.auth import Authenticator
+from minecraft.deploy_pack.daemon.deploy import DeployOutcome
 from minecraft.deploy_pack.daemon.errors import (
+    ActivationFailedError,
+    DeployCommandFailedError,
+    DeploymentLockHeldError,
     MinecraftDaemonError,
     NotImplementedError,
+    PostDeployVerifyFailedError,
+    RecoveryFailedError,
     RegistryChainFailedError,
     VerificationBlockedError,
 )
 from minecraft.deploy_pack.daemon.idempotency import SQLiteIdempotency
 from minecraft.deploy_pack.daemon.schemas import (
     DeployRequest,
+    DeployResponse,
     ErrorResponse,
     PublishRequest,
     PublishResponse,
@@ -98,6 +89,37 @@ def _now_utc() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _outcome_to_exception(outcome: DeployOutcome) -> MinecraftDaemonError:
+    """Translate a failed ``DeployOutcome`` into a typed exception.
+
+    The mapping is fixed by :mod:`errors`:
+
+      * 21 -> ActivationFailedError
+      * 22 -> DeployCommandFailedError
+      * 23 -> PostDeployVerifyFailedError
+      * 24 -> RecoveryFailedError
+      * 25 -> DeploymentLockHeldError
+
+    An unknown code yields a bare ``MinecraftDaemonError`` (500 / code 1)
+    so a future code addition cannot silently break the endpoint.
+    """
+    message = outcome.message or "deployment failed"
+    stage = outcome.stage or "unknown"
+    detail = f"stage={stage}"
+    code = outcome.error_code
+    if code == 21:
+        return ActivationFailedError(message, detail=detail)
+    if code == 22:
+        return DeployCommandFailedError(message, detail=detail)
+    if code == 23:
+        return PostDeployVerifyFailedError(message, detail=detail)
+    if code == 24:
+        return RecoveryFailedError(message, detail=detail)
+    if code == 25:
+        return DeploymentLockHeldError(message, detail=detail)
+    return MinecraftDaemonError(message, detail=detail)
+
+
 class HttpAdminPlugin:
     """Exposes Minecraft's admin API over HTTP, on DaemonCore's lifecycle."""
 
@@ -114,14 +136,19 @@ class HttpAdminPlugin:
         release_store: Path,
         registry_path: Path | None = None,
         trusted_keys_path: Path | None = None,
+        deploy_callable: Callable[[str], DeployOutcome] | None = None,
     ) -> None:
         """Configure the plugin. No network activity until ``start``.
 
         ``registry_path`` and ``trusted_keys_path`` are both optional. When
         both are supplied, chain-walk and bundle-signature verification
         run on every POST route. When either is omitted, the plugin falls
-        back to slice-11 local-only behavior. ``daemon/main.py`` always
-        supplies both from :class:`MinecraftDaemonConfig`.
+        back to slice-11 local-only behavior.
+
+        ``deploy_callable`` is the deployment orchestrator's entry point.
+        When supplied, a verified ``/deploy`` invokes it. When omitted,
+        ``/deploy`` returns 501 (matches pre-slice-13 behavior for any
+        embedding that has not yet wired the orchestrator).
         """
         self._host = host
         self._port = port
@@ -131,6 +158,7 @@ class HttpAdminPlugin:
         self._release_store = release_store
         self._registry_path = registry_path
         self._trusted_keys_path = trusted_keys_path
+        self._deploy_callable = deploy_callable
         self._ctx: DaemonContext | None = None
         self._app: FastAPI | None = None
         self._server: uvicorn.Server | None = None
@@ -423,41 +451,33 @@ class HttpAdminPlugin:
         # POST /deploy
         # --------------------------------------------------------------
 
-        @app.post("/deploy", response_model=ErrorResponse)
+        @app.post("/deploy", response_model=DeployResponse)
         async def post_deploy(
             request: Request,
             body: DeployRequest,
             idempotency_key: str = Header(..., alias="Idempotency-Key"),
         ) -> JSONResponse:
-            """Verify the release, then dispatch to the deployment gate.
+            """Verify the release, then dispatch to the deployment orchestrator.
 
-            Slice 12 behavior depends on how the plugin was constructed:
+            Behavior depends on how the plugin was constructed:
 
-            * **Verification paths absent** (both ``registry_path`` and
-              ``trusted_keys_path`` are ``None``): the endpoint raises
-              ``NotImplementedError`` (501/code 30) without running
-              verification. This preserves pre-slice-12 semantics for
-              any test or embedding that constructs the plugin without
-              the new keyword arguments.
+            * **Verification paths absent**: 501 without running anything
+              (preserves pre-slice-12 semantics).
 
-            * **Verification paths present**: run
-              :func:`verify_release` and dispatch:
+            * **Verification paths present, deploy_callable absent**:
+              verification runs, then 501 (preserves slice-12 semantics
+              for callers that have wired verification but not the
+              orchestrator).
 
-              - chain failure       -> 409 / code 26
-              - bundle or slip fail -> 409 / code 20
-              - verification passes -> 501 / code 30
-                (deployment orchestration is a later slice)
-
-            The gate exists so acceptance tests T10 (registry chain
-            tampering) and T22 (bundle tampering) can prove that the
-            daemon refuses bad releases *before* any deployment work
-            begins.
+            * **Both present**: verification runs; on success, the
+              callable is invoked with the release_id and the outcome is
+              translated into an HTTP response. Failures dispatch on the
+              outcome's ``error_code`` (21/22/23/24/25).
             """
             _require_auth(request)
-            del idempotency_key  # deployment orchestration is a later slice
+            del idempotency_key  # deployment orchestration is single-shot
 
             if self._registry_path is None or self._trusted_keys_path is None:
-                # Pre-slice-12 behavior: immediate 501 with no verification.
                 raise NotImplementedError(
                     "deployment orchestration is not implemented in this daemon build",
                     detail=(f"requested release: {body.release_id or body.release_pointer}"),
@@ -477,9 +497,40 @@ class HttpAdminPlugin:
                     detail="reasons=" + "; ".join(result.reasons),
                 )
 
-            raise NotImplementedError(
-                "deployment orchestration is not implemented in this daemon build",
-                detail=f"verified release: {result.release_id!r}",
+            await _record_audit(
+                {
+                    "event": "deploy_requested",
+                    "release_id": result.release_id,
+                    "status": "verified",
+                }
+            )
+
+            if self._deploy_callable is None:
+                raise NotImplementedError(
+                    "deployment orchestrator is not wired in this daemon build",
+                    detail=f"verified release: {result.release_id!r}",
+                )
+
+            assert result.release_id is not None
+            outcome = self._deploy_callable(result.release_id)
+
+            if not outcome.success:
+                raise _outcome_to_exception(outcome)
+
+            await _record_audit(
+                {
+                    "event": "deploy_completed",
+                    "release_id": result.release_id,
+                    "status": "ok",
+                }
+            )
+            await _record_state("active-release", result.release_id)
+            return JSONResponse(
+                content=DeployResponse(
+                    release_id=result.release_id,
+                    completed_at_utc=_now_utc(),
+                ).model_dump(),
+                status_code=200,
             )
 
         return app

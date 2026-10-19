@@ -6,6 +6,9 @@ The request body is flat - the caller posts ``{"release_id": "v1.0.2"}``
 directly rather than nesting under a ``subject`` key. Field validation
 rejects path-traversal-shaped inputs; malformed requests get FastAPI's
 default 422.
+
+Slice 13 addition: :class:`DeployResponse` for the successful
+``/deploy`` path. Errors continue to use :class:`ErrorResponse`.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 __all__ = [
     "DeployRequest",
+    "DeployResponse",
     "ErrorResponse",
     "PublishRequest",
     "PublishResponse",
@@ -106,6 +110,19 @@ class PublishResponse(VerifyResponse):
 
     receipt_id: str | None = None
     recorded_at_utc: str | None = None
+
+
+class DeployResponse(BaseModel):
+    """Response body for a successful POST /deploy.
+
+    Failure cases never reach this shape: the plugin raises a typed
+    :class:`MinecraftDaemonError` and the exception handler serves an
+    :class:`ErrorResponse` with the appropriate ``code`` and HTTP status.
+    """
+
+    status: Literal["deployed"] = "deployed"
+    release_id: str
+    completed_at_utc: str
 
 
 class StatusResponse(BaseModel):
