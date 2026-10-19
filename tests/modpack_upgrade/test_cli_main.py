@@ -158,7 +158,7 @@ def test_promote_without_candidate_exits_3(tmp_path: Path, capsys: pytest.Captur
 
 
 # ---------------------------------------------------------------------------
-# publish (Slice 10 Turn 1: preconditions only)
+# publish
 # ---------------------------------------------------------------------------
 
 
@@ -169,7 +169,15 @@ def test_publish_requires_release_id(capsys: pytest.CaptureFixture[str]):
 
 
 def test_publish_missing_slip_exits_3(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """`publish` with no slip for the release-id exits 3."""
+    """`publish` with no slip for the release-id exits 3.
+
+    Also pins the precondition ordering in ``publish.run``: slip
+    verification runs BEFORE signing-key loading, so a missing slip is
+    reported even when the signing env var is also unset. The current
+    test environment has no ``RELEASE_SIGNING_KEY``, and this test still
+    sees "slip not found" -- if a future refactor moves key-load before
+    slip-check, this test would see the key error instead.
+    """
     config_dir = tmp_path / "config.d"
     config_dir.mkdir()
     (config_dir / "deploy_pack.toml").write_text(

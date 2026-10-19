@@ -1,14 +1,15 @@
 # src/minecraft/modpack_upgrade/cli/commands/publish.py
 
-"""``minecraft-upgrade publish <release-id>`` -- immutable release bundle.
+"""``minecraft-upgrade publish <release-id>`` -- immutable signed release bundle.
 
 Section 15.1.8 / Section 6 / Section 7 of Upgrade_System_specifications.
 Takes the operator-chosen tag (which is the release slip's
 ``release_id``), verifies the release slip, assembles a bundle from the
 warehouse + sync trees, writes the three manifests plus ``approval.json``,
-records git provenance, atomically commits the bundle to
-``www/releases/<release-id>/``, and appends one entry to the release
-registry at ``sync/packing_slips/release-index.jsonl``.
+**signs** the bundle manifest and every registry entry with an Ed25519
+key, records git provenance, atomically commits the bundle to
+``www/releases/<release-id>/``, and appends one signed entry to the
+release registry at ``sync/packing_slips/release-index.jsonl``.
 
 Preconditions and pipeline:
 
@@ -31,6 +32,70 @@ Preconditions and pipeline:
     ``release_tag_object_sha``, ``release_commit_sha``; git tag object
     and commit SHAs resolved via ``git rev-parse``; one entry appended
     to ``release-index.jsonl`` with a chained ``entry_hash``.
+  * **Slice 11 T2** -- Ed25519 signing. The bundle manifest carries a
+    real ``signature`` (base64) and ``key_id`` (sha256 of the raw
+    Ed25519 point); a ``bundle-manifest.sig`` sidecar carries the same
+    base64 signature per Section 6.4. Registry entries carry real
+    ``signature`` and ``key_id``. Verification (chain walk) is T3.
+
+Precondition ordering
+---------------------
+
+The preconditions run in this order:
+
+  1. Slip loads and verifies; ``release_id`` matches the argument.
+     These are cheap and per-release, so a wrong-tag invocation fails
+     with the most actionable message.
+  2. Signing key loads. Cheap (env-var or single-file read); the point
+     of loading it here is to fail on missing key BEFORE the expensive
+     artifact hashing below.
+  3. Every artifact verified against its slip-recorded SHA-256.
+     This is the only expensive step (hashing every jar).
+  4. Bundle directory is absent.
+
+Cheap checks first, expensive checks last. This ordering also means
+that a fresh install with no signing key AND a missing slip surfaces
+the slip error, not the key error -- the slip is the more fundamental
+"this specific tag is wrong" problem, while a missing key is a one-time
+setup problem. ``test_cli_main.py::test_publish_missing_slip_exits_3``
+pins this ordering: with slip-first, that test sees "slip not found";
+if a future refactor moves key-load before slip-check, that test would
+see the key error instead.
+
+Signature projection rule
+-------------------------
+
+Both the bundle-manifest signature and the registry-entry signature
+cover a **projection** of the stored object, not the object itself:
+
+  * **Bundle manifest:** projection = manifest minus ``signature`` and
+    ``key_id``. A consumer verifying the manifest strips these two
+    fields, canonicalizes, and verifies.
+  * **Registry entry:** projection = entry minus ``signature``,
+    ``key_id``, and ``entry_hash``. A consumer verifying the entry
+    strips those three fields, canonicalizes, verifies the Ed25519
+    signature, AND confirms ``sha256(projection) == entry_hash``.
+
+This is the standard "sign the payload, store the envelope" pattern
+(JWS RFC 7515, SIGstore). It resolves the chicken-and-egg: the signature
+cannot cover the field that holds it.
+
+The self-reference paradox is resolved the same way for the manifest's
+``files`` list: it excludes ``bundle-manifest.json`` **and**
+``bundle-manifest.sig``. A manifest cannot honestly hash a file whose
+contents depend on the manifest's own hash.
+
+Signing key
+-----------
+
+Loaded from ``[publication].signing_key_env`` in ``config.d/upgrade.toml``
+(default env-var name: ``RELEASE_SIGNING_KEY``). Env var may contain a
+path to a PEM-encoded Ed25519 private key or the PEM text inline. See
+:mod:`minecraft.modpack_upgrade.signing`.
+
+**A valid key must be present before publish runs.** Signing is not
+optional: an unsigned release is not a release. Missing key = exit 3
+before any staging is done.
 
 Run discovery
 -------------
@@ -47,8 +112,7 @@ Under normal usage this is unique: one update+materialize cycle per
 release. If two cycles ran with identical resolver inputs (same
 manifest, same seed, same overrides) they share
 ``resolution_inputs_sha256``, and publish refuses with exit 3 rather
-than picking arbitrarily. A ``--run-id`` override or a promote-sidecar
-file lands in a later slice if this becomes common in practice.
+than picking arbitrarily.
 
 Approval sources
 ----------------
@@ -64,24 +128,14 @@ Two cases:
     ``acknowledged_by: "auto"``, and a note explaining why no explicit
     acknowledgment was required.
 
-Both cases yield a valid ``approval.json``; the operator-facing
-difference is the ``acknowledged_by`` value.
-
 Registry and chain
 ------------------
 
 One JSON line appended to ``sync/packing_slips/release-index.jsonl``.
 The entry's ``previous_entry_hash`` is the last line's ``entry_hash``
-(or 64 zeroes for the first entry). ``entry_hash`` is the SHA-256 of a
-canonical JSON projection over the chain-relevant fields -- the same
-computation a future chain verifier will perform (Section 7.3).
-
-Signing is deferred: ``signature`` and ``key_id`` are both
-``"UNSIGNED"`` in this build. The spec's signed-manifest model
-(Section 6.4) writes ``bundle-manifest.sig`` alongside
-``bundle-manifest.json``; this build keeps the placeholder as a field
-inside ``bundle-manifest.json`` for symmetry with the current test
-surface. A future signing slice will switch to the sidecar file.
+(or 64 zeroes for the first entry). ``entry_hash`` is the SHA-256 of the
+projection (see above), and the entry's ``signature`` is Ed25519 over
+the same projection.
 
 Deferred until the underlying features exist:
 
@@ -90,29 +144,31 @@ Deferred until the underlying features exist:
     ``client-distribution-manifest.json`` is a placeholder.
   * ``[inputs.git]`` tree enforcement (Section 6.3 #7) -- prod-deploy
     concern (Section 5.3 rule 4).
-  * Signature and key_id real values (Section 6.4, Section 7.5) -- crypto
-    signing is a separate slice.
+  * Chain-walk verification and trusted-keys pinning -- Slice 11 T3.
 
 Exit codes:
 
-  * ``0`` -- publish succeeded end-to-end: bundle committed, registry
-    appended.
-  * ``3`` -- a precondition, assembly, manifest, git-ref, or
-    verification failure. Staging is cleaned up; no bundle is committed.
+  * ``0`` -- publish succeeded end-to-end: signed bundle committed,
+    signed registry entry appended.
+  * ``3`` -- a precondition, signing-config, assembly, manifest, git-ref,
+    or verification failure. Staging is cleaned up; no bundle is
+    committed.
   * ``7`` -- registry append failure *after* a bundle was committed.
     The bundle is rolled back on a best-effort basis; if rollback
-    fails too, the operator must remove ``www/releases/<id>/``
-    manually.
+    fails too, the operator must remove ``www/releases/<id>/`` manually.
 """
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import datetime
 import hashlib
 import json
 import shutil
 import subprocess
+import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 from LoggingCore import get_logger
@@ -121,6 +177,13 @@ from PlatformCore.subprocess import run_git
 from minecraft.deploy_pack.daemon.config import load_config as load_daemon_config
 from minecraft.deploy_pack.files import compute_sha256
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
+from minecraft.modpack_upgrade.errors import SigningError
+from minecraft.modpack_upgrade.signing import (
+    SigningKey,
+    load_signing_key,
+    sign_json,
+    verify_json,
+)
 from minecraft.modpack_upgrade.slip import PackingSlip, load_slip
 from minecraft.modpack_upgrade.state import RunState, load_state
 
@@ -132,14 +195,31 @@ _log_cli = get_logger("minecraft.modpack_upgrade.cli.commands.publish")
 # Bundle filenames. Kept as constants because both writers and any future
 # reader (prod daemon, registry verifier) must agree on the exact names.
 _BUNDLE_MANIFEST = "bundle-manifest.json"
+_BUNDLE_MANIFEST_SIG = "bundle-manifest.sig"
 _ARTIFACT_MANIFEST = "artifact-manifest.json"
 _CLIENT_DISTRIBUTION_MANIFEST = "client-distribution-manifest.json"
 _APPROVAL = "approval.json"
-_MANIFEST_NAMES: frozenset[str] = frozenset({_BUNDLE_MANIFEST, _ARTIFACT_MANIFEST, _CLIENT_DISTRIBUTION_MANIFEST})
+
+# Files not listed in the manifest's own `files` array. The manifest
+# itself is excluded because it can't honestly hash bytes that depend on
+# its own hash; the sidecar is excluded for the same reason (the sig
+# depends on the manifest; putting its hash in the manifest would create
+# a cycle). The other two manifests ARE listed -- they're referenced by
+# `_finalize_bundle` explicitly.
+_MANIFEST_NAMES: frozenset[str] = frozenset(
+    {
+        _BUNDLE_MANIFEST,
+        _BUNDLE_MANIFEST_SIG,
+        _ARTIFACT_MANIFEST,
+        _CLIENT_DISTRIBUTION_MANIFEST,
+    }
+)
 
 # Registry chain genesis sentinel. Matches the ``"0" * 64`` convention
 # used by every other "absent" SHA-256 in this codebase.
 _GENESIS_HASH = "0" * 64
+
+_DEFAULT_SIGNING_KEY_ENV = "RELEASE_SIGNING_KEY"
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +276,36 @@ def _kubejs_source(project_root: Path) -> Path:
 def _registry_path(project_root: Path) -> Path:
     """Return the release registry path."""
     return project_root / "sync" / "packing_slips" / "release-index.jsonl"
+
+
+# ---------------------------------------------------------------------------
+# Config (Slice 11 T2)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_signing_key_env_name(config_dir: Path) -> str:
+    """Return the env-var name that holds the signing key.
+
+    Reads ``[publication].signing_key_env`` from ``config.d/upgrade.toml``.
+    Missing file, missing section, or malformed value all fall back to
+    ``RELEASE_SIGNING_KEY`` -- consistent with how other config defaults
+    are resolved in this codebase (see ``providers.config``).
+    """
+    toml_path = config_dir / "upgrade.toml"
+    if not toml_path.is_file():
+        return _DEFAULT_SIGNING_KEY_ENV
+    try:
+        with open(toml_path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return _DEFAULT_SIGNING_KEY_ENV
+    publication = data.get("publication", {})
+    if not isinstance(publication, dict):
+        return _DEFAULT_SIGNING_KEY_ENV
+    raw = publication.get("signing_key_env")
+    if not isinstance(raw, str) or not raw:
+        return _DEFAULT_SIGNING_KEY_ENV
+    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -482,8 +592,8 @@ def _stage_bundle(
     """Assemble the staging tree (slip + config + kubejs + artifacts).
 
     Cleanup runs on every failure path so a retry starts from a clean
-    state. Manifest writing and the final atomic rename happen in
-    :func:`_finalize_bundle`.
+    state. Manifest writing, signing, and the final atomic rename happen
+    in :func:`_finalize_bundle`.
     """
     try:
         staging_dir.mkdir(parents=True, exist_ok=False)
@@ -513,7 +623,7 @@ def _cleanup_dir(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Manifest construction and atomic commit (T4 + T5)
+# Manifest construction and atomic commit (T4 + T5 + Slice 11 T2)
 # ---------------------------------------------------------------------------
 
 
@@ -574,6 +684,20 @@ def _write_json_atomic(path: Path, body: dict) -> None:
         raise UpgradeCliError(3, f"could not write {path}: {exc}") from exc
 
 
+def _write_sig_sidecar(path: Path, signature_b64: str) -> None:
+    """Write the base64 signature to the ``bundle-manifest.sig`` sidecar.
+
+    Sidecar format: single base64 line + trailing newline. Matches the
+    convention of a ``.sig`` file per Section 6.4; the base64 encoding
+    keeps the file text-safe (no binary artifacts in the bundle that git
+    would mangle).
+    """
+    try:
+        path.write_text(signature_b64 + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise UpgradeCliError(3, f"could not write {path}: {exc}") from exc
+
+
 def _verify_manifest_hashes(root: Path, manifest: dict) -> None:
     """Verify every ``manifest['files']`` entry against the on-disk file."""
     for entry in manifest["files"]:
@@ -615,20 +739,29 @@ def _finalize_bundle(
     approval_sha256: str,
     release_tag_object_sha: str,
     release_commit_sha: str,
+    signing_key: SigningKey,
 ) -> str:
-    """Write manifests, verify, atomically commit. Return bundle-manifest SHA-256.
+    """Write manifests, sign bundle-manifest, verify, atomically commit.
 
-    ``approval.json`` is written by the caller before this function runs,
-    so it lands in ``staging_dir`` and appears in the bundle manifest's
-    ``files`` list. Order of manifest writes:
+    Returns the SHA-256 of ``bundle-manifest.json`` bytes (computed before
+    the rename, which does not change bytes).
+
+    Order of operations:
 
       1. ``artifact-manifest.json`` -- structured artifact view.
       2. ``client-distribution-manifest.json`` -- placeholder.
-      3. ``bundle-manifest.json`` -- content files + both prior
-         manifests + audit fields; excludes itself (self-reference).
-
-    The returned SHA-256 is of ``bundle-manifest.json`` bytes, computed
-    before the rename (rename doesn't change bytes).
+      3. Build the *projection* of the bundle manifest: content files +
+         both prior manifests + audit fields. Excludes ``signature`` and
+         ``key_id`` (chicken-and-egg).
+      4. Sign the projection; write ``bundle-manifest.sig`` sidecar with
+         the base64 signature (Section 6.4).
+      5. Write the full ``bundle-manifest.json`` = projection + signature
+         + key_id.
+      6. Self-check: verify the signature round-trips against the
+         projection. If this fails, signing or canonicalization is broken
+         -- catch now, not in prod pull.
+      7. Verify every file in the manifest against disk.
+      8. Atomic rename.
     """
     content_files = _walk_bundle_files(staging_dir, exclude=_MANIFEST_NAMES)
 
@@ -651,17 +784,45 @@ def _finalize_bundle(
         _describe_file(staging_dir / _ARTIFACT_MANIFEST, _ARTIFACT_MANIFEST),
         _describe_file(staging_dir / _CLIENT_DISTRIBUTION_MANIFEST, _CLIENT_DISTRIBUTION_MANIFEST),
     ]
-    bundle_manifest = {
+
+    # The signed projection: everything in the manifest EXCEPT the two
+    # fields the signature itself needs (chicken-and-egg).
+    projection = {
         "schema_version": 1,
         "release_id": slip.release_id,
         "slip_content_sha256": slip.content_sha256,
         "approval_sha256": approval_sha256,
         "release_tag_object_sha": release_tag_object_sha,
         "release_commit_sha": release_commit_sha,
-        "signature": "UNSIGNED",
         "files": sorted(content_files + manifest_files, key=lambda entry: entry["path"]),
     }
+
+    signature_bytes = sign_json(signing_key, projection)
+    signature_b64 = base64.b64encode(signature_bytes).decode("ascii")
+
+    # Sidecar per Section 6.4. Written before the manifest (order is
+    # irrelevant; the sidecar is excluded from the manifest's own file
+    # list either way).
+    _write_sig_sidecar(staging_dir / _BUNDLE_MANIFEST_SIG, signature_b64)
+
+    bundle_manifest = {
+        **projection,
+        "signature": signature_b64,
+        "key_id": signing_key.key_id,
+    }
     _write_json_atomic(staging_dir / _BUNDLE_MANIFEST, bundle_manifest)
+
+    # Self-check: if the signature doesn't round-trip against the
+    # projection we just signed, either signing.py or canonical.py is
+    # broken -- better to know before commit than to leave a corrupt
+    # bundle on disk and discover it at pull time.
+    if not verify_json(signing_key.public_key, projection, signature_bytes):
+        raise UpgradeCliError(
+            3,
+            "internal: signed bundle manifest failed its own signature "
+            "self-check. This indicates a bug in signing.py or canonical.py; "
+            "refusing to commit an unverifiable bundle.",
+        )
 
     manifest_sha = compute_sha256(staging_dir / _BUNDLE_MANIFEST)
     _verify_manifest_hashes(staging_dir, bundle_manifest)
@@ -670,7 +831,7 @@ def _finalize_bundle(
 
 
 # ---------------------------------------------------------------------------
-# Registry append (T5)
+# Registry append (T5 + Slice 11 T2)
 # ---------------------------------------------------------------------------
 
 
@@ -678,8 +839,9 @@ def _compute_entry_hash(entry: dict) -> str:
     """Deterministic SHA-256 over the chain-relevant fields of one entry.
 
     Deliberately excludes ``signature`` and ``key_id`` so that a future
-    signing slice can add them without invalidating existing
-    ``entry_hash`` values for already-recorded entries.
+    re-signing (same underlying fields, new key) does not invalidate
+    the chain linkage. Also excludes ``entry_hash`` itself -- the field
+    is the output of this function.
     """
     chain_fields = {
         "schema_version": entry["schema_version"],
@@ -731,14 +893,21 @@ def _append_registry_entry(
     tag_object_format: str,
     commit_sha: str,
     bundle_manifest_sha256: str,
+    signing_key: SigningKey,
 ) -> str:
-    """Append one entry to ``release-index.jsonl``; return its ``entry_hash``.
+    """Append one signed entry to ``release-index.jsonl``; return its ``entry_hash``.
+
+    The signed projection and the ``entry_hash`` computation both cover
+    the same ``chain_fields`` dict (excluding ``signature``, ``key_id``,
+    and ``entry_hash``). A verifier strips those three fields, checks
+    ``sha256(projection) == entry_hash``, and verifies the Ed25519
+    signature against the trusted public key for ``key_id``.
 
     Raises :class:`UpgradeCliError(7)` on any I/O failure. The caller is
     responsible for rolling back the committed bundle if this raises.
     """
     previous = _last_entry_hash(registry_path)
-    entry = {
+    chain_fields = {
         "schema_version": 1,
         "release_id": slip.release_id,
         "tag_object_sha": tag_object_sha,
@@ -747,10 +916,16 @@ def _append_registry_entry(
         "slip_content_sha256": slip.content_sha256,
         "bundle_manifest_sha256": bundle_manifest_sha256,
         "previous_entry_hash": previous,
-        "signature": "UNSIGNED",
-        "key_id": "UNSIGNED",
     }
-    entry["entry_hash"] = _compute_entry_hash(entry)
+    entry_hash = _compute_entry_hash(chain_fields)
+    signature_bytes = sign_json(signing_key, chain_fields)
+    signature_b64 = base64.b64encode(signature_bytes).decode("ascii")
+    entry = {
+        **chain_fields,
+        "entry_hash": entry_hash,
+        "signature": signature_b64,
+        "key_id": signing_key.key_id,
+    }
     line = json.dumps(entry, sort_keys=True) + "\n"
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -758,7 +933,7 @@ def _append_registry_entry(
             fh.write(line)
     except OSError as exc:
         raise UpgradeCliError(7, f"could not append to registry {registry_path}: {exc}") from exc
-    return entry["entry_hash"]
+    return entry_hash
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +976,7 @@ def _print_committed_summary(bundle_dir: Path, registry_path: Path, entry_hash: 
     _log_cli.info(f"bundle committed: {bundle_dir}")
     _log_cli.info(f"  files: {file_count}")
     _log_cli.info(f"  manifest: {bundle_dir / _BUNDLE_MANIFEST}")
+    _log_cli.info(f"  signature: {bundle_dir / _BUNDLE_MANIFEST_SIG}")
     _log_cli.info("")
     _log_cli.info(f"registry entry appended: {registry_path}")
     _log_cli.info(f"  entry_hash: {entry_hash}")
@@ -812,8 +988,18 @@ def _print_committed_summary(bundle_dir: Path, registry_path: Path, entry_hash: 
 # ---------------------------------------------------------------------------
 
 
-def run(*, config_dir: Path, project_root: Path, release_id: str) -> int:
-    """Execute ``minecraft-upgrade publish``. Returns 0 on success, 3, or 7."""
+def run(
+    *,
+    config_dir: Path,
+    project_root: Path,
+    release_id: str,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    """Execute ``minecraft-upgrade publish``. Returns 0 on success, 3, or 7.
+
+    See the module docstring for what signing means and how the signature
+    projection is constructed, plus the precondition ordering rationale.
+    """
     slip_path = _slip_path(config_dir, release_id)
     bundle_dir = _bundle_dir(project_root, release_id)
     staging_dir = _staging_dir(project_root, release_id)
@@ -823,9 +1009,25 @@ def run(*, config_dir: Path, project_root: Path, release_id: str) -> int:
     state_dir = _state_dir(config_dir)
     registry_path = _registry_path(project_root)
 
+    # Precondition 1: slip (cheap, per-release). A wrong-tag invocation
+    # fails here with the most actionable message, before touching the
+    # signing key or hashing any artifacts.
     slip = _require_slip_verifies(slip_path)
     _require_release_id_matches(slip, release_id, slip_path)
+
+    # Precondition 2: signing key (cheap, one-time config). Loaded here
+    # -- after slip validation but BEFORE artifact hashing -- so a
+    # missing key fails fast without 100MB of unnecessary file I/O.
+    signing_env_name = _resolve_signing_key_env_name(config_dir)
+    try:
+        signing_key = load_signing_key(signing_env_name, env=env)
+    except SigningError as exc:
+        raise UpgradeCliError(3, str(exc)) from exc
+
+    # Precondition 3: artifacts (expensive -- hashes every jar).
     _require_artifacts_present(slip, warehouse_dir)
+
+    # Precondition 4: bundle absent (cheap, filesystem).
     _require_bundle_absent(bundle_dir, release_id)
 
     _print_preconditions_summary(slip, slip_path, bundle_dir)
@@ -842,13 +1044,11 @@ def run(*, config_dir: Path, project_root: Path, release_id: str) -> int:
             warehouse_dir=warehouse_dir,
         )
 
-        # T5: locate the materialized run, write approval.json.
         run_dir, run_state = _find_materialized_run_for_slip(slip, state_dir)
         approval_body = _build_approval(run_dir, run_state, _now_utc())
         _write_json_atomic(staging_dir / _APPROVAL, approval_body)
         approval_sha = compute_sha256(staging_dir / _APPROVAL)
 
-        # T5: resolve git provenance.
         tag_object_sha, tag_object_format, commit_sha = _resolve_git_refs(project_root, release_id)
 
         _print_staging_summary(staging_dir)
@@ -859,6 +1059,7 @@ def run(*, config_dir: Path, project_root: Path, release_id: str) -> int:
             approval_sha256=approval_sha,
             release_tag_object_sha=tag_object_sha,
             release_commit_sha=commit_sha,
+            signing_key=signing_key,
         )
     finally:
         _cleanup_dir(staging_dir)
@@ -873,6 +1074,7 @@ def run(*, config_dir: Path, project_root: Path, release_id: str) -> int:
             tag_object_format=tag_object_format,
             commit_sha=commit_sha,
             bundle_manifest_sha256=bundle_manifest_sha,
+            signing_key=signing_key,
         )
     except UpgradeCliError:
         try:

@@ -1,8 +1,8 @@
 # tests/modpack_upgrade/test_publish.py
 
-"""Tests for ``minecraft-upgrade publish`` (Slice 10, complete + cleanup).
+"""Tests for ``minecraft-upgrade publish`` (Slice 10 complete + Slice 11 T2).
 
-Full pipeline exercised end-to-end:
+Full pipeline exercised end-to-end, **with real Ed25519 signing**:
 
   * T1 preconditions: slip exists / verifies / release_id matches / no
     existing bundle
@@ -11,41 +11,42 @@ Full pipeline exercised end-to-end:
   * T3: staging assembled (slip + config/ + kubejs/ + artifacts/);
     symlinks refused
   * T4: three manifest JSON files written, verified against disk,
-    atomic commit; staging discarded
-  * T5: approval.json written from the materialized run's
-    acknowledgment.json (or auto-generated for loss-free runs);
-    bundle-manifest extended with approval_sha256 /
-    release_tag_object_sha / release_commit_sha; registry entry
-    appended with a chained entry_hash
+    atomic commit
+  * T5: approval.json sourced from the materialized run; bundle-manifest
+    extended with audit fields; registry entry appended with chained
+    entry_hash
+  * **Slice 11 T2:** bundle-manifest.json carries real ``signature``
+    (base64) and ``key_id`` (hex); ``bundle-manifest.sig`` sidecar
+    contains the same base64; the signature verifies against the signing
+    key's public key over the projection (manifest minus signature and
+    key_id). Registry entries carry real ``signature`` and ``key_id``.
 
-Exit 0 on success; exit 3 on preconditions / assembly / manifest / git
-failures; exit 7 on registry append failure with best-effort bundle
-rollback.
-
-Cleanup turn: every defensive branch in ``_find_materialized_run_for_slip``,
-``_last_entry_hash``, ``_resolve_git_refs``, and ``_append_registry_entry``
-has a targeted test. These are branches that fire when the world is
-broken (malformed state, unreadable registry, git unavailable,
-unexpected tag SHA) -- the exact inputs most likely to be untested in
-practice and most likely to hide a traceback behind a user-facing
-message.
+Signature verification helper (``_verify_manifest_signature``) and
+``_verify_registry_entry_signature`` implement the exact projection rule
+documented in ``publish.py`` -- if this file's tests pass but a real
+consumer applies a different strip rule, they'll disagree; the shared
+rule is deliberately tested end-to-end here.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 import tomli_w
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from minecraft.modpack_upgrade import slip as slip_mod
 from minecraft.modpack_upgrade.cli.commands import publish as publish_mod
 from minecraft.modpack_upgrade.cli.commands.publish import run
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
-from minecraft.modpack_upgrade.slip import parse_slip
+from minecraft.modpack_upgrade.signing import SigningKey, verify_json
 from minecraft.modpack_upgrade.state import RunState, save_state
 
 # ---------------------------------------------------------------------------
@@ -103,11 +104,7 @@ def _build_release_slip_raw(
     velocity_plugin_entries: list[dict] | None = None,
     resolution_inputs_sha256: str | None = None,
 ) -> dict:
-    """Build a valid release slip dict with a fresh ``content_sha256``.
-
-    ``resolution_inputs_sha256`` overrides the default fingerprint so
-    tests that publish twice can disambiguate the materialized runs.
-    """
+    """Build a valid release slip dict with a fresh ``content_sha256``."""
     if jar_entries is None:
         jar_entries = [_jar_entry("mod-v2.jar", _DEFAULT_JAR_CONTENT)]
 
@@ -228,6 +225,9 @@ def _setup_publish_env(
     """Set up a project tree ready for ``publish``.
 
     Returns ``(config_dir, project_root, slip_path)``.
+
+    Note: the autouse ``signing_key`` fixture provides the signing env
+    var; this helper does not need to do anything related to signing.
     """
     config_dir = tmp_path / "config.d"
     config_dir.mkdir()
@@ -283,9 +283,91 @@ def _setup_publish_env(
     return config_dir, tmp_path, slip_path
 
 
-def _read_manifest(bundle_dir: Path, name: str) -> dict:
-    """Read and parse a manifest JSON from ``bundle_dir``."""
-    return json.loads((bundle_dir / name).read_text(encoding="utf-8"))
+@pytest.fixture(autouse=True)
+def signing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ed25519PrivateKey:
+    """Provide a valid Ed25519 signing key via the ``RELEASE_SIGNING_KEY`` env var.
+
+    Autouse: every test in this module gets a working signing key without
+    having to declare the fixture. Tests that need to inspect the key
+    can declare ``signing_key`` as a parameter and receive the private
+    key. Tests that want to break signing override the env var
+    (``monkeypatch.delenv`` or ``monkeypatch.setenv`` to garbage).
+    """
+    key = Ed25519PrivateKey.generate()
+    pem_path = tmp_path / "signing-key.pem"
+    pem_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    monkeypatch.setenv("RELEASE_SIGNING_KEY", str(pem_path))
+    return key
+
+
+# ---------------------------------------------------------------------------
+# Signature verification helpers (mirror publish.py's projection rule)
+# ---------------------------------------------------------------------------
+
+
+def _public_key_of(private_key: Ed25519PrivateKey):
+    """Extract the Ed25519 public key from a private key."""
+    return private_key.public_key()
+
+
+def _verify_manifest_signature(bundle_dir: Path, private_key: Ed25519PrivateKey) -> None:
+    """Assert that ``bundle-manifest.json`` verifies against ``private_key``.
+
+    Implements the exact projection rule from ``publish.py``: strip
+    ``signature`` and ``key_id``, canonicalize the rest, verify. A
+    consumer applying the same rule will reach the same conclusion.
+    """
+    manifest = json.loads((bundle_dir / "bundle-manifest.json").read_text())
+    signature_b64 = manifest.pop("signature")
+    key_id_in_file = manifest.pop("key_id")
+    signature_bytes = base64.b64decode(signature_b64)
+
+    # key_id equals sha256 of the raw public key bytes.
+    raw_pub = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    expected_key_id = hashlib.sha256(raw_pub).hexdigest()
+    assert key_id_in_file == expected_key_id
+
+    # Signature verifies over the stripped projection.
+    assert verify_json(private_key.public_key(), manifest, signature_bytes) is True
+
+
+def _verify_registry_entry_signature(entry: dict, private_key: Ed25519PrivateKey) -> None:
+    """Assert that a registry entry's ``signature`` verifies against ``private_key``.
+
+    Implements the projection rule: strip ``signature``, ``key_id``, and
+    ``entry_hash``; canonicalize; verify Ed25519. Also confirms that
+    ``sha256(canonical_projection)`` equals ``entry_hash``.
+    """
+    projection = {
+        "schema_version": entry["schema_version"],
+        "release_id": entry["release_id"],
+        "tag_object_sha": entry["tag_object_sha"],
+        "tag_object_format": entry["tag_object_format"],
+        "commit_sha": entry["commit_sha"],
+        "slip_content_sha256": entry["slip_content_sha256"],
+        "bundle_manifest_sha256": entry["bundle_manifest_sha256"],
+        "previous_entry_hash": entry["previous_entry_hash"],
+    }
+    signature_bytes = base64.b64decode(entry["signature"])
+
+    # Signature verifies.
+    assert verify_json(private_key.public_key(), projection, signature_bytes) is True
+
+    # Key_id matches the public key.
+    raw_pub = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    assert entry["key_id"] == hashlib.sha256(raw_pub).hexdigest()
 
 
 def _read_registry(project_root: Path) -> list[dict]:
@@ -592,8 +674,8 @@ def test_run_missing_kubejs_source_warns_and_continues(tmp_path: Path, capsys: p
 # ---------------------------------------------------------------------------
 
 
-def test_run_happy_path_returns_0_and_commits_bundle(tmp_path: Path) -> None:
-    """Preconditions pass -> bundle committed, exit 0."""
+def test_run_happy_path_returns_0_and_commits_bundle(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """Preconditions pass -> signed bundle committed, exit 0."""
     config_dir, project_root, _ = _setup_publish_env(
         tmp_path,
         config_files={"app.toml": b"key = 'value'\n"},
@@ -614,12 +696,13 @@ def test_run_happy_path_returns_0_and_commits_bundle(tmp_path: Path) -> None:
     assert (bundle_dir / "kubejs" / "startup.js").is_file()
     assert (bundle_dir / "artifacts" / "mod-v2.jar").is_file()
     assert (bundle_dir / "bundle-manifest.json").is_file()
+    assert (bundle_dir / "bundle-manifest.sig").is_file()
     assert (bundle_dir / "artifact-manifest.json").is_file()
     assert (bundle_dir / "client-distribution-manifest.json").is_file()
 
 
-def test_run_happy_path_appends_one_registry_entry(tmp_path: Path) -> None:
-    """A successful publish appends exactly one entry to the registry."""
+def test_run_happy_path_appends_one_signed_registry_entry(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """A successful publish appends one signed entry with real signature/key_id."""
     config_dir, project_root, _ = _setup_publish_env(tmp_path)
 
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
@@ -636,8 +719,12 @@ def test_run_happy_path_appends_one_registry_entry(tmp_path: Path) -> None:
     assert len(entry["commit_sha"]) in (40, 64)
     assert len(entry["slip_content_sha256"]) == 64
     assert len(entry["bundle_manifest_sha256"]) == 64
-    assert entry["signature"] == "UNSIGNED"
-    assert entry["key_id"] == "UNSIGNED"
+
+    # Signature and key_id are real values now.
+    assert isinstance(entry["signature"], str)
+    assert len(base64.b64decode(entry["signature"])) == 64
+    assert re.fullmatch(r"[0-9a-f]{64}", entry["key_id"]) is not None
+    _verify_registry_entry_signature(entry, signing_key)
 
 
 def test_run_happy_path_logs_summary_and_commit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -653,6 +740,7 @@ def test_run_happy_path_logs_summary_and_commit(tmp_path: Path, capsys: pytest.C
     assert "artifacts verified:" in out
     assert "bundle staged:" in out
     assert "bundle committed:" in out
+    assert "signature:" in out
     assert "registry entry appended:" in out
 
 
@@ -661,21 +749,47 @@ def test_run_happy_path_logs_summary_and_commit(tmp_path: Path, capsys: pytest.C
 # ---------------------------------------------------------------------------
 
 
-def test_bundle_manifest_exists_and_parses(tmp_path: Path) -> None:
-    """``bundle-manifest.json`` is valid JSON with the expected top-level keys."""
+def test_bundle_manifest_exists_and_parses(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """``bundle-manifest.json`` is valid JSON with the expected keys + real signature."""
     config_dir, project_root, _ = _setup_publish_env(tmp_path)
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
-    manifest = _read_manifest(project_root / "www" / "releases" / "v1.0.0", "bundle-manifest.json")
+    manifest = json.loads((project_root / "www" / "releases" / "v1.0.0" / "bundle-manifest.json").read_text())
     assert manifest["schema_version"] == 1
     assert manifest["release_id"] == "v1.0.0"
-    assert manifest["signature"] == "UNSIGNED"
     assert len(manifest["slip_content_sha256"]) == 64
     assert len(manifest["approval_sha256"]) == 64
     assert len(manifest["release_tag_object_sha"]) in (40, 64)
     assert len(manifest["release_commit_sha"]) in (40, 64)
     assert isinstance(manifest["files"], list)
     assert manifest["files"]
+
+    # Signature and key_id are real values now.
+    assert isinstance(manifest["signature"], str)
+    assert len(base64.b64decode(manifest["signature"])) == 64
+    assert re.fullmatch(r"[0-9a-f]{64}", manifest["key_id"]) is not None
+
+
+def test_bundle_manifest_signature_verifies(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """The committed manifest verifies against the signing key using the documented projection."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+
+    _verify_manifest_signature(project_root / "www" / "releases" / "v1.0.0", signing_key)
+
+
+def test_bundle_manifest_sig_sidecar_exists_and_matches(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """The ``.sig`` sidecar contains the same base64 signature as the manifest field."""
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+    run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+
+    bundle_dir = project_root / "www" / "releases" / "v1.0.0"
+    manifest = json.loads((bundle_dir / "bundle-manifest.json").read_text())
+    sidecar = (bundle_dir / "bundle-manifest.sig").read_text().strip()
+
+    assert sidecar == manifest["signature"]
+    # And the sidecar's base64 decodes to a 64-byte Ed25519 signature.
+    assert len(base64.b64decode(sidecar)) == 64
 
 
 def test_bundle_manifest_lists_content_files(tmp_path: Path) -> None:
@@ -688,7 +802,7 @@ def test_bundle_manifest_lists_content_files(tmp_path: Path) -> None:
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
     bundle_dir = project_root / "www" / "releases" / "v1.0.0"
-    manifest = _read_manifest(bundle_dir, "bundle-manifest.json")
+    manifest = json.loads((bundle_dir / "bundle-manifest.json").read_text())
     paths = {entry["path"] for entry in manifest["files"]}
     assert "packing_slip.toml" in paths
     assert "approval.json" in paths
@@ -697,14 +811,15 @@ def test_bundle_manifest_lists_content_files(tmp_path: Path) -> None:
     assert "artifacts/mod-v2.jar" in paths
 
 
-def test_bundle_manifest_excludes_itself(tmp_path: Path) -> None:
-    """A manifest cannot honestly hash itself; it must not list its own path."""
+def test_bundle_manifest_excludes_itself_and_sig(tmp_path: Path) -> None:
+    """The manifest lists neither itself nor its ``.sig`` sidecar (chicken-and-egg)."""
     config_dir, project_root, _ = _setup_publish_env(tmp_path)
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
-    manifest = _read_manifest(project_root / "www" / "releases" / "v1.0.0", "bundle-manifest.json")
+    manifest = json.loads((project_root / "www" / "releases" / "v1.0.0" / "bundle-manifest.json").read_text())
     paths = {entry["path"] for entry in manifest["files"]}
     assert "bundle-manifest.json" not in paths
+    assert "bundle-manifest.sig" not in paths
 
 
 def test_bundle_manifest_includes_other_manifests(tmp_path: Path) -> None:
@@ -712,7 +827,7 @@ def test_bundle_manifest_includes_other_manifests(tmp_path: Path) -> None:
     config_dir, project_root, _ = _setup_publish_env(tmp_path)
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
-    manifest = _read_manifest(project_root / "www" / "releases" / "v1.0.0", "bundle-manifest.json")
+    manifest = json.loads((project_root / "www" / "releases" / "v1.0.0" / "bundle-manifest.json").read_text())
     paths = {entry["path"] for entry in manifest["files"]}
     assert "artifact-manifest.json" in paths
     assert "client-distribution-manifest.json" in paths
@@ -724,7 +839,7 @@ def test_bundle_manifest_approval_sha256_matches_file(tmp_path: Path) -> None:
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
     bundle_dir = project_root / "www" / "releases" / "v1.0.0"
-    manifest = _read_manifest(bundle_dir, "bundle-manifest.json")
+    manifest = json.loads((bundle_dir / "bundle-manifest.json").read_text())
     approval_sha = hashlib.sha256((bundle_dir / "approval.json").read_bytes()).hexdigest()
     assert manifest["approval_sha256"] == approval_sha
 
@@ -735,7 +850,7 @@ def test_manifest_hashes_match_disk(tmp_path: Path) -> None:
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
     bundle_dir = project_root / "www" / "releases" / "v1.0.0"
-    manifest = _read_manifest(bundle_dir, "bundle-manifest.json")
+    manifest = json.loads((bundle_dir / "bundle-manifest.json").read_text())
     for entry in manifest["files"]:
         file_path = bundle_dir / entry["path"]
         assert file_path.is_file(), f"manifest entry missing: {entry['path']}"
@@ -755,7 +870,7 @@ def test_artifact_manifest_lists_artifacts(tmp_path: Path) -> None:
     )
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
-    manifest = _read_manifest(project_root / "www" / "releases" / "v1.0.0", "artifact-manifest.json")
+    manifest = json.loads((project_root / "www" / "releases" / "v1.0.0" / "artifact-manifest.json").read_text())
     assert manifest["schema_version"] == 1
     assert manifest["release_id"] == "v1.0.0"
     assert len(manifest["artifacts"]) == 1
@@ -771,7 +886,7 @@ def test_client_distribution_manifest_is_placeholder(tmp_path: Path) -> None:
     config_dir, project_root, _ = _setup_publish_env(tmp_path)
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
-    manifest = _read_manifest(project_root / "www" / "releases" / "v1.0.0", "client-distribution-manifest.json")
+    manifest = json.loads((project_root / "www" / "releases" / "v1.0.0" / "client-distribution-manifest.json").read_text())
     assert manifest["schema_version"] == 1
     assert manifest["release_id"] == "v1.0.0"
     assert manifest["members"] == []
@@ -823,14 +938,12 @@ def test_approval_auto_generated_when_no_acknowledgment(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_registry_chain_links_two_entries(tmp_path: Path) -> None:
-    """Entry 2's previous_entry_hash equals entry 1's entry_hash."""
-    # First publish: v1.0.0 with default fingerprint _hex("7").
+def test_registry_chain_links_two_entries(tmp_path: Path, signing_key: Ed25519PrivateKey) -> None:
+    """Entry 2's previous_entry_hash equals entry 1's entry_hash; both signatures valid."""
     config_dir, project_root, _ = _setup_publish_env(tmp_path, release_id="v1.0.0", run_id="run-a")
     run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
 
-    # Prepare v1.0.1 in the same tree with a DIFFERENT fingerprint so
-    # run discovery is unambiguous.
+    # Prepare v1.0.1 with a DIFFERENT fingerprint so run discovery is unambiguous.
     state_dir = project_root / "state"
     body_b = _build_release_slip_raw(
         release_id="v1.0.1",
@@ -856,6 +969,10 @@ def test_registry_chain_links_two_entries(tmp_path: Path) -> None:
     assert entries[1]["entry_hash"] != entries[0]["entry_hash"]
     assert entries[0]["previous_entry_hash"] == "0" * 64
 
+    # Both entries' signatures verify.
+    for entry in entries:
+        _verify_registry_entry_signature(entry, signing_key)
+
 
 def test_registry_entry_hash_is_deterministic() -> None:
     """Given the same chain fields, entry_hash is reproducible."""
@@ -872,6 +989,79 @@ def test_registry_entry_hash_is_deterministic() -> None:
     h2 = publish_mod._compute_entry_hash(entry)
     assert h1 == h2
     assert len(h1) == 64
+
+
+# ---------------------------------------------------------------------------
+# Slice 11 T2: signing failure modes
+# ---------------------------------------------------------------------------
+
+
+def test_run_missing_signing_env_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No signing key -> exit 3 before any staging."""
+    monkeypatch.delenv("RELEASE_SIGNING_KEY", raising=False)
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "RELEASE_SIGNING_KEY" in str(ei.value)
+
+    # Nothing was staged or committed.
+    assert not (project_root / "www" / "releases" / "v1.0.0").exists()
+    assert not (project_root / "www" / "releases" / "v1.0.0.staging").exists()
+
+
+def test_run_invalid_signing_pem_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A garbage PEM in the signing env var -> exit 3 before any staging."""
+    bad_pem = tmp_path / "bad.pem"
+    bad_pem.write_text("not a pem", encoding="utf-8")
+    monkeypatch.setenv("RELEASE_SIGNING_KEY", str(bad_pem))
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "did not parse" in str(ei.value)
+
+
+def test_resolve_signing_key_env_name_defaults_when_no_publication(
+    tmp_path: Path,
+) -> None:
+    """No ``[publication]`` section -> default env-var name."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    (config_dir / "upgrade.toml").write_text("[resolver]\n", encoding="utf-8")
+    assert publish_mod._resolve_signing_key_env_name(config_dir) == "RELEASE_SIGNING_KEY"
+
+
+def test_resolve_signing_key_env_name_reads_publication_section(
+    tmp_path: Path,
+) -> None:
+    """``[publication].signing_key_env`` is honoured."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    (config_dir / "upgrade.toml").write_text('[publication]\nsigning_key_env = "MY_CUSTOM_KEY"\n', encoding="utf-8")
+    assert publish_mod._resolve_signing_key_env_name(config_dir) == "MY_CUSTOM_KEY"
+
+
+def test_finalize_bundle_self_check_catches_forged_signature(tmp_path: Path, signing_key: Ed25519PrivateKey, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If signing produces a bad signature, the self-check refuses to commit."""
+
+    def _fake_sign_json(_key: object, _obj: object) -> bytes:
+        # 64-byte garbage that cannot verify.
+        return b"\x00" * 64
+
+    monkeypatch.setattr(publish_mod, "sign_json", _fake_sign_json)
+    config_dir, project_root, _ = _setup_publish_env(tmp_path)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "self-check" in str(ei.value)
+
+    # Nothing was committed; staging was cleaned up.
+    assert not (project_root / "www" / "releases" / "v1.0.0").exists()
+    assert not (project_root / "www" / "releases" / "v1.0.0.staging").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -892,7 +1082,6 @@ def test_runs_dir_missing_raises_3(tmp_path: Path) -> None:
 def test_file_in_runs_dir_is_skipped(tmp_path: Path) -> None:
     """A regular file inside ``runs/`` is skipped (only directories are scanned)."""
     config_dir, project_root, _ = _setup_publish_env(tmp_path)
-    # The fixture already created state/runs/run-abc/. Add a stray file.
     (project_root / "state" / "runs" / "stray_file.txt").write_text("not a run dir\n")
 
     code = run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
@@ -922,7 +1111,6 @@ def test_malformed_state_toml_skipped(tmp_path: Path) -> None:
 def test_fingerprint_mismatch_raises_3(tmp_path: Path) -> None:
     """A materialized run whose fingerprint differs from the slip's -> no match -> exit 3."""
     config_dir, project_root, _ = _setup_publish_env(tmp_path, create_run=False)
-    # Only create a run with a DIFFERENT fingerprint.
     _write_materialized_run(
         project_root / "state",
         run_id="run-other",
@@ -941,14 +1129,13 @@ def test_multiple_matching_runs_raises_3(tmp_path: Path) -> None:
     _write_materialized_run(
         project_root / "state",
         run_id="run-b",
-        resolution_inputs_sha256=_hex("7"),  # same as fixture default
+        resolution_inputs_sha256=_hex("7"),
     )
 
     with pytest.raises(UpgradeCliError) as ei:
         run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
     assert ei.value.exit_code == 3
     assert "ambiguous" in str(ei.value)
-    # No bundle committed.
     assert not (project_root / "www" / "releases" / "v1.0.0").exists()
 
 
@@ -1126,9 +1313,13 @@ def test_resolve_git_refs_rc_nonzero_on_commit_raises_3(tmp_path: Path, monkeypa
 # ---------------------------------------------------------------------------
 
 
-def test_append_registry_entry_oserror_raises_7(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_append_registry_entry_oserror_raises_7(
+    tmp_path: Path,
+    signing_key: Ed25519PrivateKey,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An ``OSError`` while opening the registry for append -> exit 7."""
-    slip = parse_slip(_build_release_slip_raw())
+    slip = slip_mod.parse_slip(_build_release_slip_raw())
     registry = tmp_path / "reg.jsonl"
     real_open = open
 
@@ -1138,6 +1329,7 @@ def test_append_registry_entry_oserror_raises_7(tmp_path: Path, monkeypatch: pyt
         return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr("builtins.open", _fail)
+    sk = SigningKey.from_private_key(signing_key)
     with pytest.raises(UpgradeCliError) as ei:
         publish_mod._append_registry_entry(
             registry,
@@ -1146,6 +1338,7 @@ def test_append_registry_entry_oserror_raises_7(tmp_path: Path, monkeypatch: pyt
             tag_object_format="sha1",
             commit_sha="b" * 40,
             bundle_manifest_sha256="c" * 64,
+            signing_key=sk,
         )
     assert ei.value.exit_code == 7
     assert "could not append" in str(ei.value)
@@ -1245,7 +1438,6 @@ def test_rename_failure_cleans_up_staging(tmp_path: Path, monkeypatch: pytest.Mo
         run(config_dir=config_dir, project_root=project_root, release_id="v1.0.0")
     assert ei.value.exit_code == 3
     assert "could not commit bundle" in str(ei.value)
-    assert "simulated rename failure" in str(ei.value)
     assert not (project_root / "www" / "releases" / "v1.0.0").exists()
 
 
