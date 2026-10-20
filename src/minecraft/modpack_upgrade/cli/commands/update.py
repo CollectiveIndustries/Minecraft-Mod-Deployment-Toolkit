@@ -142,11 +142,7 @@ def _verify_manifest_matches_compose(manifest: Manifest, compose_path: Path) -> 
             f"at promote.",
         )
     mc, loader, loader_version = runtime
-    if (
-        manifest.minecraft_version != mc
-        or manifest.loader != loader
-        or manifest.loader_version != loader_version
-    ):
+    if manifest.minecraft_version != mc or manifest.loader != loader or manifest.loader_version != loader_version:
         raise UpgradeCliError(
             3,
             f"--release-mode update manifest/Compose mismatch: "
@@ -172,14 +168,10 @@ def _read_side_overrides_sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
-        raise UpgradeCliError(
-            3, f"could not read side_overrides.toml at {path}: {exc}"
-        ) from exc
+        raise UpgradeCliError(3, f"could not read side_overrides.toml at {path}: {exc}") from exc
 
 
-def _build_usage_tracker(
-    config_dir: Path, project_root: Path
-) -> usage.UsageTracker | None:
+def _build_usage_tracker(config_dir: Path, project_root: Path) -> usage.UsageTracker | None:
     """Return a usage tracker if ``[budget]`` is configured, else None."""
     usage_config = usage.load_usage_config(config_dir, project_root)
     if usage_config is None:
@@ -218,9 +210,7 @@ def _load_inputs(
                 f"--release-mode update requires a Compose file at {compose_path} to verify manifest/Compose equivalence.",
             )
         _verify_manifest_matches_compose(manifest, compose_path)
-        effective_compose_sha = _compose.compute_compose_sha256(
-            config_dir, project_root
-        )
+        effective_compose_sha = _compose.compute_compose_sha256(config_dir, project_root)
 
     try:
         in_house = tuple(load_in_house_filenames(config_dir))
@@ -235,9 +225,7 @@ def _load_inputs(
 
     overrides_path = config_dir / "side_overrides.toml"
     if not overrides_path.is_file():
-        raise UpgradeCliError(
-            3, f"side_overrides.toml is required: {overrides_path}"
-        )
+        raise UpgradeCliError(3, f"side_overrides.toml is required: {overrides_path}")
     try:
         overrides = load_side_overrides(overrides_path)
     except Exception as exc:
@@ -351,26 +339,18 @@ def run(
     supplied, it is used verbatim and ``transport`` is ignored.
     """
     if release_mode not in ("update", "upgrade"):
-        raise UpgradeCliError(
-            2, f"--release-mode must be 'update' or 'upgrade', got {release_mode!r}"
-        )
+        raise UpgradeCliError(2, f"--release-mode must be 'update' or 'upgrade', got {release_mode!r}")
 
     actual_run_id = run_id or str(uuid.uuid4())
     actual_now = now or _now_iso()
 
     with usage.run_context(actual_run_id):
-        inputs, effective_compose_sha = _load_inputs(
-            config_dir, project_root, release_mode, env, registry, transport
-        )
+        inputs, effective_compose_sha = _load_inputs(config_dir, project_root, release_mode, env, registry, transport)
 
         try:
-            report = Resolver(inputs).resolve(
-                run_id=actual_run_id, generated_at_utc=actual_now
-            )
+            report = Resolver(inputs).resolve(run_id=actual_run_id, generated_at_utc=actual_now)
         except CycleError as exc:
-            raise UpgradeCliError(
-                3, f"dependency cycle detected: {' -> '.join(exc.chain)}"
-            ) from exc
+            raise UpgradeCliError(3, f"dependency cycle detected: {' -> '.join(exc.chain)}") from exc
         except usage.UsageCapExceeded as exc:
             raise UpgradeCliError(6, str(exc)) from exc
         except usage.UsageLogReadError as exc:
@@ -381,9 +361,7 @@ def run(
     report_path = project_root / "www" / "runs" / actual_run_id / "resolution-report.toml"
     report_sha = write_report(report_path, report)
 
-    effective_state_dir = (
-        state_dir if state_dir is not None else _resolve_state_dir(config_dir)
-    )
+    effective_state_dir = state_dir if state_dir is not None else _resolve_state_dir(config_dir)
     state_status = _STATE_BY_REPORT_STATUS[report.status]
     exit_code = _EXIT_BY_REPORT_STATUS[report.status]
 
@@ -400,14 +378,10 @@ def run(
     )
 
     _log_cli.info(f"resolution report: {report_path}")
-    _log_cli.info(
-        f"run state: {effective_state_dir / 'runs' / actual_run_id / 'state.toml'}"
-    )
+    _log_cli.info(f"run state: {effective_state_dir / 'runs' / actual_run_id / 'state.toml'}")
     _log_cli.info(f"status: {report.status}")
     if report.lost or report.cascade:
-        _log_cli.info(
-            f"losses: {len(report.lost)} lost, {len(report.cascade)} cascaded"
-        )
+        _log_cli.info(f"losses: {len(report.lost)} lost, {len(report.cascade)} cascaded")
 
     _print_next_command(state_status, actual_run_id)
     return exit_code

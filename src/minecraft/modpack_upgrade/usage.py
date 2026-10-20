@@ -65,9 +65,7 @@ class UsageCapExceeded(ApprovalBlockedError):
         self.kind = kind
         self.used = used
         self.cap = cap
-        super().__init__(
-            f"{kind} budget exhausted for the current window: used={used} cap={cap}"
-        )
+        super().__init__(f"{kind} budget exhausted for the current window: used={used} cap={cap}")
 
 
 class UsageLogReadError(UpgradeError):
@@ -81,9 +79,7 @@ class UsageLogReadError(UpgradeError):
 # ---------------------------------------------------------------------------
 
 
-_run_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "usage_run_id", default=None
-)
+_run_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar("usage_run_id", default=None)
 
 
 @contextmanager
@@ -128,10 +124,7 @@ class UsageConfig:
     @property
     def enabled(self) -> bool:
         """True iff at least one cap is configured."""
-        return (
-            self.max_api_requests is not None
-            or self.max_downloaded_bytes is not None
-        )
+        return self.max_api_requests is not None or self.max_downloaded_bytes is not None
 
 
 def _parse_optional_non_negative_int(raw: object, name: str) -> int | None:
@@ -165,12 +158,8 @@ def load_usage_config(config_dir: Path, project_root: Path) -> UsageConfig | Non
     if not isinstance(section, dict):
         return None
 
-    max_api = _parse_optional_non_negative_int(
-        section.get("max_api_requests"), "max_api_requests"
-    )
-    max_bytes = _parse_optional_non_negative_int(
-        section.get("max_downloaded_bytes"), "max_downloaded_bytes"
-    )
+    max_api = _parse_optional_non_negative_int(section.get("max_api_requests"), "max_api_requests")
+    max_bytes = _parse_optional_non_negative_int(section.get("max_downloaded_bytes"), "max_downloaded_bytes")
     if max_api is None and max_bytes is None:
         return None
 
@@ -320,16 +309,12 @@ class UsageTracker:
                     except json.JSONDecodeError:
                         pass
         except OSError as exc:
-            raise UsageLogReadError(
-                f"could not read usage log {path}: {exc}"
-            ) from exc
+            raise UsageLogReadError(f"could not read usage log {path}: {exc}") from exc
         return records
 
     def _count_api_since(self, since: datetime) -> int:
         """Count ``api`` records newer than ``since``."""
-        return sum(
-            1 for r in self._read_records_since(since) if r.get("kind") == "api"
-        )
+        return sum(1 for r in self._read_records_since(since) if r.get("kind") == "api")
 
     def _sum_bytes_since(self, since: datetime) -> int:
         """Sum download bytes in records newer than ``since``."""
@@ -351,9 +336,7 @@ class UsageTracker:
             return
         used = self._count_api_since(self._window_start())
         if used >= self._config.max_api_requests:
-            raise UsageCapExceeded(
-                "api_request", used, self._config.max_api_requests
-            )
+            raise UsageCapExceeded("api_request", used, self._config.max_api_requests)
 
     def check_byte_cap(self) -> None:
         """Raise :class:`UsageCapExceeded` if the byte cap is reached.
@@ -366,9 +349,7 @@ class UsageTracker:
             return
         used = self._sum_bytes_since(self._window_start())
         if used >= self._config.max_downloaded_bytes:
-            raise UsageCapExceeded(
-                "downloaded_bytes", used, self._config.max_downloaded_bytes
-            )
+            raise UsageCapExceeded("downloaded_bytes", used, self._config.max_downloaded_bytes)
 
     def api_used(self) -> int:
         """Return current API usage count in the window (diagnostics)."""

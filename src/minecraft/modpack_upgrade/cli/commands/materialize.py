@@ -34,9 +34,8 @@ from minecraft.deploy_pack.files import (
     compute_sha256,
     sha256_bytes,
 )
-from minecraft.modpack_upgrade import canonical
+from minecraft.modpack_upgrade import canonical, usage
 from minecraft.modpack_upgrade import slip as slip_mod
-from minecraft.modpack_upgrade import usage
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 from minecraft.modpack_upgrade.errors import ProviderError, SchemaError
 from minecraft.modpack_upgrade.integrity import IntegrityContext, check_integrity
@@ -102,9 +101,7 @@ def _refuse_bad_status(status: str, run_id: str) -> int | None:
             f"run {run_id!r} requires acknowledgment: run `minecraft-upgrade acknowledge {run_id}` first",
         )
     if status == STATUS_FAILED:
-        raise UpgradeCliError(
-            3, f"run {run_id!r} has status 'failed'; cannot materialize"
-        )
+        raise UpgradeCliError(3, f"run {run_id!r} has status 'failed'; cannot materialize")
     if status == STATUS_MATERIALIZED:
         _log_cli.info(f"run {run_id!r} is already materialized")
         _log_cli.info(f"next: iterate --run-id {run_id}")
@@ -134,9 +131,7 @@ def _candidates_dir(state_dir: Path, run_id: str) -> Path:
     return state_dir / "candidates" / run_id
 
 
-def _build_usage_tracker(
-    config_dir: Path, project_root: Path
-) -> usage.UsageTracker | None:
+def _build_usage_tracker(config_dir: Path, project_root: Path) -> usage.UsageTracker | None:
     """Return a usage tracker if ``[budget]`` is configured, else None."""
     usage_config = usage.load_usage_config(config_dir, project_root)
     if usage_config is None:
@@ -157,20 +152,15 @@ def _verify_in_house(
     """Verify the in-house jar against its seed SHA-256 and any expected_hashes."""
     seed = seed_by_filename.get(entry.filename)
     if seed is None:
-        raise UpgradeCliError(
-            3, f"in-house jar {entry.filename!r} has no seed entry"
-        )
+        raise UpgradeCliError(3, f"in-house jar {entry.filename!r} has no seed entry")
     jar_path = warehouse_dir / entry.filename
     if not jar_path.is_file():
-        raise UpgradeCliError(
-            3, f"in-house jar not found in warehouse: {jar_path}"
-        )
+        raise UpgradeCliError(3, f"in-house jar not found in warehouse: {jar_path}")
     actual = compute_sha256(jar_path)
     if actual != seed.jar_sha256:
         raise UpgradeCliError(
             3,
-            f"in-house jar hash mismatch for {entry.filename!r}: "
-            f"seed={seed.jar_sha256} actual={actual}",
+            f"in-house jar hash mismatch for {entry.filename!r}: seed={seed.jar_sha256} actual={actual}",
         )
     if entry.expected_hashes:
         content = jar_path.read_bytes()
@@ -191,8 +181,7 @@ def _verify_expected_hashes(entry: ResolvedEntry, content: bytes) -> None:
         if actual.lower() != exp.value.lower():
             raise UpgradeCliError(
                 1,
-                f"hash mismatch for {entry.filename!r} "
-                f"({exp.algorithm}): expected {exp.value}, got {actual}",
+                f"hash mismatch for {entry.filename!r} ({exp.algorithm}): expected {exp.value}, got {actual}",
             )
 
 
@@ -205,9 +194,7 @@ def _fetch_external(
 ) -> dict:
     """Fetch an external artifact via its provider; verify and stage."""
     if entry.provider not in ("modrinth", "curseforge"):
-        raise UpgradeCliError(
-            3, f"unknown provider {entry.provider!r} for {entry.filename!r}"
-        )
+        raise UpgradeCliError(3, f"unknown provider {entry.provider!r} for {entry.filename!r}")
     if entry.project_id is None or entry.version_id is None:
         raise UpgradeCliError(
             3,
@@ -253,9 +240,7 @@ def _fetch_external(
     }
 
 
-def _copy_to_warehouse(
-    staging_path: Path, warehouse_dir: Path, filename: str, sha256: str
-) -> None:
+def _copy_to_warehouse(staging_path: Path, warehouse_dir: Path, filename: str, sha256: str) -> None:
     """Copy staging -> warehouse with collision detection (Section 15.1.5)."""
     dest = warehouse_dir / filename
     if dest.is_file():
@@ -265,8 +250,7 @@ def _copy_to_warehouse(
             return
         raise UpgradeCliError(
             3,
-            f"filename collision: {filename!r} has different bytes in warehouse "
-            f"(existing={existing_sha}, new={sha256})",
+            f"filename collision: {filename!r} has different bytes in warehouse (existing={existing_sha}, new={sha256})",
         )
     atomic_copy(staging_path, dest)
 
@@ -351,19 +335,9 @@ def _write_one_pw_toml(
         download_hash_format=hash_choice[0] if hash_choice else None,
         download_hash=hash_choice[1] if hash_choice else None,
         modrinth_mod_id=entry.project_id if entry.provider == "modrinth" else None,
-        modrinth_version=(
-            fetch_info["version_id"] if entry.provider == "modrinth" else None
-        ),
-        curseforge_project_id=(
-            int(entry.project_id)
-            if entry.provider == "curseforge" and entry.project_id
-            else None
-        ),
-        curseforge_file_id=(
-            int(fetch_info["version_id"])
-            if entry.provider == "curseforge" and fetch_info["version_id"]
-            else None
-        ),
+        modrinth_version=(fetch_info["version_id"] if entry.provider == "modrinth" else None),
+        curseforge_project_id=(int(entry.project_id) if entry.provider == "curseforge" and entry.project_id else None),
+        curseforge_file_id=(int(fetch_info["version_id"]) if entry.provider == "curseforge" and fetch_info["version_id"] else None),
         dependencies=_collect_prism_deps(fetch_info["version"]),
     )
     return write_pw_toml(pw, dest)
@@ -380,9 +354,7 @@ def _write_all_pw_tomls(
     out: dict[str, str] = {}
     for entry, side in entries:
         dest = metadata_dir / f"{entry.filename.removesuffix('.jar')}.pw.toml"
-        out[entry.filename] = _write_one_pw_toml(
-            entry, fetched[entry.filename], side, dest
-        )
+        out[entry.filename] = _write_one_pw_toml(entry, fetched[entry.filename], side, dest)
     return out
 
 
@@ -405,10 +377,7 @@ def _docker_inspect_enabled() -> bool:
 def _run_docker_inspect(image: str, format_template: str) -> str | None:
     """Run ``docker image inspect --format <template> <image>``; return stdout or None."""
     if not _docker_inspect_enabled():
-        _log.debug(
-            f"materialize: docker inspect skipped for {image!r} "
-            f"(MINECRAFT_UPGRADE_NO_DOCKER)"
-        )
+        _log.debug(f"materialize: docker inspect skipped for {image!r} (MINECRAFT_UPGRADE_NO_DOCKER)")
         return None
     try:
         result = subprocess.run(
@@ -421,10 +390,7 @@ def _run_docker_inspect(image: str, format_template: str) -> str | None:
         _log.debug(f"materialize: docker inspect failed for {image!r}: {exc}")
         return None
     if result.returncode != 0:
-        _log.debug(
-            f"materialize: docker inspect exit {result.returncode} for {image!r}: "
-            f"{result.stderr.strip()}"
-        )
+        _log.debug(f"materialize: docker inspect exit {result.returncode} for {image!r}: {result.stderr.strip()}")
         return None
     return result.stdout.strip() or None
 
@@ -436,11 +402,7 @@ def _resolve_image_digest(image: str) -> str | None:
         return None
     if "@" in raw:
         _, _, digest = raw.partition("@")
-        return (
-            digest
-            if digest.startswith("sha256:") and len(digest) == len("sha256:") + 64
-            else None
-        )
+        return digest if digest.startswith("sha256:") and len(digest) == len("sha256:") + 64 else None
     if raw.startswith("sha256:") and len(raw) == len("sha256:") + 64:
         return raw
     return None
@@ -457,9 +419,7 @@ def _resolve_java_version(image: str) -> str | None:
     return None
 
 
-def _resolve_runtime(
-    config_dir: Path, project_root: Path, report: ResolutionReport
-) -> dict:
+def _resolve_runtime(config_dir: Path, project_root: Path, report: ResolutionReport) -> dict:
     """Build the slip ``[runtime]`` dict."""
     compose_path = _compose.resolve_compose_path(config_dir, project_root)
     image_ref = "itzg/minecraft-server:latest"
@@ -473,26 +433,16 @@ def _resolve_runtime(
                     platform = svc.platform
                 break
     else:
-        _log.warning(
-            f"materialize: compose unavailable ({result.error}); "
-            f"using default image/platform"
-        )
+        _log.warning(f"materialize: compose unavailable ({result.error}); using default image/platform")
 
     image_digest = _resolve_image_digest(image_ref)
     if image_digest is None:
-        _log.warning(
-            f"materialize: could not resolve image digest for {image_ref!r}; "
-            f"using placeholder {_PLACEHOLDER_DIGEST}. "
-            f"Slip is not prod-deployable."
-        )
+        _log.warning(f"materialize: could not resolve image digest for {image_ref!r}; using placeholder {_PLACEHOLDER_DIGEST}. Slip is not prod-deployable.")
         image_digest = _PLACEHOLDER_DIGEST
 
     java_version = _resolve_java_version(image_ref)
     if java_version is None:
-        _log.warning(
-            f"materialize: could not resolve java_version for {image_ref!r}; "
-            f"recording 'unknown'. Slip is not prod-deployable."
-        )
+        _log.warning(f"materialize: could not resolve java_version for {image_ref!r}; recording 'unknown'. Slip is not prod-deployable.")
         java_version = "unknown"
 
     return {
@@ -509,9 +459,7 @@ def _resolve_runtime(
 def _git_tree_hash(project_root: Path, relpath: str) -> str:
     """Return ``git rev-parse HEAD:<relpath>``, or a zero placeholder."""
     try:
-        hash_value = path_object_id(
-            relpath, rev="HEAD", repo_path=str(project_root), timeout=10
-        )
+        hash_value = path_object_id(relpath, rev="HEAD", repo_path=str(project_root), timeout=10)
     except (
         subprocess.CalledProcessError,
         FileNotFoundError,
@@ -531,9 +479,7 @@ def _resolve_git_tree_hashes(project_root: Path) -> dict[str, str]:
     }
 
 
-def _require_str_list(
-    spec: dict, key: str, *, where: str
-) -> list[str] | None:
+def _require_str_list(spec: dict, key: str, *, where: str) -> list[str] | None:
     """Return ``spec[key]`` as a list of strings, or None when absent."""
     value = spec.get(key)
     if value is None:
@@ -552,9 +498,7 @@ def _load_instances(config_dir: Path) -> dict[str, dict]:
         with open(toml_path, "rb") as handle:
             data = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise UpgradeCliError(
-            3, f"could not parse {toml_path}: {exc}"
-        ) from exc
+        raise UpgradeCliError(3, f"could not parse {toml_path}: {exc}") from exc
     instances_raw = data.get("instances")
     if not isinstance(instances_raw, dict) or not instances_raw:
         raise UpgradeCliError(3, f"no [instances] table in {toml_path}")
@@ -562,9 +506,7 @@ def _load_instances(config_dir: Path) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for name, spec in instances_raw.items():
         if not isinstance(spec, dict):
-            raise UpgradeCliError(
-                3, f"[instances.{name}] in {toml_path} must be a table"
-            )
+            raise UpgradeCliError(3, f"[instances.{name}] in {toml_path} must be a table")
         where = f"[instances.{name}]"
 
         required_sides = _require_str_list(spec, "required_sides", where=where)
@@ -575,42 +517,29 @@ def _load_instances(config_dir: Path) -> dict[str, dict]:
                 if side not in _VALID_INSTANCE_SIDES:
                     raise UpgradeCliError(
                         3,
-                        f"{where}.required_sides contains invalid value {side!r}; "
-                        f"must be one of {sorted(_VALID_INSTANCE_SIDES)}",
+                        f"{where}.required_sides contains invalid value {side!r}; must be one of {sorted(_VALID_INSTANCE_SIDES)}",
                     )
 
-        config_deletions = _require_str_list(
-            spec, "config_deletions", where=where
-        )
+        config_deletions = _require_str_list(spec, "config_deletions", where=where)
         if config_deletions is None:
             config_deletions = []
 
-        protect_patterns = _require_str_list(
-            spec, "protect_patterns", where=where
-        )
+        protect_patterns = _require_str_list(spec, "protect_patterns", where=where)
         if protect_patterns is None:
             protect_patterns = []
 
         raw_config_mode = spec.get("config_mode", "merge")
-        if (
-            not isinstance(raw_config_mode, str)
-            or raw_config_mode not in _VALID_CONFIG_MODES
-        ):
+        if not isinstance(raw_config_mode, str) or raw_config_mode not in _VALID_CONFIG_MODES:
             raise UpgradeCliError(
                 3,
-                f"{where}.config_mode must be one of "
-                f"{sorted(_VALID_CONFIG_MODES)}, got {raw_config_mode!r}",
+                f"{where}.config_mode must be one of {sorted(_VALID_CONFIG_MODES)}, got {raw_config_mode!r}",
             )
 
         raw_kubejs_mode = spec.get("kubejs_mode", "delete")
-        if (
-            not isinstance(raw_kubejs_mode, str)
-            or raw_kubejs_mode not in _VALID_KUBEJS_MODES
-        ):
+        if not isinstance(raw_kubejs_mode, str) or raw_kubejs_mode not in _VALID_KUBEJS_MODES:
             raise UpgradeCliError(
                 3,
-                f"{where}.kubejs_mode must be one of "
-                f"{sorted(_VALID_KUBEJS_MODES)}, got {raw_kubejs_mode!r}",
+                f"{where}.kubejs_mode must be one of {sorted(_VALID_KUBEJS_MODES)}, got {raw_kubejs_mode!r}",
             )
 
         out[str(name)] = {
@@ -632,11 +561,7 @@ def _load_instances(config_dir: Path) -> dict[str, dict]:
 def _server_inputs_manifest(jars: list[dict]) -> dict:
     """Canonical manifest of server-stage jars."""
     files = sorted(
-        [
-            {"path": j["filename"], "sha256": j["sha256"]}
-            for j in jars
-            if j["side"] in ("both", "server")
-        ],
+        [{"path": j["filename"], "sha256": j["sha256"]} for j in jars if j["side"] in ("both", "server")],
         key=lambda x: x["path"],
     )
     return {"files": files}
@@ -645,11 +570,7 @@ def _server_inputs_manifest(jars: list[dict]) -> dict:
 def _client_inputs_manifest(jars: list[dict]) -> dict:
     """Canonical manifest of client-stage jars."""
     files = sorted(
-        [
-            {"path": j["filename"], "sha256": j["sha256"]}
-            for j in jars
-            if j["side"] in ("both", "client")
-        ],
+        [{"path": j["filename"], "sha256": j["sha256"]} for j in jars if j["side"] in ("both", "client")],
         key=lambda x: x["path"],
     )
     return {"files": files}
@@ -774,9 +695,7 @@ def _seal_slip(body: dict, dest: Path) -> str:
     try:
         slip_mod.parse_slip(body)
     except SchemaError as exc:
-        raise UpgradeCliError(
-            3, f"assembled slip failed schema validation: {exc}"
-        ) from exc
+        raise UpgradeCliError(3, f"assembled slip failed schema validation: {exc}") from exc
     text = tomli_w.dumps(body)
     atomic_write(dest, text.encode("utf-8"))
     return computed
@@ -797,9 +716,7 @@ def _build_integrity_ctx(
     """Build the IntegrityContext for the run."""
     effective_compose_sha: str | None = None
     if state.release_mode == "update":
-        effective_compose_sha = _compose.compute_compose_sha256(
-            config_dir, project_root
-        )
+        effective_compose_sha = _compose.compute_compose_sha256(config_dir, project_root)
     return IntegrityContext(
         config_dir=config_dir,
         modpack_dir=project_root / "sync" / "downloads",
@@ -830,9 +747,7 @@ def run(
     ``transport`` is an injection seam for tests. When ``registry`` is
     supplied, it is used verbatim and ``transport`` is ignored.
     """
-    effective_state_dir = (
-        state_dir if state_dir is not None else _state_dir(config_dir)
-    )
+    effective_state_dir = state_dir if state_dir is not None else _state_dir(config_dir)
     state_path = effective_state_dir / "runs" / run_id / "state.toml"
 
     try:
@@ -855,17 +770,11 @@ def run(
     except SchemaError as exc:
         raise UpgradeCliError(3, f"integrity check failed: {exc}") from exc
     if failures:
-        raise UpgradeCliError(
-            3, "integrity check failed:\n  - " + "\n  - ".join(failures)
-        )
+        raise UpgradeCliError(3, "integrity check failed:\n  - " + "\n  - ".join(failures))
 
     report = load_report(integrity_ctx.report_path)
 
-    if (
-        state.status == STATUS_RESOLVED
-        and (report.lost or report.cascade)
-        and report.policy.no_version != "drop"
-    ):
+    if state.status == STATUS_RESOLVED and (report.lost or report.cascade) and report.policy.no_version != "drop":
         raise UpgradeCliError(
             3,
             "resolved run with losses but policy is not 'drop' (should be impossible)",
@@ -891,9 +800,7 @@ def run(
             usage_tracker=usage_tracker,
         )
 
-    timestamp = now or datetime.datetime.now(datetime.UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    timestamp = now or datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
         with usage.run_context(run_id):
@@ -901,9 +808,7 @@ def run(
                 fetched: dict[str, dict] = {}
                 for entry in report.resolved:
                     if entry.is_in_house:
-                        sha256 = _verify_in_house(
-                            entry, seed_by_filename, warehouse_dir
-                        )
+                        sha256 = _verify_in_house(entry, seed_by_filename, warehouse_dir)
                         fetched[entry.filename] = {
                             "sha256": sha256,
                             "download_url": None,
@@ -923,28 +828,20 @@ def run(
                 entries_with_sides: list[tuple[ResolvedEntry, str]] = []
                 unresolved: list[ResolvedEntry] = []
                 for entry in report.resolved:
-                    side_res = _resolve_side(
-                        entry, report, warehouse_dir, seed_by_filename
-                    )
+                    side_res = _resolve_side(entry, report, warehouse_dir, seed_by_filename)
                     if side_res.side == "unknown":
                         unresolved.append(entry)
                         continue
                     entries_with_sides.append((entry, side_res.side))
 
                 if unresolved:
-                    names = ", ".join(
-                        f"{e.filename} ({e.project_id or e.filename})"
-                        for e in unresolved
-                    )
+                    names = ", ".join(f"{e.filename} ({e.project_id or e.filename})" for e in unresolved)
                     raise UpgradeCliError(
                         3,
-                        f"side unresolved for {len(unresolved)} artifact(s): {names}. "
-                        f"Add entries to config.d/side_overrides.toml and re-run materialize.",
+                        f"side unresolved for {len(unresolved)} artifact(s): {names}. Add entries to config.d/side_overrides.toml and re-run materialize.",
                     )
 
-                pw_toml_hashes = _write_all_pw_tomls(
-                    entries_with_sides, fetched, candidates
-                )
+                pw_toml_hashes = _write_all_pw_tomls(entries_with_sides, fetched, candidates)
 
                 body = _assemble_slip(
                     report=report,
@@ -960,9 +857,7 @@ def run(
                 )
                 slip_path = candidates / "packing_slip.toml"
                 slip_sha = _seal_slip(body, slip_path)
-                _log.info(
-                    f"slip sealed: {slip_path} (content_sha256={slip_sha})"
-                )
+                _log.info(f"slip sealed: {slip_path} (content_sha256={slip_sha})")
             except usage.UsageCapExceeded as exc:
                 raise UpgradeCliError(6, str(exc)) from exc
             except usage.UsageLogReadError as exc:

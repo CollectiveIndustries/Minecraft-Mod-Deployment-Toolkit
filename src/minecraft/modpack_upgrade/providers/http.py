@@ -109,10 +109,7 @@ class _BytesResponse:
             total += len(chunk)
             if total > self._max_bytes:
                 self._response.close()
-                raise ProviderError(
-                    f"response exceeded max_bytes={self._max_bytes} "
-                    f"(downloaded at least {total} bytes)"
-                )
+                raise ProviderError(f"response exceeded max_bytes={self._max_bytes} (downloaded at least {total} bytes)")
             collected.append(chunk)
         return b"".join(collected)
 
@@ -154,9 +151,7 @@ class RequestsTransport:
     ) -> _BytesResponse:
         """Perform one GET attempt; raise :class:`ProviderError` on network failure."""
         try:
-            response = self._session.get(
-                url, headers=headers, timeout=timeout, stream=max_bytes is not None
-            )
+            response = self._session.get(url, headers=headers, timeout=timeout, stream=max_bytes is not None)
         except requests.exceptions.RequestException as exc:
             raise ProviderError(f"network error during GET {url}: {exc}") from exc
         return _BytesResponse(response, max_bytes)
@@ -180,9 +175,7 @@ class RequestsTransport:
         if kind == "api":
             self._usage_tracker.record_api_call(provider=host, endpoint=url)
         else:
-            self._usage_tracker.record_download(
-                provider=host, url=url, bytes_count=content_len
-            )
+            self._usage_tracker.record_download(provider=host, url=url, bytes_count=content_len)
 
     def _check_cap(self, kind: str) -> None:
         """Check the appropriate cap, if a tracker is configured."""
@@ -224,10 +217,7 @@ class RequestsTransport:
                 content = response.content()
                 self._record_call(kind, url, len(content))
 
-                if (
-                    not self._is_retriable_status(status)
-                    or attempt == self._max_retries
-                ):
+                if not self._is_retriable_status(status) or attempt == self._max_retries:
                     return HttpResult(
                         status_code=status,
                         content=content,
