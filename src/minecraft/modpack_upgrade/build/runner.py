@@ -1,6 +1,6 @@
 # src/minecraft/modpack_upgrade/build/runner.py
 
-"""Build runner: clone repo, run the mod's build, stage artifacts.
+"""Build runner: clone repo, run the mod's build, generate .pw.toml, stage.
 
 Never raises on operational failure -- returns a structured
 :class:`BuildOutcome`. The caller (the CLI command) translates failure
@@ -17,6 +17,20 @@ Shallow clones
 When ``spec.depth > 0``, the runner uses ``git clone --depth N
 --branch <ref>``, which requires ``ref`` to be a branch or tag name.
 Commit SHA refs require ``depth=0``.
+
+Staging
+-------
+The runner always generates a ``.pw.toml`` for the single jar the
+build produced, using the shared writer at
+:mod:`minecraft.modpack_upgrade.pw_toml`. The jar lands at
+``sync/downloads/<filename>``; the ``.pw.toml`` lands at
+``sync/downloads/.index/<stem>.pw.toml``. The build spec's ``side``
+becomes the ``.pw.toml``'s ``side`` field; ``name`` becomes ``name``;
+``dependencies`` becomes ``[[x-prismlauncher-dependencies]]``.
+
+This is the only staging path. Mods that generate their own ``.pw.toml``
+must delete that step from their build script; the tool's generated
+``.pw.toml`` is what the resolver sees.
 """
 
 from __future__ import annotations
@@ -30,7 +44,10 @@ from pathlib import Path
 
 from LoggingCore import get_logger
 
-from minecraft.modpack_upgrade.build.spec import BuildArtifact, BuildSpec
+from minecraft.modpack_upgrade.build.spec import BuildSpec
+from minecraft.modpack_upgrade.errors import SchemaError
+from minecraft.modpack_upgrade.pw_toml import Dependency as PwTomlDependencyEntry
+from minecraft.modpack_upgrade.pw_toml import PwTomlEntry, write_pw_toml
 
 __all__ = ["BuildOutcome", "run_build"]
 
@@ -75,11 +92,7 @@ def _make_clone_path(workspace_root: Path, name: str) -> Path:
 
 
 def _clone_repository(spec: BuildSpec, clone_dir: Path) -> tuple[bool, str | None]:
-    """Clone ``spec.repository`` into ``clone_dir``.
-
-    When ``spec.depth > 0``, uses ``git clone --depth N --branch <ref>``,
-    which requires ``ref`` to be a branch or tag name.
-    """
+    """Clone ``spec.repository`` into ``clone_dir``."""
     if spec.depth > 0:
         args = [
             "git",
@@ -112,11 +125,7 @@ def _clone_repository(spec: BuildSpec, clone_dir: Path) -> tuple[bool, str | Non
 
 
 def _checkout_ref(spec: BuildSpec, clone_dir: Path) -> tuple[bool, str | None]:
-    """Checkout ``spec.ref`` in ``clone_dir``.
-
-    Skipped when the clone was shallow (``--branch`` already selected
-    the ref).
-    """
+    """Checkout ``spec.ref`` in ``clone_dir``. Skipped when shallow."""
     if spec.depth > 0:
         return (True, None)
     try:
@@ -172,13 +181,7 @@ def _run_script(spec: BuildSpec, clone_dir: Path) -> tuple[bool, str | None, str
 
 
 def _expand_artifact(pattern: str, clone_dir: Path) -> tuple[Path | None, str | None]:
-    """Expand ``pattern`` under ``clone_dir``; exactly one match required.
-
-    Rejects patterns containing ``..`` (path traversal in the pattern
-    itself) and matches that resolve outside ``clone_dir`` (symlinks
-    pointing elsewhere). The mod is trusted to run arbitrary code, so
-    this is defense-in-depth rather than a security boundary.
-    """
+    """Expand ``pattern`` under ``clone_dir``; exactly one match required."""
     if ".." in Path(pattern).parts:
         return (None, f"artifact pattern {pattern!r} escapes the clone directory")
     matches = sorted(clone_dir.glob(pattern))
@@ -195,47 +198,84 @@ def _expand_artifact(pattern: str, clone_dir: Path) -> tuple[Path | None, str | 
     return (matches[0], None)
 
 
-def _destination_for(
-    artifact: BuildArtifact,
-    matched: Path,
-    *,
-    project_root: Path,
-    warehouse_root: Path,
-) -> Path:
-    """Return the destination for ``matched`` per the artifact's ``dest`` rules."""
-    if artifact.dest is not None:
-        dest = Path(artifact.dest)
-        if not dest.is_absolute():
-            dest = project_root / dest
-        return dest
-    if matched.name.endswith(".pw.toml"):
-        return warehouse_root / ".index" / matched.name
-    return warehouse_root / matched.name
+def _collect_matched_artifacts(spec: BuildSpec, clone_dir: Path) -> tuple[list[Path], str | None]:
+    """Expand every pattern; return the deduped matches or an error."""
+    matched: list[Path] = []
+    seen: set[Path] = set()
+    for artifact in spec.artifacts:
+        m, err = _expand_artifact(artifact.path, clone_dir)
+        if err is not None:
+            return ([], err)
+        assert m is not None
+        resolved = m.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        matched.append(m)
+    return (matched, None)
+
+
+def _select_single_jar(matched: list[Path], clone_dir: Path) -> tuple[Path | None, str | None]:
+    """Validate that ``matched`` contains exactly one jar."""
+    if len(matched) != 1:
+        names = [str(m.relative_to(clone_dir)) for m in matched]
+        return (None, f"expected exactly one artifact; patterns matched {len(matched)}: {names}")
+    jar = matched[0]
+    if not jar.name.endswith(".jar"):
+        return (None, f"artifact must be a .jar; matched {jar.name!r}")
+    return (jar, None)
+
+
+def _write_generated_pw_toml(jar: Path, spec: BuildSpec, dest: Path) -> str | None:
+    """Generate the .pw.toml for ``jar`` at ``dest``; return None on success."""
+    entry = PwTomlEntry(
+        filename=jar.name,
+        side=spec.side,
+        name=spec.mod_name,
+        dependencies=tuple(
+            PwTomlDependencyEntry(addon_id=d.addon_id, type=d.type)
+            for d in spec.dependencies
+        ),
+    )
+    try:
+        write_pw_toml(entry, dest)
+    except SchemaError as exc:
+        return f"could not generate .pw.toml for {jar.name!r}: {exc}"
+    except OSError as exc:
+        return f"could not write .pw.toml for {jar.name!r} to {dest}: {exc}"
+    return None
 
 
 def _stage_artifacts(
     spec: BuildSpec,
     clone_dir: Path,
     *,
-    project_root: Path,
     warehouse_root: Path,
 ) -> tuple[dict[str, Path], str | None]:
-    """Copy every matched artifact to its destination; return the mapping."""
+    """Stage the single built jar and its generated .pw.toml."""
+    matched, err = _collect_matched_artifacts(spec, clone_dir)
+    if err is not None:
+        return ({}, err)
+
+    jar, err = _select_single_jar(matched, clone_dir)
+    if err is not None or jar is None:
+        return ({}, err or "no jar selected")
+
     staged: dict[str, Path] = {}
-    for artifact in spec.artifacts:
-        matched, err = _expand_artifact(artifact.path, clone_dir)
-        if err is not None:
-            return ({}, err)
-        assert matched is not None
-        dest = _destination_for(
-            artifact,
-            matched,
-            project_root=project_root,
-            warehouse_root=warehouse_root,
-        )
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(matched, dest)
-        staged[str(dest)] = matched
+
+    jar_dest = warehouse_root / jar.name
+    jar_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(jar, jar_dest)
+    staged[str(jar_dest)] = jar
+
+    index_dir = warehouse_root / ".index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    pw_toml_dest = index_dir / f"{jar.stem}.pw.toml"
+    write_err = _write_generated_pw_toml(jar, spec, pw_toml_dest)
+    if write_err is not None:
+        return ({}, write_err)
+    staged[str(pw_toml_dest)] = pw_toml_dest
+
     return (staged, None)
 
 
@@ -254,12 +294,14 @@ def run_build(
 ) -> BuildOutcome:
     """Execute one in-house build end-to-end.
 
-    Steps: clone, checkout ref, run entrypoint+script, expand artifact
-    patterns, copy to destinations. On any failure the clone is kept for
-    inspection; on success (unless ``keep_on_success``) it is removed.
+    Steps: clone, checkout ref, run script, expand artifact patterns,
+    validate exactly one jar, generate ``.pw.toml``, stage both files.
 
-    Never raises on operational failure; the outcome carries the state.
+    On failure the clone is kept for inspection; on success (unless
+    ``keep_on_success``) it is removed. Never raises on operational
+    failure; the outcome carries the state.
     """
+    del project_root  # staging is warehouse_root-relative; kept for API symmetry
     clone_dir = _make_clone_path(workspace_root, spec.name)
     _log.info(f"build: {spec.name} -> {clone_dir} (ref {spec.ref!r})")
 
@@ -282,12 +324,7 @@ def run_build(
             stderr_excerpt=_tail(stderr),
         )
 
-    staged, err = _stage_artifacts(
-        spec,
-        clone_dir,
-        project_root=project_root,
-        warehouse_root=warehouse_root,
-    )
+    staged, err = _stage_artifacts(spec, clone_dir, warehouse_root=warehouse_root)
     if err is not None:
         return BuildOutcome(
             False,

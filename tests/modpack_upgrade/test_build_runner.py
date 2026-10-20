@@ -1,25 +1,23 @@
 # tests/modpack_upgrade/test_build_runner.py
 
-"""Unit tests for ``build.runner`` -- clone, build, stage.
+"""Unit tests for ``build.runner`` -- clone, build, generate .pw.toml, stage.
 
 Every test creates a real local git repository under ``tmp_path`` and a
-real shell script. This exercises the runner's subprocess handling
-against the actual ``git`` and ``bash`` binaries, not mocks.
-
-Tests skip cleanly when ``git`` or ``bash`` is not available on the
-host's PATH.
+real shell script. Tests skip cleanly when ``git`` or ``bash`` is not
+available on the host's PATH.
 """
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from minecraft.modpack_upgrade.build.runner import run_build
-from minecraft.modpack_upgrade.build.spec import BuildArtifact, BuildSpec
+from minecraft.modpack_upgrade.build.spec import BuildArtifact, BuildSpec, PwTomlDependency
 
 pytestmark = [
     pytest.mark.skipif(shutil.which("git") is None, reason="git not available"),
@@ -40,42 +38,34 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
 
 
-def _commit_all(repo: Path, message: str = "commit") -> None:
-    """Stage and commit everything in ``repo``."""
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
-
-
-def _write_script(repo: Path, name: str, body: str) -> None:
-    """Write an executable shell script at ``repo/<name>``."""
-    script = repo / name
-    script.write_text(body, encoding="utf-8")
-    script.chmod(0o755)
-
-
 def _make_repo(
     tmp_path: Path,
     *,
     tag: str = "v1.0.0",
     script_body: str | None = None,
 ) -> Path:
-    """Create a source repo with a build script and one commit."""
+    """Create a source repo with a build script that produces one jar."""
     repo = tmp_path / "source"
     _init_git_repo(repo)
-    default_script = (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        "mkdir -p build/libs build/.index\n"
-        "echo 'jar-content' > build/libs/mod-1.0.0.jar\n"
-        "echo 'pw-toml' > build/.index/mod.pw.toml\n"
-    )
-    _write_script(repo, "build.sh", script_body if script_body is not None else default_script)
-    _commit_all(repo)
+    default_script = "#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p build/libs\necho 'jar-content' > build/libs/mod-1.0.0.jar\n"
+    script = repo / "build.sh"
+    script.write_text(script_body if script_body is not None else default_script, encoding="utf-8")
+    script.chmod(0o755)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
     subprocess.run(["git", "tag", tag], cwd=repo, check=True)
     return repo
 
 
-def _spec(repo: Path, *, tag: str = "v1.0.0", **overrides: object) -> BuildSpec:
+def _spec(
+    repo: Path,
+    *,
+    tag: str = "v1.0.0",
+    side: str = "both",
+    mod_name: str | None = None,
+    dependencies: tuple[PwTomlDependency, ...] = (),
+    **overrides: object,
+) -> BuildSpec:
     """Return a spec pointing at ``repo`` with defaults."""
     base: dict[str, object] = {
         "name": "mod",
@@ -84,10 +74,10 @@ def _spec(repo: Path, *, tag: str = "v1.0.0", **overrides: object) -> BuildSpec:
         "ref": tag,
         "entrypoint": "bash",
         "script": "build.sh",
-        "artifacts": (
-            BuildArtifact(path="build/libs/*.jar"),
-            BuildArtifact(path="build/.index/*.pw.toml"),
-        ),
+        "side": side,
+        "artifacts": (BuildArtifact(path="build/libs/*.jar"),),
+        "mod_name": mod_name,
+        "dependencies": dependencies,
     }
     base.update(overrides)
     return BuildSpec(**base)  # type: ignore[arg-type]
@@ -100,13 +90,19 @@ def _dirs(tmp_path: Path) -> tuple[Path, Path, Path]:
     return (project, project / ".build-workspace", project / "sync" / "downloads")
 
 
+def _read_pw_toml(path: Path) -> dict:
+    """Parse a generated .pw.toml file."""
+    with open(path, "rb") as fh:
+        return tomllib.load(fh)
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
 
 
-def test_happy_path_stages_jar_and_pw_toml(tmp_path: Path) -> None:
-    """A successful build copies the jar and pw.toml to their destinations."""
+def test_happy_path_stages_jar_and_generated_pw_toml(tmp_path: Path) -> None:
+    """A successful build copies the jar and generates the .pw.toml."""
     repo = _make_repo(tmp_path)
     project, workspace, warehouse = _dirs(tmp_path)
 
@@ -119,9 +115,80 @@ def test_happy_path_stages_jar_and_pw_toml(tmp_path: Path) -> None:
 
     assert outcome.success is True
     assert (warehouse / "mod-1.0.0.jar").is_file()
-    assert (warehouse / ".index" / "mod.pw.toml").is_file()
+    assert (warehouse / ".index" / "mod-1.0.0.pw.toml").is_file()
     assert str(warehouse / "mod-1.0.0.jar") in outcome.staged_artifacts
-    assert str(warehouse / ".index" / "mod.pw.toml") in outcome.staged_artifacts
+    assert str(warehouse / ".index" / "mod-1.0.0.pw.toml") in outcome.staged_artifacts
+
+
+def test_generated_pw_toml_contains_side(tmp_path: Path) -> None:
+    """The generated .pw.toml's ``side`` field matches the build spec."""
+    repo = _make_repo(tmp_path)
+    project, workspace, warehouse = _dirs(tmp_path)
+
+    run_build(
+        _spec(repo, side="server"),
+        project_root=project,
+        workspace_root=workspace,
+        warehouse_root=warehouse,
+    )
+
+    parsed = _read_pw_toml(warehouse / ".index" / "mod-1.0.0.pw.toml")
+    assert parsed["side"] == "server"
+
+
+def test_generated_pw_toml_contains_filename(tmp_path: Path) -> None:
+    """The generated .pw.toml's ``filename`` matches the built jar."""
+    repo = _make_repo(tmp_path)
+    project, workspace, warehouse = _dirs(tmp_path)
+
+    run_build(_spec(repo), project_root=project, workspace_root=workspace, warehouse_root=warehouse)
+
+    parsed = _read_pw_toml(warehouse / ".index" / "mod-1.0.0.pw.toml")
+    assert parsed["filename"] == "mod-1.0.0.jar"
+
+
+def test_generated_pw_toml_contains_mod_name(tmp_path: Path) -> None:
+    """The generated .pw.toml's ``name`` matches the spec's ``mod_name``."""
+    repo = _make_repo(tmp_path)
+    project, workspace, warehouse = _dirs(tmp_path)
+
+    run_build(
+        _spec(repo, mod_name="Custom Mod"),
+        project_root=project,
+        workspace_root=workspace,
+        warehouse_root=warehouse,
+    )
+
+    parsed = _read_pw_toml(warehouse / ".index" / "mod-1.0.0.pw.toml")
+    assert parsed["name"] == "Custom Mod"
+
+
+def test_generated_pw_toml_contains_dependencies(tmp_path: Path) -> None:
+    """The generated .pw.toml's dependency edges match the spec."""
+    repo = _make_repo(tmp_path)
+    project, workspace, warehouse = _dirs(tmp_path)
+
+    run_build(
+        _spec(repo, dependencies=(PwTomlDependency(addon_id="flywheel", type="required"),)),
+        project_root=project,
+        workspace_root=workspace,
+        warehouse_root=warehouse,
+    )
+
+    parsed = _read_pw_toml(warehouse / ".index" / "mod-1.0.0.pw.toml")
+    assert parsed["x-prismlauncher-dependencies"] == [{"addonId": "flywheel", "type": "required"}]
+
+
+def test_generated_pw_toml_has_no_provider_block(tmp_path: Path) -> None:
+    """In-house .pw.toml has no ``[update.*]`` block, so ``provider = unknown``."""
+    repo = _make_repo(tmp_path)
+    project, workspace, warehouse = _dirs(tmp_path)
+
+    run_build(_spec(repo), project_root=project, workspace_root=workspace, warehouse_root=warehouse)
+
+    parsed = _read_pw_toml(warehouse / ".index" / "mod-1.0.0.pw.toml")
+    assert "update" not in parsed
+    assert "download" not in parsed
 
 
 def test_happy_path_cleans_up_clone(tmp_path: Path) -> None:
@@ -152,38 +219,20 @@ def test_keep_on_success_preserves_clone(tmp_path: Path) -> None:
     assert outcome.clone_dir.is_dir()
 
 
-def test_dest_override_routes_to_custom_path(tmp_path: Path) -> None:
-    """A ``dest`` override routes an artifact to a project-relative path."""
-    repo = _make_repo(tmp_path)
-    project, workspace, warehouse = _dirs(tmp_path)
-    spec = _spec(
-        repo,
-        artifacts=(BuildArtifact(path="build/libs/*.jar", dest="custom/place.jar"),),
-    )
-
-    run_build(spec, project_root=project, workspace_root=workspace, warehouse_root=warehouse)
-
-    assert (project / "custom" / "place.jar").is_file()
-
-
 # ---------------------------------------------------------------------------
 # Clone / checkout failures
 # ---------------------------------------------------------------------------
 
 
 def test_clone_failure_returns_outcome(tmp_path: Path) -> None:
-    """A nonexistent repository yields a failed outcome naming the failure."""
+    """A nonexistent repository yields a failed outcome."""
     project, workspace, warehouse = _dirs(tmp_path)
-    spec = _spec(
-        tmp_path / "does-not-exist",
-        artifacts=(BuildArtifact(path="build/*.jar"),),
-    )
+    spec = _spec(tmp_path / "does-not-exist")
 
     outcome = run_build(spec, project_root=project, workspace_root=workspace, warehouse_root=warehouse)
 
     assert outcome.success is False
     assert "git clone failed" in (outcome.failure_message or "")
-    assert not (warehouse / "mod-1.0.0.jar").exists()
 
 
 def test_checkout_failure_returns_outcome(tmp_path: Path) -> None:
@@ -209,16 +258,10 @@ def test_checkout_failure_returns_outcome(tmp_path: Path) -> None:
 
 def test_script_nonzero_exit_returns_failure(tmp_path: Path) -> None:
     """A script that exits non-zero yields a failed outcome."""
-    body = "#!/usr/bin/env bash\nexit 42\n"
-    repo = _make_repo(tmp_path, script_body=body)
+    repo = _make_repo(tmp_path, script_body="#!/usr/bin/env bash\nexit 42\n")
     project, workspace, warehouse = _dirs(tmp_path)
 
-    outcome = run_build(
-        _spec(repo, artifacts=(BuildArtifact(path="build/*.jar"),)),
-        project_root=project,
-        workspace_root=workspace,
-        warehouse_root=warehouse,
-    )
+    outcome = run_build(_spec(repo), project_root=project, workspace_root=workspace, warehouse_root=warehouse)
 
     assert outcome.success is False
     assert "script exited with 42" in (outcome.failure_message or "")
@@ -227,16 +270,11 @@ def test_script_nonzero_exit_returns_failure(tmp_path: Path) -> None:
 
 def test_script_timeout_returns_failure(tmp_path: Path) -> None:
     """A script that exceeds the timeout yields a failed outcome."""
-    body = "#!/usr/bin/env bash\nsleep 2\n"
-    repo = _make_repo(tmp_path, script_body=body)
+    repo = _make_repo(tmp_path, script_body="#!/usr/bin/env bash\nsleep 2\n")
     project, workspace, warehouse = _dirs(tmp_path)
 
     outcome = run_build(
-        _spec(
-            repo,
-            timeout_seconds=0.3,
-            artifacts=(BuildArtifact(path="build/*.jar"),),
-        ),
+        _spec(repo, timeout_seconds=0.3),
         project_root=project,
         workspace_root=workspace,
         warehouse_root=warehouse,
@@ -247,16 +285,12 @@ def test_script_timeout_returns_failure(tmp_path: Path) -> None:
 
 
 def test_entrypoint_not_found_returns_failure(tmp_path: Path) -> None:
-    """A missing entrypoint yields a failed outcome naming it."""
+    """A missing entrypoint yields a failed outcome."""
     repo = _make_repo(tmp_path)
     project, workspace, warehouse = _dirs(tmp_path)
 
     outcome = run_build(
-        _spec(
-            repo,
-            entrypoint="nonexistent-binary-xyz-12345",
-            artifacts=(BuildArtifact(path="build/*.jar"),),
-        ),
+        _spec(repo, entrypoint="nonexistent-binary-xyz-12345"),
         project_root=project,
         workspace_root=workspace,
         warehouse_root=warehouse,
@@ -266,33 +300,13 @@ def test_entrypoint_not_found_returns_failure(tmp_path: Path) -> None:
     assert "not found on PATH" in (outcome.failure_message or "")
 
 
-def test_working_dir_missing_returns_failure(tmp_path: Path) -> None:
-    """A nonexistent working_dir yields a failed outcome."""
-    repo = _make_repo(tmp_path)
-    project, workspace, warehouse = _dirs(tmp_path)
-
-    outcome = run_build(
-        _spec(
-            repo,
-            working_dir="does-not-exist",
-            artifacts=(BuildArtifact(path="build/*.jar"),),
-        ),
-        project_root=project,
-        workspace_root=workspace,
-        warehouse_root=warehouse,
-    )
-
-    assert outcome.success is False
-    assert "working directory does not exist" in (outcome.failure_message or "")
-
-
 # ---------------------------------------------------------------------------
-# Artifact-pattern failures
+# Artifact selection failures
 # ---------------------------------------------------------------------------
 
 
-def test_artifact_no_match_returns_failure(tmp_path: Path) -> None:
-    """A pattern that matches no file yields a failed outcome."""
+def test_no_artifact_matched_returns_failure(tmp_path: Path) -> None:
+    """A pattern matching no file yields a failed outcome."""
     repo = _make_repo(tmp_path)
     project, workspace, warehouse = _dirs(tmp_path)
 
@@ -307,24 +321,61 @@ def test_artifact_no_match_returns_failure(tmp_path: Path) -> None:
     assert "no files matched" in (outcome.failure_message or "")
 
 
-def test_artifact_multiple_matches_returns_failure(tmp_path: Path) -> None:
-    """A pattern matching more than one file yields a failed outcome."""
-    extra_script = "#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p build/libs\necho a > build/libs/a-1.0.0.jar\necho b > build/libs/b-1.0.0.jar\n"
-    repo = _make_repo(tmp_path, script_body=extra_script)
+def test_single_pattern_matching_multiple_jars_returns_failure(tmp_path: Path) -> None:
+    """One pattern matching two jars fails inside pattern expansion."""
+    repo = _make_repo(
+        tmp_path,
+        script_body=("#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p build/libs\necho a > build/libs/a-1.0.0.jar\necho b > build/libs/b-1.0.0.jar\n"),
+    )
+    project, workspace, warehouse = _dirs(tmp_path)
+
+    outcome = run_build(_spec(repo), project_root=project, workspace_root=workspace, warehouse_root=warehouse)
+
+    assert outcome.success is False
+    assert "matched 2 files" in (outcome.failure_message or "")
+
+
+def test_multiple_patterns_each_matching_one_jar_returns_failure(tmp_path: Path) -> None:
+    """Two patterns each matching one distinct jar fail the exactly-one-jar rule."""
+    repo = _make_repo(
+        tmp_path,
+        script_body=("#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p build/libs\necho a > build/libs/a-1.0.0.jar\necho b > build/libs/b-1.0.0.jar\n"),
+    )
+    project, workspace, warehouse = _dirs(tmp_path)
+    spec = _spec(
+        repo,
+        artifacts=(
+            BuildArtifact(path="build/libs/a-*.jar"),
+            BuildArtifact(path="build/libs/b-*.jar"),
+        ),
+    )
+
+    outcome = run_build(spec, project_root=project, workspace_root=workspace, warehouse_root=warehouse)
+
+    assert outcome.success is False
+    assert "expected exactly one artifact" in (outcome.failure_message or "")
+
+
+def test_non_jar_artifact_matched_returns_failure(tmp_path: Path) -> None:
+    """A matched file that isn't a ``.jar`` fails the artifact-type check."""
+    repo = _make_repo(
+        tmp_path,
+        script_body=("#!/usr/bin/env bash\nset -euo pipefail\nmkdir -p build/libs\necho x > build/libs/mod.txt\n"),
+    )
     project, workspace, warehouse = _dirs(tmp_path)
 
     outcome = run_build(
-        _spec(repo, artifacts=(BuildArtifact(path="build/libs/*.jar"),)),
+        _spec(repo, artifacts=(BuildArtifact(path="build/libs/*"),)),
         project_root=project,
         workspace_root=workspace,
         warehouse_root=warehouse,
     )
 
     assert outcome.success is False
-    assert "matched 2 files" in (outcome.failure_message or "")
+    assert "must be a .jar" in (outcome.failure_message or "")
 
 
-def test_artifact_traversal_rejected(tmp_path: Path) -> None:
+def test_traversal_pattern_rejected(tmp_path: Path) -> None:
     """A pattern containing ``..`` is rejected before matching."""
     repo = _make_repo(tmp_path)
     project, workspace, warehouse = _dirs(tmp_path)
@@ -338,3 +389,21 @@ def test_artifact_traversal_rejected(tmp_path: Path) -> None:
 
     assert outcome.success is False
     assert "escapes the clone directory" in (outcome.failure_message or "")
+
+
+def test_duplicate_patterns_dedupe_to_single_jar(tmp_path: Path) -> None:
+    """Two patterns matching the same jar dedupe to a single artifact."""
+    repo = _make_repo(tmp_path)
+    project, workspace, warehouse = _dirs(tmp_path)
+    spec = _spec(
+        repo,
+        artifacts=(
+            BuildArtifact(path="build/libs/*.jar"),
+            BuildArtifact(path="build/libs/mod-1.0.0.jar"),
+        ),
+    )
+
+    outcome = run_build(spec, project_root=project, workspace_root=workspace, warehouse_root=warehouse)
+
+    assert outcome.success is True
+    assert (warehouse / "mod-1.0.0.jar").is_file()

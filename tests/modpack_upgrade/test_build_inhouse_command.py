@@ -35,11 +35,12 @@ def _write_spec(config_dir: Path, name: str, body: dict) -> None:
 def _minimal_spec_body() -> dict:
     """Return a minimal valid spec body."""
     return {
+        "side": "both",
         "repository": "https://example.com/repo.git",
         "ref": "v1.0.0",
         "entrypoint": "bash",
         "script": "build.sh",
-        "artifacts": [{"path": "build/*.jar"}],
+        "artifacts": ["build/libs/*.jar"],
     }
 
 
@@ -56,7 +57,11 @@ def _success_outcome(name: str = "mod", staged: dict[str, Path] | None = None) -
         success=True,
         name=name,
         clone_dir=Path("/tmp/unused"),
-        staged_artifacts=staged or {"/tmp/unused/mod-1.0.0.jar": Path("/tmp/unused/mod-1.0.0.jar")},
+        staged_artifacts=staged
+        or {
+            "/tmp/unused/mod-1.0.0.jar": Path("/tmp/unused/mod-1.0.0.jar"),
+            "/tmp/unused/.index/mod-1.0.0.pw.toml": Path("/tmp/unused/.index/mod-1.0.0.pw.toml"),
+        },
     )
 
 
@@ -80,6 +85,18 @@ def test_missing_spec_raises_exit_3(tmp_path: Path) -> None:
     config_dir, project_root = _project(tmp_path)
     with pytest.raises(UpgradeCliError) as ei:
         bi.run(config_dir=config_dir, project_root=project_root, name="missing")
+    assert ei.value.exit_code == 3
+    assert "build spec error" in str(ei.value)
+
+
+def test_missing_side_raises_exit_3(tmp_path: Path) -> None:
+    """A spec without ``side`` yields UpgradeCliError(3)."""
+    config_dir, project_root = _project(tmp_path)
+    body = _minimal_spec_body()
+    del body["side"]
+    _write_spec(config_dir, "mod", body)
+    with pytest.raises(UpgradeCliError) as ei:
+        bi.run(config_dir=config_dir, project_root=project_root, name="mod")
     assert ei.value.exit_code == 3
     assert "build spec error" in str(ei.value)
 
@@ -150,11 +167,7 @@ def test_manifest_variables_available(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_override_variables_win(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Caller-supplied overrides win over YAML-local variables."""
     config_dir, project_root = _project(tmp_path)
-    body = {
-        **_minimal_spec_body(),
-        "variables": {"tag": "default"},
-        "ref": "${tag}",
-    }
+    body = {**_minimal_spec_body(), "variables": {"tag": "default"}, "ref": "${tag}"}
     _write_spec(config_dir, "mod", body)
     captured: dict[str, BuildSpec] = {}
 
@@ -163,12 +176,7 @@ def test_override_variables_win(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         return _success_outcome()
 
     monkeypatch.setattr(bi, "run_build", _capture)
-    bi.run(
-        config_dir=config_dir,
-        project_root=project_root,
-        name="mod",
-        overrides={"tag": "v9.9.9"},
-    )
+    bi.run(config_dir=config_dir, project_root=project_root, name="mod", overrides={"tag": "v9.9.9"})
     assert captured["spec"].ref == "v9.9.9"
 
 
@@ -203,16 +211,13 @@ def test_main_dispatches_build_inhouse(tmp_path: Path, monkeypatch: pytest.Monke
     code = main(["--config-dir", str(config_dir), "build-inhouse", "mod"])
     assert code == 0
     assert len(called) == 1
+    assert called[0].side == "both"
 
 
 def test_main_var_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--var key=value`` overrides reach the resolved spec."""
     config_dir, _project_root = _project(tmp_path)
-    body = {
-        **_minimal_spec_body(),
-        "variables": {"tag": "default"},
-        "ref": "${tag}",
-    }
+    body = {**_minimal_spec_body(), "variables": {"tag": "default"}, "ref": "${tag}"}
     _write_spec(config_dir, "mod", body)
     captured: dict[str, BuildSpec] = {}
 
@@ -221,16 +226,7 @@ def test_main_var_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         return _success_outcome()
 
     monkeypatch.setattr(bi, "run_build", _capture)
-    code = main(
-        [
-            "--config-dir",
-            str(config_dir),
-            "build-inhouse",
-            "mod",
-            "--var",
-            "tag=v0.5.0",
-        ]
-    )
+    code = main(["--config-dir", str(config_dir), "build-inhouse", "mod", "--var", "tag=v0.5.0"])
     assert code == 0
     assert captured["spec"].ref == "v0.5.0"
 
@@ -239,16 +235,7 @@ def test_main_invalid_var_format(tmp_path: Path) -> None:
     """A ``--var`` value without '=' produces exit 2."""
     config_dir, _project_root = _project(tmp_path)
     _write_spec(config_dir, "mod", _minimal_spec_body())
-    code = main(
-        [
-            "--config-dir",
-            str(config_dir),
-            "build-inhouse",
-            "mod",
-            "--var",
-            "no-equals-sign",
-        ]
-    )
+    code = main(["--config-dir", str(config_dir), "build-inhouse", "mod", "--var", "no-equals-sign"])
     assert code == 2
 
 

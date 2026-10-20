@@ -3,26 +3,37 @@
 """Build specification loading and variable resolution.
 
 Reads ``config.d/build/<name>.yaml`` and produces a typed
-:class:`BuildSpec`. Every string-valued field is subject to
-``${VAR}`` substitution during :func:`resolve_variables`. Only
-``${VAR}`` where ``VAR`` matches ``[A-Za-z_][A-Za-z0-9_]*`` is
-substituted; literal ``{...}`` in URLs or shell snippets is left
-alone, so artifact patterns and script paths can use brace syntax if
-they need to.
+:class:`BuildSpec`. Every string-valued field is subject to ``${VAR}``
+substitution during :func:`resolve_variables`. Only ``${VAR}`` where
+``VAR`` matches ``[A-Za-z_][A-Za-z0-9_]*`` is substituted; literal
+``{...}`` in URLs or shell snippets is left alone.
 
 YAML loading goes through :func:`ConfigCore.load_config_file`, the
-single-file loader from the shared configuration framework. This is
-the same YAML parser ``config_model.py`` uses internally, with the
-same exception-wrapping rules: malformed YAML surfaces as
-``ConfigCore.ConfigError``, which we translate to our own
-``SchemaError``. We do not use ``ConfigManager`` here because its
-multi-source merge iterates ``.items()`` on each source, which would
-raise ``AttributeError`` on a top-level non-mapping YAML instead of
-letting us produce a clean diagnostic.
+single-file loader from the shared configuration framework.
 
-Variable precedence (lowest to highest): caller-supplied defaults
-(typically manifest-derived values), ``variables:`` block in the YAML,
-caller-supplied overrides (typically CLI ``--var`` values).
+``side`` is required
+--------------------
+Every build spec declares a ``side`` field (``client``, ``server``, or
+``both``). This is the *declared* side the mod author chose for the
+in-house mod. It is written into the generated ``.pw.toml``'s ``side``
+field, which becomes ``[[seed]].side_declared`` after ``load_seed``
+reads the file, which feeds the resolver's dependency closure.
+
+``side`` is NOT the final side. :doc:`docs/Side_Determination.md`
+defines a precedence chain (``override > jar > provider > .pw.toml >
+unknown``) where ``side_overrides.toml`` remains the final authority
+across all cases. The build spec's ``side`` lands at the
+``.pw.toml`` position - priority 4 - exactly where any other
+``.pw.toml`` side lands.
+
+``.pw.toml`` generation
+-----------------------
+The runner always generates a ``.pw.toml`` for the single jar the
+build produces, using :func:`minecraft.modpack_upgrade.pw_toml.write_pw_toml`.
+The mod's own build script does not need a ``.pw.toml``-generation
+step. This centralizes the writer in the upgrade toolchain, removing
+duplication across mod repos and pinning one implementation of the
+schema, byte-stability contract, and side-sentinel semantics.
 """
 
 from __future__ import annotations
@@ -40,6 +51,7 @@ from minecraft.modpack_upgrade.errors import SchemaError
 __all__ = [
     "BuildArtifact",
     "BuildSpec",
+    "PwTomlDependency",
     "load_build_spec",
     "resolve_variables",
 ]
@@ -48,30 +60,53 @@ __all__ = [
 _DEFAULT_TIMEOUT_SECONDS = 1800.0
 _DEFAULT_WORKING_DIR = "."
 _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_VALID_SIDES = ("client", "server", "both")
 
 
 @dataclass(frozen=True)
 class BuildArtifact:
-    """One expected build output.
+    """One glob pattern the built jar must match.
 
-    ``path`` is a glob pattern relative to the clone root. After the
-    build completes, the pattern must match exactly one file; if it
-    matches zero or more than one, the build fails with a diagnostic
-    naming every candidate.
+    The runner expands each pattern under the clone root. Across all
+    patterns, exactly one jar must match; that jar is the mod's primary
+    artifact. The runner generates its ``.pw.toml`` and stages both into
+    the warehouse.
 
-    ``dest`` is an optional override for the destination. When ``None``,
-    the destination is inferred by extension: ``.pw.toml`` -> the
-    seed index; anything else -> the warehouse. When set, it is
-    interpreted relative to the project root (unless absolute).
+    Patterns MUST NOT contain ``..`` (rejected before matching). Matches
+    that resolve outside the clone directory (via symlink) are rejected.
     """
 
     path: str
-    dest: str | None = None
+
+
+@dataclass(frozen=True)
+class PwTomlDependency:
+    """A ``[[x-prismlauncher-dependencies]]`` edge for the generated .pw.toml.
+
+    Project-ID edges only, matching the writer's schema. ``type`` is a
+    free-form string (``required`` / ``optional`` / etc.); the writer
+    does not validate it and the reader uppercases it on load.
+    """
+
+    addon_id: str
+    type: str
 
 
 @dataclass(frozen=True)
 class BuildSpec:
-    """A validated in-house build specification."""
+    """A validated in-house build specification.
+
+    ``side`` is required and restricted to ``client``, ``server``, or
+    ``both``. ``unknown`` is deliberately excluded: it would make the
+    mod unmarked and the resolver would silently drop it from the
+    deployable set at materialize.
+
+    ``mod_name`` is the display name written into the generated
+    ``.pw.toml``'s ``name`` field. ``name`` on the spec itself is the
+    filename stem (``createpollutioncleanup`` from
+    ``config.d/build/createpollutioncleanup.yaml``); ``mod_name`` is
+    the human-readable form (``"Custom Pollution Cleanup"``).
+    """
 
     name: str
     variables: dict[str, str]
@@ -79,7 +114,10 @@ class BuildSpec:
     ref: str
     entrypoint: str
     script: str
+    side: str
     artifacts: tuple[BuildArtifact, ...]
+    mod_name: str | None = None
+    dependencies: tuple[PwTomlDependency, ...] = ()
     args: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
@@ -128,7 +166,7 @@ def _parse_args(raw: object) -> tuple[str, ...]:
 
 
 def _parse_artifact(raw: object) -> BuildArtifact:
-    """Parse one artifact entry, short (string) or long (mapping) form."""
+    """Parse one artifact entry, string or mapping form."""
     if isinstance(raw, str):
         if not raw:
             raise SchemaError("artifact entry string must be non-empty")
@@ -137,10 +175,7 @@ def _parse_artifact(raw: object) -> BuildArtifact:
         path = raw.get("path")
         if not isinstance(path, str) or not path:
             raise SchemaError("artifact entry 'path' must be a non-empty string")
-        dest = raw.get("dest")
-        if dest is not None and (not isinstance(dest, str) or not dest):
-            raise SchemaError("artifact entry 'dest' must be a non-empty string or omitted")
-        return BuildArtifact(path=path, dest=dest)
+        return BuildArtifact(path=path)
     raise SchemaError(f"artifact entry must be a string or mapping, got {type(raw).__name__}")
 
 
@@ -149,6 +184,35 @@ def _parse_artifacts(raw: object) -> tuple[BuildArtifact, ...]:
     if not isinstance(raw, list) or not raw:
         raise SchemaError("build spec field 'artifacts' must be a non-empty list")
     return tuple(_parse_artifact(item) for item in raw)
+
+
+def _parse_side(raw: object) -> str:
+    """Parse the required top-level ``side`` field."""
+    if raw not in _VALID_SIDES:
+        raise SchemaError(f"build spec field 'side' must be one of {list(_VALID_SIDES)}, got {raw!r}")
+    return raw  # type: ignore[return-value]
+
+
+def _parse_dependency(raw: object) -> PwTomlDependency:
+    """Parse one ``dependencies[]`` entry."""
+    if not isinstance(raw, dict):
+        raise SchemaError("dependencies entries must be mappings")
+    addon_id = raw.get("addon_id")
+    if not isinstance(addon_id, str) or not addon_id:
+        raise SchemaError("dependencies[].addon_id must be a non-empty string")
+    dep_type = raw.get("type")
+    if not isinstance(dep_type, str) or not dep_type:
+        raise SchemaError("dependencies[].type must be a non-empty string")
+    return PwTomlDependency(addon_id=addon_id, type=dep_type)
+
+
+def _parse_dependencies(raw: object) -> tuple[PwTomlDependency, ...]:
+    """Parse the optional ``dependencies`` list."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise SchemaError("build spec field 'dependencies' must be a list")
+    return tuple(_parse_dependency(d) for d in raw)
 
 
 def _parse_body(name: str, body: dict) -> BuildSpec:
@@ -169,6 +233,10 @@ def _parse_body(name: str, body: dict) -> BuildSpec:
     if depth < 0:
         raise SchemaError(f"build spec field 'depth' must be >= 0, got {depth}")
 
+    mod_name_raw = body.get("name")
+    if mod_name_raw is not None and (not isinstance(mod_name_raw, str) or not mod_name_raw):
+        raise SchemaError("build spec field 'name' must be a non-empty string or omitted")
+
     return BuildSpec(
         name=name,
         variables=_parse_variables(body.get("variables")),
@@ -176,7 +244,10 @@ def _parse_body(name: str, body: dict) -> BuildSpec:
         ref=_require_string(body, "ref"),
         entrypoint=_require_string(body, "entrypoint"),
         script=_require_string(body, "script"),
+        side=_parse_side(body.get("side")),
         artifacts=_parse_artifacts(body.get("artifacts")),
+        mod_name=mod_name_raw,
+        dependencies=_parse_dependencies(body.get("dependencies")),
         args=_parse_args(body.get("args")),
         env=_parse_env(body.get("env")),
         timeout_seconds=timeout_seconds,
@@ -194,9 +265,7 @@ def load_build_spec(path: Path) -> BuildSpec:
     """Load and validate ``config.d/build/<name>.yaml``.
 
     The spec's ``name`` is derived from the filename stem. Raises
-    :class:`SchemaError` on any malformed input, wrapping ConfigCore's
-    :class:`ConfigError` for YAML syntax errors and ``OSError`` for
-    I/O failures.
+    :class:`SchemaError` on any malformed input.
     """
     if not path.is_file():
         raise SchemaError(f"build spec not found: {path}")
@@ -228,8 +297,13 @@ def resolve_variables(spec: BuildSpec, defaults: dict[str, str], overrides: dict
 
     Precedence (lowest to highest): ``defaults`` (typically manifest
     values), ``spec.variables`` (YAML block), ``overrides`` (typically
-    CLI ``--var`` values). The result is a new :class:`BuildSpec`;
-    ``spec`` is not mutated.
+    CLI ``--var`` values).
+
+    Substitution is applied to: ``repository``, ``ref``, ``script``,
+    ``args``, ``env`` values, artifact ``path``, ``working_dir``, ``mod_name``,
+    and dependency ``addon_id``. Fields with enum semantics (``side``,
+    dependency ``type``, ``timeout_seconds``, ``depth``, ``entrypoint``)
+    are NOT substituted.
     """
     merged: dict[str, str] = {}
     merged.update(defaults)
@@ -243,12 +317,14 @@ def resolve_variables(spec: BuildSpec, defaults: dict[str, str], overrides: dict
         script=_substitute(spec.script, merged),
         args=tuple(_substitute(a, merged) for a in spec.args),
         env={k: _substitute(v, merged) for k, v in spec.env.items()},
-        artifacts=tuple(
-            BuildArtifact(
-                path=_substitute(a.path, merged),
-                dest=_substitute(a.dest, merged) if a.dest is not None else None,
-            )
-            for a in spec.artifacts
-        ),
+        artifacts=tuple(BuildArtifact(path=_substitute(a.path, merged)) for a in spec.artifacts),
         working_dir=_substitute(spec.working_dir, merged),
+        mod_name=_substitute(spec.mod_name, merged) if spec.mod_name is not None else None,
+        dependencies=tuple(
+            PwTomlDependency(
+                addon_id=_substitute(d.addon_id, merged),
+                type=d.type,
+            )
+            for d in spec.dependencies
+        ),
     )
