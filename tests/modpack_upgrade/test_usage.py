@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-import yaml
+import tomli_w
 
 from minecraft.modpack_upgrade import usage
 from minecraft.modpack_upgrade.usage import (
@@ -33,11 +34,9 @@ def _config(tmp_path: Path, **overrides: object) -> UsageConfig:
 
 
 def _write_upgrade_toml(config_dir: Path, body: dict) -> None:
-    """Write ``upgrade.toml`` under ``config_dir``."""
+    """Write ``upgrade.toml`` under ``config_dir`` as TOML."""
     config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "upgrade.toml").write_text(
-        yaml.safe_dump(body), encoding="utf-8"
-    )
+    (config_dir / "upgrade.toml").write_bytes(tomli_w.dumps(body).encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -80,9 +79,7 @@ def test_load_no_budget_section_returns_none(tmp_path: Path) -> None:
 def test_load_budget_no_caps_returns_none(tmp_path: Path) -> None:
     """A [budget] with no caps returns None even if log_path is set."""
     config_dir = tmp_path / "config.d"
-    _write_upgrade_toml(
-        config_dir, {"budget": {"usage_log_path": "var/usage.jsonl"}}
-    )
+    _write_upgrade_toml(config_dir, {"budget": {"usage_log_path": "var/usage.jsonl"}})
     assert load_usage_config(config_dir, tmp_path) is None
 
 
@@ -100,9 +97,7 @@ def test_load_budget_api_cap_only(tmp_path: Path) -> None:
 def test_load_budget_byte_cap_only(tmp_path: Path) -> None:
     """A byte cap alone produces a config with only that cap."""
     config_dir = tmp_path / "config.d"
-    _write_upgrade_toml(
-        config_dir, {"budget": {"max_downloaded_bytes": 10_000_000}}
-    )
+    _write_upgrade_toml(config_dir, {"budget": {"max_downloaded_bytes": 10_000_000}})
     cfg = load_usage_config(config_dir, tmp_path)
     assert cfg is not None
     assert cfg.max_api_requests is None
@@ -287,8 +282,6 @@ def test_check_byte_cap_below_cap_passes(tmp_path: Path) -> None:
 def _write_old_record(path: Path, ts: str) -> None:
     """Append a record with a specific timestamp."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    import json
-
     with open(path, "a", encoding="utf-8") as f:
         f.write(
             json.dumps(
@@ -302,12 +295,8 @@ def _write_old_record(path: Path, ts: str) -> None:
 def test_old_records_outside_window_ignored(tmp_path: Path) -> None:
     """Records older than the window do not count toward usage."""
     log_path = tmp_path / "usage.jsonl"
-    tracker = UsageTracker(
-        _config(tmp_path, log_path=log_path, window_hours=1, max_api_requests=10)
-    )
-    old_ts = (datetime.now(UTC) - timedelta(hours=2)).strftime(
-        "%Y-%m-%dT%H:%M:%S.%fZ"
-    )
+    tracker = UsageTracker(_config(tmp_path, log_path=log_path, window_hours=1, max_api_requests=10))
+    old_ts = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     _write_old_record(log_path, old_ts)
     assert tracker.api_used() == 0
 

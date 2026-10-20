@@ -1,7 +1,8 @@
 # tests/modpack_upgrade/test_usage_integration.py
 
 """Integration tests for usage cap enforcement through the HTTP transport
-and the update / materialize commands."""
+and the update / materialize commands.
+"""
 
 from __future__ import annotations
 
@@ -10,17 +11,30 @@ from pathlib import Path
 
 import pytest
 
-from minecraft.modpack_upgrade import usage
 from minecraft.modpack_upgrade.cli.commands import materialize as materialize_mod
 from minecraft.modpack_upgrade.cli.commands import update as update_mod
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 from minecraft.modpack_upgrade.providers.http import RequestsTransport
+from minecraft.modpack_upgrade.report import (
+    Diagnostics,
+    ReportInputs,
+    ReportPolicy,
+    ResolutionReport,
+    ResolvedEntry,
+    SeedEntry,
+    TargetRuntime,
+    write_report,
+)
+from minecraft.modpack_upgrade.state import (
+    STATUS_RESOLVED,
+    RunState,
+    save_state,
+)
 from minecraft.modpack_upgrade.usage import (
     UsageCapExceeded,
     UsageConfig,
     UsageTracker,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake responses and sessions
@@ -126,9 +140,7 @@ def test_transport_raises_when_api_cap_reached(tmp_path: Path) -> None:
 
 def test_transport_retries_count_as_multiple_calls(tmp_path: Path) -> None:
     """A retried API call records every attempt against the cap."""
-    session = _FakeSession(
-        [_FakeResponse(status_code=500), _FakeResponse(content=b"ok")]
-    )
+    session = _FakeSession([_FakeResponse(status_code=500), _FakeResponse(content=b"ok")])
     tracker = _tracker(tmp_path, max_api_requests=10)
     transport = RequestsTransport(session=session, usage_tracker=tracker)
     transport.get("https://api.modrinth.com/v2/project/create")
@@ -137,9 +149,7 @@ def test_transport_retries_count_as_multiple_calls(tmp_path: Path) -> None:
 
 def test_transport_cap_hit_on_retry_aborts(tmp_path: Path) -> None:
     """If the cap is hit between attempts, the retry aborts."""
-    session = _FakeSession(
-        [_FakeResponse(status_code=500), _FakeResponse(content=b"ok")]
-    )
+    session = _FakeSession([_FakeResponse(status_code=500), _FakeResponse(content=b"ok")])
     tracker = _tracker(tmp_path, max_api_requests=1)
     transport = RequestsTransport(session=session, usage_tracker=tracker)
     with pytest.raises(UsageCapExceeded):
@@ -175,17 +185,12 @@ def test_update_cap_exceeded_returns_exit_6(tmp_path: Path) -> None:
     manifest = tmp_path / "sync" / "modpack.manifest.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        '[minecraft]\nversion = "1.21.1"\nloader = "forge"\n'
-        'loader_version = "52.0.1"\n[policy]\n'
-        'selection = "release_then_beta"\nno_version = "ask"\n'
+        '[minecraft]\nversion = "1.21.1"\nloader = "forge"\nloader_version = "52.0.1"\n[policy]\nselection = "release_then_beta"\nno_version = "ask"\n'
     )
     downloads = tmp_path / "sync" / "downloads"
     index = downloads / ".index"
     index.mkdir(parents=True)
-    (index / "mod.pw.toml").write_text(
-        'filename = "mod.jar"\nside = "both"\n'
-        '[update.modrinth]\nmod-id = "mod"\nversion = "v1"\n'
-    )
+    (index / "mod.pw.toml").write_text('filename = "mod.jar"\nside = "both"\n[update.modrinth]\nmod-id = "mod"\nversion = "v1"\n')
     (downloads / "mod.jar").write_bytes(b"x")
 
     with pytest.raises(UpgradeCliError) as ei:
@@ -206,30 +211,14 @@ def test_materialize_cap_exceeded_returns_exit_6(tmp_path: Path) -> None:
     config_dir = tmp_path / "config.d"
     config_dir.mkdir()
     (config_dir / "upgrade.toml").write_text("[budget]\nmax_api_requests = 1\n")
-    (config_dir / "deploy_pack.toml").write_text(
-        '[instances.survival]\ncontainer = "mc-survival"\n'
-    )
+    (config_dir / "deploy_pack.toml").write_text('[instances.survival]\ncontainer = "mc-survival"\n')
     (config_dir / "side_overrides.toml").write_text("")
 
     manifest = tmp_path / "sync" / "modpack.manifest.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
-        '[minecraft]\nversion = "1.21.1"\nloader = "forge"\n'
-        'loader_version = "52.0.1"\n[policy]\n'
-        'selection = "release_then_beta"\nno_version = "ask"\n'
+        '[minecraft]\nversion = "1.21.1"\nloader = "forge"\nloader_version = "52.0.1"\n[policy]\nselection = "release_then_beta"\nno_version = "ask"\n'
     )
-
-    from minecraft.modpack_upgrade.report import (
-        Diagnostics,
-        ReportInputs,
-        ReportPolicy,
-        ResolutionReport,
-        ResolvedEntry,
-        SeedEntry,
-        TargetRuntime,
-        write_report,
-    )
-    from minecraft.modpack_upgrade.state import STATUS_RESOLVED, RunState, save_state
 
     seed = SeedEntry(
         filename="mod-v2.jar",
@@ -292,10 +281,8 @@ def test_materialize_cap_exceeded_returns_exit_6(tmp_path: Path) -> None:
     save_state(state_run_dir / "state.toml", state)
 
     # Short-circuit the integrity check so we get to the download phase.
-    from minecraft.modpack_upgrade.cli.commands import materialize as mat_mod
-
-    orig_check = mat_mod.check_integrity
-    mat_mod.check_integrity = lambda state, ctx: []  # type: ignore[assignment]
+    orig_check = materialize_mod.check_integrity
+    materialize_mod.check_integrity = lambda state, ctx: []  # type: ignore[assignment]
     try:
         with pytest.raises(UpgradeCliError) as ei:
             materialize_mod.run(
@@ -308,4 +295,4 @@ def test_materialize_cap_exceeded_returns_exit_6(tmp_path: Path) -> None:
         assert ei.value.exit_code == 6
         assert "budget exhausted" in str(ei.value)
     finally:
-        mat_mod.check_integrity = orig_check  # type: ignore[assignment]
+        materialize_mod.check_integrity = orig_check  # type: ignore[assignment]
