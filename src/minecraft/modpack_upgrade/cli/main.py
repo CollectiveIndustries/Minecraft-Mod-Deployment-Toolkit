@@ -33,12 +33,14 @@ from minecraft.modpack_upgrade import __version__
 
 from .commands import (
     acknowledge,
+    approve,
     build_inhouse,
     iterate,
     manifest,
     materialize,
     promote,
     publish,
+    reject,
     runtime,
     status,
     stubs,
@@ -149,6 +151,32 @@ def _cmd_build_inhouse(args: argparse.Namespace, config_dir: Path, project_root:
         project_root=project_root,
         name=args.name,
         overrides=overrides,
+    )
+
+
+def _cmd_approve(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the approve command (spec Section 11.2, Section 11.4)."""
+    return approve.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        run_id=args.run_id,
+        scope=args.scope,
+        operator=args.operator,
+        interaction_id=args.interaction_id,
+        reason=args.reason,
+    )
+
+
+def _cmd_reject(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the reject command (spec Section 11.2, Section 11.4)."""
+    return reject.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        run_id=args.run_id,
+        scope=args.scope,
+        operator=args.operator,
+        interaction_id=args.interaction_id,
+        reason=args.reason,
     )
 
 
@@ -289,6 +317,64 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Override a build variable (repeatable)",
     )
     p_build.set_defaults(func=_cmd_build_inhouse)
+
+    # -- approve -----------------------------------------------------
+    p_approve = sub.add_parser(
+        "approve",
+        help="Record an approval decision (spec Section 11.2, Section 11.4)",
+    )
+    p_approve.add_argument("run_id", help="Run ID to approve")
+    p_approve.add_argument(
+        "--scope",
+        default="mod_set",
+        choices=["mod_set", "world_migration", "velocity_integration"],
+        help="Approval scope (default: mod_set)",
+    )
+    p_approve.add_argument(
+        "--operator",
+        default="interactive-cli",
+        help="Operator identity recorded in the approval",
+    )
+    p_approve.add_argument(
+        "--interaction-id",
+        default=None,
+        help="Discord interaction ID (for bot-originated approvals)",
+    )
+    p_approve.add_argument(
+        "--reason",
+        default=None,
+        help="Optional free-form note attached to the approval",
+    )
+    p_approve.set_defaults(func=_cmd_approve)
+
+    # -- reject ------------------------------------------------------
+    p_reject = sub.add_parser(
+        "reject",
+        help="Record a rejection decision (spec Section 11.2, Section 11.4)",
+    )
+    p_reject.add_argument("run_id", help="Run ID to reject")
+    p_reject.add_argument(
+        "--scope",
+        default="mod_set",
+        choices=["mod_set", "world_migration", "velocity_integration"],
+        help="Rejection scope (default: mod_set)",
+    )
+    p_reject.add_argument(
+        "--operator",
+        default="interactive-cli",
+        help="Operator identity recorded in the rejection",
+    )
+    p_reject.add_argument(
+        "--interaction-id",
+        default=None,
+        help="Discord interaction ID (for bot-originated rejections)",
+    )
+    p_reject.add_argument(
+        "--reason",
+        default=None,
+        help="Optional free-form note attached to the rejection",
+    )
+    p_reject.set_defaults(func=_cmd_reject)
 
     # -- stubs (later slices) ----------------------------------------
     p_client = sub.add_parser("build-client", help="Produce candidate client ZIP")
