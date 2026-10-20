@@ -16,6 +16,13 @@ by :mod:`._compose` so ``update``, ``materialize``, and ``promote`` share
 a single interpretation. The names are re-exported here for backward
 compatibility with tests that import from ``update`` directly; the
 canonical definitions live in ``_compose``.
+
+Usage tracking
+--------------
+When ``[budget]`` is configured in ``upgrade.toml``, the resolver's
+provider calls are cap-enforced via an append-only JSONL log. A cap
+exhaustion surfaces as ``UpgradeCliError(6)``. An unreadable log
+surfaces as ``UpgradeCliError(3)``.
 """
 
 from __future__ import annotations
@@ -30,12 +37,17 @@ import yaml
 from LoggingCore import get_logger
 
 from minecraft.deploy_pack.daemon.config import load_config as load_daemon_config
+from minecraft.modpack_upgrade import usage
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 from minecraft.modpack_upgrade.errors import ProviderError, SchemaError
 from minecraft.modpack_upgrade.inhouse import load_in_house_filenames
 from minecraft.modpack_upgrade.manifest import Manifest, load_manifest
 from minecraft.modpack_upgrade.overrides import load_side_overrides
-from minecraft.modpack_upgrade.providers.config import build_registry, load_provider_config
+from minecraft.modpack_upgrade.providers.base import HttpTransport
+from minecraft.modpack_upgrade.providers.config import (
+    build_registry,
+    load_provider_config,
+)
 from minecraft.modpack_upgrade.providers.registry import ProviderRegistry
 from minecraft.modpack_upgrade.report import write_report
 from minecraft.modpack_upgrade.resolution_inputs import compute_resolution_inputs_sha256
@@ -75,18 +87,12 @@ _EXIT_BY_REPORT_STATUS: dict[str, int] = {
 # ---------------------------------------------------------------------------
 # Manifest vs. Compose equivalence (Manifest_Schema Section 2, Section 8 rule 8)
 # ---------------------------------------------------------------------------
-#
-# The env-var convention and its parsing helpers are owned by
-# ``_compose`` and imported above. The helpers below are update-specific
-# orchestration: extract the runtime tuple, then enforce equality with
-# the manifest (Section 8 rule 8).
 
 
 def _extract_from_env(env: dict[str, str]) -> tuple[str, str, str] | None:
     """Return ``(mc_version, loader, loader_version)`` from an env mapping.
 
-    Returns ``None`` when any of the three values is not declared - the
-    caller treats that as "cannot verify" per Manifest_Schema Section 8.
+    Returns ``None`` when any of the three values is not declared.
     """
     mc = _pick_first(env, _ENV_MC_VERSION)
     loader_raw = _pick_first(env, _ENV_LOADER)
@@ -102,13 +108,7 @@ def _extract_from_env(env: dict[str, str]) -> tuple[str, str, str] | None:
 
 
 def _extract_compose_runtime(compose_path: Path) -> tuple[str, str, str] | None:
-    """Return ``(minecraft_version, loader, loader_version)`` from Compose.
-
-    Best-effort extraction from the ``itzg/minecraft-server`` env-var
-    convention. Returns ``None`` when no minecraft service declares all
-    three values - the caller turns that into exit 3, because
-    Manifest_Schema Section 8 rule 8 requires an affirmative match.
-    """
+    """Return ``(minecraft_version, loader, loader_version)`` from Compose."""
     try:
         raw = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
@@ -131,13 +131,7 @@ def _extract_compose_runtime(compose_path: Path) -> tuple[str, str, str] | None:
 
 
 def _verify_manifest_matches_compose(manifest: Manifest, compose_path: Path) -> None:
-    """Enforce Manifest_Schema Section 2 for ``--release-mode update``.
-
-    ``update`` mode is a same-version update: the manifest MUST describe
-    the runtime that is already deployed. A mismatch - or an inability
-    to affirmatively confirm equivalence - is exit 3 per Manifest_Schema
-    Section 8 rule 8.
-    """
+    """Enforce Manifest_Schema Section 2 for ``--release-mode update``."""
     runtime = _extract_compose_runtime(compose_path)
     if runtime is None:
         raise UpgradeCliError(
@@ -148,7 +142,11 @@ def _verify_manifest_matches_compose(manifest: Manifest, compose_path: Path) -> 
             f"at promote.",
         )
     mc, loader, loader_version = runtime
-    if manifest.minecraft_version != mc or manifest.loader != loader or manifest.loader_version != loader_version:
+    if (
+        manifest.minecraft_version != mc
+        or manifest.loader != loader
+        or manifest.loader_version != loader_version
+    ):
         raise UpgradeCliError(
             3,
             f"--release-mode update manifest/Compose mismatch: "
@@ -174,7 +172,19 @@ def _read_side_overrides_sha256(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as exc:
-        raise UpgradeCliError(3, f"could not read side_overrides.toml at {path}: {exc}") from exc
+        raise UpgradeCliError(
+            3, f"could not read side_overrides.toml at {path}: {exc}"
+        ) from exc
+
+
+def _build_usage_tracker(
+    config_dir: Path, project_root: Path
+) -> usage.UsageTracker | None:
+    """Return a usage tracker if ``[budget]`` is configured, else None."""
+    usage_config = usage.load_usage_config(config_dir, project_root)
+    if usage_config is None:
+        return None
+    return usage.UsageTracker(usage_config)
 
 
 def _load_inputs(
@@ -183,18 +193,15 @@ def _load_inputs(
     release_mode: str,
     env: Mapping[str, str] | None,
     registry: ProviderRegistry | None,
+    transport: HttpTransport | None,
 ) -> tuple[ResolverInputs, str | None]:
     """Load every input the resolver needs.
 
     Returns ``(inputs, effective_compose_sha256)``. The compose hash is
-    ``None`` for ``upgrade`` mode (which has no compose authority) and
-    a real digest for ``update`` mode.
+    ``None`` for ``upgrade`` mode and a real digest for ``update`` mode.
 
     Raises ``UpgradeCliError(3)`` on any failure, including the
     Manifest_Schema Section 2 ``update``-mode equivalence check.
-
-    Compose-file resolution and hashing are delegated to :mod:`._compose` -
-    the single source of truth across all CLI commands.
     """
     manifest_path = project_root / "sync" / "modpack.manifest.toml"
     try:
@@ -202,10 +209,6 @@ def _load_inputs(
     except SchemaError as exc:
         raise UpgradeCliError(3, str(exc)) from exc
 
-    # Manifest_Schema Section 2 / Section 8 rule 8: update mode requires the
-    # manifest to describe the currently-deployed runtime. Compute the compose
-    # SHA-256 here too, so a broken compose aborts before any report
-    # is written (write-order fix).
     effective_compose_sha: str | None = None
     if release_mode == "update":
         compose_path = _compose.resolve_compose_path(config_dir, project_root)
@@ -215,7 +218,9 @@ def _load_inputs(
                 f"--release-mode update requires a Compose file at {compose_path} to verify manifest/Compose equivalence.",
             )
         _verify_manifest_matches_compose(manifest, compose_path)
-        effective_compose_sha = _compose.compute_compose_sha256(config_dir, project_root)
+        effective_compose_sha = _compose.compute_compose_sha256(
+            config_dir, project_root
+        )
 
     try:
         in_house = tuple(load_in_house_filenames(config_dir))
@@ -230,7 +235,9 @@ def _load_inputs(
 
     overrides_path = config_dir / "side_overrides.toml"
     if not overrides_path.is_file():
-        raise UpgradeCliError(3, f"side_overrides.toml is required: {overrides_path}")
+        raise UpgradeCliError(
+            3, f"side_overrides.toml is required: {overrides_path}"
+        )
     try:
         overrides = load_side_overrides(overrides_path)
     except Exception as exc:
@@ -252,7 +259,12 @@ def _load_inputs(
     effective_registry = registry
     if effective_registry is None:
         provider_config = load_provider_config(config_dir, env=env)
-        effective_registry = build_registry(provider_config)
+        usage_tracker = _build_usage_tracker(config_dir, project_root)
+        effective_registry = build_registry(
+            provider_config,
+            transport=transport,
+            usage_tracker=usage_tracker,
+        )
 
     inputs = ResolverInputs(
         manifest=manifest,
@@ -328,29 +340,50 @@ def run(
     release_mode: str,
     env: Mapping[str, str] | None = None,
     registry: ProviderRegistry | None = None,
+    transport: HttpTransport | None = None,
     run_id: str | None = None,
     now: str | None = None,
     state_dir: Path | None = None,
 ) -> int:
-    """Execute ``minecraft-upgrade update --release-mode <mode>``. Returns exit code."""
-    if release_mode not in ("update", "upgrade"):
-        raise UpgradeCliError(2, f"--release-mode must be 'update' or 'upgrade', got {release_mode!r}")
+    """Execute ``minecraft-upgrade update --release-mode <mode>``. Returns exit code.
 
-    inputs, effective_compose_sha = _load_inputs(config_dir, project_root, release_mode, env, registry)
+    ``transport`` is an injection seam for tests. When ``registry`` is
+    supplied, it is used verbatim and ``transport`` is ignored.
+    """
+    if release_mode not in ("update", "upgrade"):
+        raise UpgradeCliError(
+            2, f"--release-mode must be 'update' or 'upgrade', got {release_mode!r}"
+        )
+
     actual_run_id = run_id or str(uuid.uuid4())
     actual_now = now or _now_iso()
 
-    try:
-        report = Resolver(inputs).resolve(run_id=actual_run_id, generated_at_utc=actual_now)
-    except CycleError as exc:
-        raise UpgradeCliError(3, f"dependency cycle detected: {' -> '.join(exc.chain)}") from exc
-    except ProviderError as exc:
-        raise UpgradeCliError(1, str(exc)) from exc
+    with usage.run_context(actual_run_id):
+        inputs, effective_compose_sha = _load_inputs(
+            config_dir, project_root, release_mode, env, registry, transport
+        )
+
+        try:
+            report = Resolver(inputs).resolve(
+                run_id=actual_run_id, generated_at_utc=actual_now
+            )
+        except CycleError as exc:
+            raise UpgradeCliError(
+                3, f"dependency cycle detected: {' -> '.join(exc.chain)}"
+            ) from exc
+        except usage.UsageCapExceeded as exc:
+            raise UpgradeCliError(6, str(exc)) from exc
+        except usage.UsageLogReadError as exc:
+            raise UpgradeCliError(3, str(exc)) from exc
+        except ProviderError as exc:
+            raise UpgradeCliError(1, str(exc)) from exc
 
     report_path = project_root / "www" / "runs" / actual_run_id / "resolution-report.toml"
     report_sha = write_report(report_path, report)
 
-    effective_state_dir = state_dir if state_dir is not None else _resolve_state_dir(config_dir)
+    effective_state_dir = (
+        state_dir if state_dir is not None else _resolve_state_dir(config_dir)
+    )
     state_status = _STATE_BY_REPORT_STATUS[report.status]
     exit_code = _EXIT_BY_REPORT_STATUS[report.status]
 
@@ -367,10 +400,14 @@ def run(
     )
 
     _log_cli.info(f"resolution report: {report_path}")
-    _log_cli.info(f"run state: {effective_state_dir / 'runs' / actual_run_id / 'state.toml'}")
+    _log_cli.info(
+        f"run state: {effective_state_dir / 'runs' / actual_run_id / 'state.toml'}"
+    )
     _log_cli.info(f"status: {report.status}")
     if report.lost or report.cascade:
-        _log_cli.info(f"losses: {len(report.lost)} lost, {len(report.cascade)} cascaded")
+        _log_cli.info(
+            f"losses: {len(report.lost)} lost, {len(report.cascade)} cascaded"
+        )
 
     _print_next_command(state_status, actual_run_id)
     return exit_code
