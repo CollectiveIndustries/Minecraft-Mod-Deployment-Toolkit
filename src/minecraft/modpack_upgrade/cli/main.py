@@ -33,6 +33,7 @@ from minecraft.modpack_upgrade import __version__
 
 from .commands import (
     acknowledge,
+    build_inhouse,
     iterate,
     manifest,
     materialize,
@@ -123,6 +124,31 @@ def _cmd_publish(args: argparse.Namespace, config_dir: Path, project_root: Path)
         project_root=project_root,
         release_id=args.release_id,
         verify_only=args.verify_only,
+    )
+
+
+def _parse_var_overrides(items: list[str]) -> dict[str, str]:
+    """Parse repeated ``--var KEY=VALUE`` tokens into a mapping."""
+    out: dict[str, str] = {}
+    for item in items:
+        key, sep, value = item.partition("=")
+        if not key or not sep:
+            raise UpgradeCliError(2, f"--var must be KEY=VALUE, got {item!r}")
+        out[key] = value
+    return out
+
+
+def _cmd_build_inhouse(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the build-inhouse command (repository-triggered build)."""
+    legacy_revision = getattr(args, "legacy_revision", None)
+    if legacy_revision is not None:
+        _log_cli.warning("build-inhouse: second positional argument is ignored; put the git ref in config.d/build/<name>.yaml under 'ref:'")
+    overrides = _parse_var_overrides(getattr(args, "var", []) or [])
+    return build_inhouse.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        name=args.name,
+        overrides=overrides,
     )
 
 
@@ -243,12 +269,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_publish.set_defaults(func=_cmd_publish)
 
-    # -- stubs (later slices) ----------------------------------------
-    p_build = sub.add_parser("build-inhouse", help="Build an in-house mod JAR")
-    p_build.add_argument("mod", help="Mod slug")
-    p_build.add_argument("revision", help="Git revision to build")
-    p_build.set_defaults(func=_cmd_stub("build-inhouse"))
+    # -- build-inhouse -----------------------------------------------
+    p_build = sub.add_parser(
+        "build-inhouse",
+        help="Clone + build an in-house mod from config.d/build/<name>.yaml",
+    )
+    p_build.add_argument("name", help="Build spec name (config.d/build/<name>.yaml)")
+    p_build.add_argument(
+        "legacy_revision",
+        nargs="?",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    p_build.add_argument(
+        "--var",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override a build variable (repeatable)",
+    )
+    p_build.set_defaults(func=_cmd_build_inhouse)
 
+    # -- stubs (later slices) ----------------------------------------
     p_client = sub.add_parser("build-client", help="Produce candidate client ZIP")
     p_client.set_defaults(func=_cmd_stub("build-client"))
 

@@ -1,29 +1,24 @@
 # docs/Upgrade_System_specifications.md
 
-**Status:** Design of record. Architecture frozen. Slices 1–6 implemented and passing (1436 tests, 91.08% coverage). Slice 7a documentation frozen at rev e. Production readiness requires slices 7b–17, all §20 acceptance tests, and exercising the migration runbook.
+**Status:** Design of record. Architecture frozen at v1.4.0. Slices 1–14 implemented and passing (2421 tests, 92.43% coverage). Slice 15 (Discord bot) and Slice 16 (migration rehearsal) remain before production cutover.
 
-**Supersedes:** v1.3.0
+**Supersedes:** v1.3.1
 
 **Baseline contract:** `Project_Specs.md` v3.0 (`deploy_pack` v2)
 
-**Date:** 2026-10-17
+**Date:** 2026-10-19
 
-**Changes in v1.3.1:**
+**Changes in v1.4.0:**
 
-1. Manifest schema frozen (5 fields): `[minecraft]` + `[policy]`. No per-mod policy.
-2. `resolution_inputs_sha256` added to `[fingerprints]`; `side_policy_sha256` retired.
-3. `[[jar]].dependencies.source` extended with `provider_metadata`; `type` constrained to six values.
-4. Four-command resolver lifecycle: `update` → `acknowledge` → `materialize` → `iterate` (plus `promote`). Explicit state machine.
-5. `--release-mode {update|upgrade}` required CLI flag on `update`; persisted for resume.
-6. Resolution report schema frozen (`docs/Resolution_Report.md`). Report hash binds to Phase B approval.
-7. `expected_hashes` array replaces `expected_sha256`. Provider hashes preserved with algorithms; slip carries locally-verified SHA-256.
-8. Side determination runs at `materialize`; CurseForge always `unknown`; Fabric absent `environment` → `both`; `unknown`/absent `.pw.toml` side is valid through preflight.
-9. In-house mods identified via `config.d/upgrade.toml [in-house].filenames`; fingerprint uses `build_id` or `jar_sha256`; `current_version_id` omitted.
-10. Staging isolation: candidate downloads and `.pw.toml` files staged in run-local directories; `.index/` mutated only by `promote`.
-11. Candidate slip is DEV-local; git-tracked release slip produced by `promote` only.
-12. Exit codes clarified: network = 1; integrity = 3; fail = 4; ask-pause = 6.
+1. **§9 rewritten** — In-house mods are built by **cloning the mod's repository and running its own build script**, not by the upgrade toolchain. The tool never needs to know Forge, NeoForge, or Fabric. This replaces the v1.3.1 §9 which assumed the tool owned the toolchain.
+2. **§12 updated** — Production daemon's deployment orchestration is implemented. Stages 11–19 of §12.4 are wired end-to-end. Journal, lock, pull, health, backup, and recovery all exist as modules.
+3. **§15.1 updated** — `build-inhouse` signature changed from `<mod> <revision>` to `<name> [--var KEY=VALUE ...]`. Git ref comes from the spec file, not the CLI.
+4. **§17 updated** — `config.d/build/<name>.yaml` is a new configuration file class.
+5. **§20 updated** — 34 of 35 acceptance tests covered. Only T11 (approval replay/expiry) remains, blocked on Slice 15.
+6. **§22 updated** — new known limits from Slice 13/14.
+7. **§23.1 updated** — authority table reflects new `config.d/build/` authority and repository-trigger build semantics.
 
-**Retained from v1.3.0:**
+**Retained from v1.3.1:**
 - Artifact authority: prod receives exact tested bytes.
 - Slip `provider`/`project_id`/`version_id` are provenance metadata, not fetch instructions.
 - Promote stages the slip and stops. Human commits, tags, pushes.
@@ -32,8 +27,11 @@
 - `release_mode` (`update` | `upgrade`) governs runtime authority.
 - Canonical hashing pipeline (RFC 8785, NFC, bounded integers, safe `None` normalization).
 - DaemonCore-based production daemon.
+- Four-command resolver lifecycle with explicit state machine.
+- `resolution_inputs_sha256` and `expected_hashes` semantics.
+- In-house identification via `config.d/upgrade.toml [in-house].filenames` — **not** retired in v1.4.0; retirement is deferred to Slice 17+.
 
-**v1.3.1 documentation set:** This document plus three companions constitute the frozen v1.3.1 contract. All four are normative.
+**v1.4.0 documentation set:** This document plus three companions constitute the frozen v1.4.0 contract. All four are normative.
 
 - `docs/Manifest_Schema.md` — manifest format, seed rules, command lifecycle
 - `docs/Resolution_Report.md` — report schema, state machine, acknowledgment
@@ -47,7 +45,7 @@
 
 1. Resolve exact mod versions from upstream providers against a target Minecraft/loader runtime.
 2. Download artifacts once into DEV's warehouse.
-3. Build in-house mods against the candidate runtime.
+3. Build in-house mods by cloning their repositories and running their own build scripts.
 4. Iterate a DEV server against crash logs until the candidate pack stabilizes.
 5. Validate a copy of the production world against the candidate.
 6. Produce a downloadable client pack.
@@ -78,39 +76,40 @@ The system extends `deploy_pack`; it does not replace it. Production deployment 
 ### 3.1 Artifact flow
 
 ```
-Providers (Modrinth, CurseForge)
-        │
-        │ fetch (DEV only)
-        ▼
-DEV warehouse (sync/downloads/)
-        │
-        │ resolve + validate + freeze
-        ▼
-DEV release bundle (www/releases/<release-id>/)
-        │
-        │ rsync over SSH, pull-only, read-only account
-        ▼
-Prod staging/<release>.partial/
-        │
-        │ verify + activate
-        ▼
-Prod releases/<release>/
-        │
-        │ shipping system
-        ▼
-Prod mods/
+Providers (Modrinth, CurseForge)          In-house mod repos (any git host)
+        │                                          │
+        │ fetch (DEV only)                         │ clone + build (DEV only)
+        ▼                                          ▼
+                        DEV warehouse (sync/downloads/)
+                                       │
+                                       │ resolve + validate + freeze
+                                       ▼
+                        DEV release bundle (www/releases/<release-id>/)
+                                       │
+                                       │ rsync over SSH, pull-only, read-only account
+                                       ▼
+                              Prod staging/<release>.partial/
+                                       │
+                                       │ verify + activate
+                                       ▼
+                              Prod releases/<release>/
+                                       │
+                                       │ shipping system
+                                       ▼
+                              Prod mods/
 ```
 
 ### 3.2 Constraints
 
 - **DEV** is the only machine that contacts upstream providers.
-- **Prod** MUST pull release bundles from DEV via rsync over SSH. Prod MUST NOT contact Modrinth, CurseForge, or any other mod provider during any release cycle.
+- **DEV** is the only machine that clones in-house mod repositories and runs their build scripts.
+- **Prod** MUST pull release bundles from DEV via rsync over SSH. Prod MUST NOT contact Modrinth, CurseForge, any in-house mod repository, or any other mod provider during any release cycle.
 - **DEV** MUST NOT push to prod. DEV exposes its publication directory; prod initiates transfer.
 - Prod MUST receive the exact artifact bytes that DEV tested. The bytes prod receives MUST hash to the slip's recorded SHA-256 values.
 - DEV MUST NOT pull mods from prod (prod runs an older runtime during upgrade).
 - Client MUST NOT be a runtime dependency for DEV's resolution loop.
 - Container images MAY be pulled by prod from an explicitly allowlisted OCI registry by immutable digest. This is a separately authorized source class and does not violate the provider constraint.
-- **SMB/NFS are not supported in v1.3.1.** rsync over SSH is the only supported transport.
+- **SMB/NFS are not supported.** rsync over SSH is the only supported transport.
 
 ---
 
@@ -121,6 +120,9 @@ Prod mods/
 ```
 repo/
 ├── config.d/
+│   ├── build/
+│   │   ├── <name>.yaml           # in-house build specifications (NEW v1.4.0)
+│   │   └── ...
 │   ├── deploy_pack.toml
 │   ├── upgrade.toml              # upgrade-system config
 │   ├── side_overrides.toml       # active today; retired after cutover
@@ -148,6 +150,8 @@ repo/
 │   │   ├── v1.0.1.toml
 │   │   └── v1.0.2.toml
 │   └── velocity-plugins/
+├── .build-workspace/              # NEW v1.4.0; transient; kept on failure
+│   └── <name>-<timestamp>/        # in-house mod clone
 ├── www/                            # artifact store (DEV)
 │   ├── runs/<run-id>/              # DEV-run artifacts
 │   │   └── resolution-report.toml  # DEV-local; published for link access
@@ -183,6 +187,14 @@ repo/
 ├── releases/<release>/             # verified immutable bundle
 ├── backups/world/<release>/        # pre-upgrade world backup
 └── active-release                  # current deployment identity
+
+# Prod daemon state
+/var/lib/minecraft-deploy/
+├── idempotency.sqlite
+├── audit.jsonl
+├── daemon.lock                     # deployment lock (single-file, atomic)
+├── operation.jsonl                 # deployment journal (append-only)
+└── state/                          # FileStateStore (DaemonCore)
 ```
 
 ### 4.2 Pointer files
@@ -202,10 +214,9 @@ The `latest` server's Git inputs are **not** recorded in a pointer. `latest` rea
 - `packing_slips/` is git-tracked. Slips and `stable` are text.
 - `www/releases/<release-id>/` is immutable once published.
 - `www/runs/<run-id>/` is DEV-local; not transferred to production.
+- `.build-workspace/` is transient. A successful build removes its clone; a failed build keeps it for inspection.
 - `latest-slip` is DEV-local and not Git-tracked.
 - Candidate slips (`/var/lib/minecraft-upgrade/candidates/<run-id>/packing_slip.toml`) are DEV-local. Only `promote` copies them to `sync/packing_slips/<tag>.toml`.
-<!-- REVIEW-FIX 4: candidate-slip immutability restored as an explicit invariant -->
-<!-- Slice 9 T4 (2026-10-18): promote --release-mode upgrade re-seals the candidate slip once, by design. -->
 - A sealed candidate slip is **immutable between `materialize` and `promote`**. After `materialize` writes `candidates/<run-id>/packing_slip.toml`, no command modifies it in place until `promote` runs. A change to any input between those two commands produces a new run-id and a new slip; the affected command exits 3 with a diagnostic before mutating anything.
 
   `promote --release-mode upgrade` is the **single deliberate exception**. Upgrade-mode releases declare the slip's `[runtime]` as authoritative for the target runtime; `promote` must reconcile the effective Compose file against that runtime before the release can be tagged. Doing so changes the Compose file's working-tree blob hash, which `[inputs.git].compose_tree` records. Reconciliation therefore:
@@ -248,7 +259,7 @@ content_sha256 = "..."                   # canonical body hash (see §5.4)
 
 [meta]
 created_at_utc = "2026-10-12T00:00:00Z"
-resolver_version = "minecraft-upgrade 1.3.1"
+resolver_version = "minecraft-upgrade 1.4.0"
 author = "<operator>"
 
 [runtime]
@@ -348,7 +359,7 @@ config_deletions = []
 protect_patterns = []
 ```
 
-The enum comments are normative. `config_mode ∈ {merge, delete}`. `kubejs_mode = delete` only. `kubejs_mode = "merge"` is not supported in v1.3.1.
+The enum comments are normative. `config_mode ∈ {merge, delete}`. `kubejs_mode = delete` only. `kubejs_mode = "merge"` is not supported.
 
 ### 5.3 Rules
 
@@ -367,8 +378,7 @@ The enum comments are normative. `config_mode ∈ {merge, delete}`. `kubejs_mode
 
    Empty array if none.
 
-<!-- REVIEW-FIX 1: CurseForge numeric relationType → type mapping restored as normative -->
-   **CurseForge `relationType` → `type` mapping.** The CurseForge API returns numeric `relationType` values. The adapter MUST map them as follows:
+   **CurseForge `relationType` → `type` mapping:**
 
    | `relationType` | `type` |
    |---|---|
@@ -450,8 +460,6 @@ Duplicate entries within a set are rejected unless the schema explicitly defines
 | `runtime_sha256` | Canonical JSON of resolved `[runtime]` descriptor |
 | `server_inputs_sha256` | Canonical manifest of server-stage input files |
 | `client_inputs_sha256` | Canonical manifest of client-stage input files |
-
-`side_policy_sha256` from v1.3.0 is retired. Its semantic inputs are covered by `side_overrides` inside `resolution_inputs_sha256`.
 
 Each input manifest contains normalized relative path, file kind, file mode where applicable, byte size, and content SHA-256. Ownership, timestamps, and incidental filesystem metadata are excluded.
 
@@ -548,6 +556,8 @@ The generated file's SHA-256 is recorded as `[[jar]].pw_toml_sha256` in the pack
 
 **`source = "provider_metadata"` edges (CurseForge `Tool` / `Include`) are preserved in the slip but not written to `.pw.toml`** because Prism has no representation for them. The slip carries them for audit; the writer omits them.
 
+**In-house artifacts.** Prior to Slice 17 (deferred), in-house `.pw.toml` files are produced by the in-house mod's own build script (§9). The upgrade tool does not write them. See §9.7 for the deferred retirement of the `[in-house].filenames` config list.
+
 ### 5.8 `SlipContext`
 
 `SlipContext` is the immutable bridge between a verified slip and the existing `deploy_pack` pipeline. It is constructed once, validated at construction, and carried on `DeploymentConfig` and `PreflightPlan`.
@@ -595,7 +605,7 @@ Manifest does not declare mods, versions, sides, or release mode.
 
 **Side determination**: `docs/Side_Determination.md`. Precedence chain: `side_overrides.toml` > JAR metadata > provider metadata > `.pw.toml` side. `side_overrides.toml` is final authority. Malformed `.pw.toml` side fails at parse time; `"unknown"` or absent side is valid.
 
-**In-house identification**: `config.d/upgrade.toml [in-house].filenames`. Filenames in that list are treated as `provider = "in-house"`, bypassing provider query. Retired when slice 13 introduces a `.pw.toml` marker.
+**In-house identification**: `config.d/upgrade.toml [in-house].filenames`. Filenames in that list are treated as `provider = "in-house"`, bypassing provider query. Retirement deferred (§9.7).
 
 ---
 
@@ -728,7 +738,7 @@ Git object IDs are recorded using their actual object format. The registry entry
 - One Minecraft container for the resolution loop.
 - Velocity proxy available for integration stage.
 - `latest` integration container (separate from resolution loop).
-- Discord bot as operator interface.
+- Discord bot as operator interface (Slice 15).
 - Upgrade controller owns candidate state, artifact preparation, container lifecycle, and publication.
 
 ### 8.2 Phase A — four-command lifecycle
@@ -736,6 +746,10 @@ Git object IDs are recorded using their actual object format. The registry entry
 Phase A is split across four commands. Each is invoked explicitly by the operator; each exits and prints the next command. The pipeline is:
 
 ```
+build-inhouse <name>         (optional, before update)
+    → clone mod's repo, run its build script, stage artifacts
+    → warehouse now has the in-house jar and its pw.toml
+
 update --release-mode <mode>
     → resolve versions
     → write resolution report (provisional sides)
@@ -851,7 +865,6 @@ minecraft-upgrade promote <tag>
    ```
 7. STOP. Human runs the git commands and updates `stable`.
 
-<!-- REVIEW-FIX 5: <tag> ↔ <release_id> equivalence stated -->
 The `<tag>` argument becomes the slip's `release_id` and the publication identifier passed to `minecraft-upgrade publish <release-id>`. The three names (`<tag>`, slip `release_id`, `<release-id>` at publish) refer to the same value.
 
 After tag push, human updates `stable`:
@@ -900,45 +913,204 @@ Minimal-config testing and testing with real configs/KubeJS/world data are separ
 
 ## 9. In-House Mod Build Pipeline
 
-### 9.1 Trigger
+### 9.1 Purpose
 
-Explicit Discord command. No auto-build on push.
+In-house mods are built by **cloning the mod's repository and running its own build script**. The upgrade toolchain does not own build logic, gradle configuration, toolchain images, or platform-specific knowledge.
 
+The rationale is platform-agnosticism. A mod team chooses Forge, NeoForge, Fabric, Quilt, or a mix. Each mod carries its own build pipeline (gradle wrapper, `build.gradle`, toolchain pins, dependency repositories) in its own repository. The upgrade system's job is to **clone, check out, run, and stage**. That is all.
+
+**What the tool owns:**
+
+- The build specification file (`config.d/build/<name>.yaml`).
+- Variable resolution against the manifest and CLI overrides.
+- The clone workspace (`.build-workspace/<name>-<timestamp>/`).
+- Artifact staging to the warehouse.
+
+**What the mod's repository owns:**
+
+- Build scripts (`build-local.sh`, `gradlew`, `build.gradle`, etc.).
+- Toolchain pins (`gradle.properties`, `gradle/wrapper/gradle-wrapper.properties`).
+- The `.pw.toml` output (the mod's build script produces it).
+- Platform choice (Forge, NeoForge, Fabric, Quilt).
+
+**What the tool explicitly does NOT do (removed from v1.3.1 §9):**
+
+- Does not know or care what Minecraft loader the mod targets.
+- Does not provide a toolchain image.
+- Does not write `.pw.toml` for in-house mods (the mod's build script does).
+- Does not add `[[jar]]` entries to the candidate slip directly (the operator marks the built artifact as in-house; see §9.7).
+- Does not register a build record in a separate store (the slip's `build_id`, `source_repo`, and `source_commit` fields carry that; §5.2).
+
+### 9.2 `config.d/build/<name>.yaml` schema
+
+Each in-house mod has a build spec at `config.d/build/<name>.yaml`. The `name` (filename stem) is the mod's build-spec identifier.
+
+```yaml
+# config.d/build/createpollutioncleanup.yaml
+
+# Optional. Variables available for ${VAR} substitution in every
+# field below. Manifest values (${minecraft_version}, ${loader},
+# ${loader_version}) are always available and can be shadowed here.
+variables:
+  mod_version: "0.1.2-alpha"
+  java_home: "/usr/lib/jvm/jdk-17"
+
+# Required. Any git URL: HTTPS, SSH, local path.
+repository: "https://github.com/example/CPC.git"
+
+# Required. Branch, tag, or commit SHA. Substituted before clone.
+ref: "v${mod_version}"
+
+# Required. Executable on the DEV host's PATH.
+entrypoint: "bash"
+
+# Required. Argument passed to entrypoint. Path relative to
+# working_dir (unless absolute).
+script: "build-local.sh"
+
+# Optional. Additional CLI arguments appended to entrypoint's argv.
+args: []
+
+# Optional. Environment variables merged on top of the parent env.
+env:
+  JAVA_HOME: "${java_home}"
+
+# Optional. Script timeout in seconds. Default 1800.
+timeout_seconds: 1800
+
+# Optional. Working directory (relative to clone root). Default ".".
+working_dir: "."
+
+# Optional. Shallow-clone depth. Default 0 (full clone). When > 0,
+# ref MUST be a branch or tag name (not a commit SHA).
+depth: 0
+
+# Required. Each pattern must match exactly one file after the build.
+# Destination is auto-detected:
+#   *.pw.toml   -> sync/downloads/.index/
+#   anything    -> sync/downloads/
+# Set `dest:` to override (project-root-relative, or absolute).
+artifacts:
+  - path: "build/libs/createpollutioncleanup-*.jar"
+  - path: "build/.index/createpollutioncleanup.pw.toml"
 ```
-/upgrade build-inhouse <mod> <revision>
-```
 
-### 9.2 Flow
+Field rules:
 
-1. Resolve source revision to immutable commit SHA.
-2. Clean isolated workspace.
-3. Build with candidate's target Minecraft/loader runtime and recorded toolchain.
-4. Hash resulting JAR.
-5. Publish to `www/artifacts/in-house/<slug>/<build-id>/<file>.jar`.
-6. Register as in-house artifact (CAS backing, web view).
-7. Add to candidate slip as a `[[jar]]` entry with `provider = "in-house"`.
-8. Stage into `sync/downloads/` for release bundle inclusion.
-9. Emit the in-house `.pw.toml` per §5.7 with no provider update block.
+| Field | Required | Type | Notes |
+|---|---|---|---|
+| `variables` | No | mapping | String values; merged with defaults and overrides per §9.3. |
+| `repository` | Yes | string | Non-empty. Any git URL form. |
+| `ref` | Yes | string | Non-empty. Branch, tag, or commit SHA. |
+| `entrypoint` | Yes | string | Non-empty. Must be on PATH or absolute. |
+| `script` | Yes | string | Non-empty. Relative to `working_dir`. |
+| `args` | No | list of strings | Empty by default. |
+| `env` | No | mapping | String values. Merged over parent env. |
+| `timeout_seconds` | No | float > 0 | Default 1800. |
+| `working_dir` | No | string | Default `"."`. Must exist in the clone. |
+| `depth` | No | int ≥ 0 | Default 0. When > 0, `--branch <ref>` is used at clone time, so `ref` must be a branch or tag. |
+| `artifacts` | Yes | list | Non-empty. Each entry is a string (short form) or `{path, dest}` (long form). `dest` optional. |
 
-### 9.3 Build record
+An artifact entry's `path` is a glob evaluated by Python's `pathlib.Path.glob()`. It MUST match exactly one file after the build completes. Zero matches → failure with diagnostic naming the pattern. Multiple matches → failure naming every candidate. Paths containing `..` are rejected. Matched paths that resolve outside the clone directory (via symlink) are rejected.
 
-Source repository, immutable commit SHA, toolchain identity, target runtime, outcome, artifact SHA-256, dependency metadata.
+### 9.3 Variable resolution
 
-### 9.4 Rule
+Precedence (lowest to highest):
 
-Compilation MUST NOT be treated as compatibility approval. The in-house JAR MUST pass the same validation as provider artifacts.
+1. **`defaults`** — the caller's contribution, typically manifest values:
+   - `minecraft_version`, `loader`, `loader_version` from `sync/modpack.manifest.toml`
+   - Empty if the manifest is missing or invalid (warning logged, not error)
+2. **`spec.variables`** — the YAML spec's `variables:` block.
+3. **`overrides`** — `--var KEY=VALUE` pairs from the CLI.
 
-### 9.5 In-house identification (transitional)
+Substitution applies to: `repository`, `ref`, `script`, every element of `args`, every value in `env`, every artifact's `path` and `dest`, and `working_dir`. `entrypoint` is NOT substituted — it's expected to be a bare binary name on `PATH` or an absolute path, and shell-style substitution in an executable name is a footgun.
 
-Before slice 13, in-house artifacts are identified via `config.d/upgrade.toml [in-house].filenames`. Filenames in that list are treated as `provider = "in-house"`, bypass provider query, and preserve their current version. The sorted filename list participates in `resolution_inputs_sha256` (§5.4.1).
+Only `${VAR}` where `VAR` matches `[A-Za-z_][A-Za-z0-9_]*` is substituted. Literal `{...}` (for example, `build-{date}.sh`) is left alone, so brace syntax in shell snippets or brace-expansion patterns survives.
 
-If `[in-house]` is present, `filenames` MUST be present (may be `[]`). A missing `[in-house]` table is equivalent to `filenames = []`.
+An undefined `${VAR}` after merge → error with exit code 3. The error names the variable and the field where it appeared, so the operator sees exactly what to fix.
 
-Slice 13 introduces a `.pw.toml` writer-level marker and retires the config list.
+### 9.4 Runner behavior
 
-### 9.6 Unified artifact contract
+The runner (`modpack_upgrade.build.runner`) implements the following steps. Every failure is reported as a `BuildOutcome` with `success=False`; the runner never raises on operational failure.
 
-An in-house mod and a Modrinth mod are both JAR artifacts. They follow the same packing, validation, publication, and deployment contract. The `provider` field records origin; the deployment pipeline does not branch on it.
+1. **Create clone directory.** `tempfile.mkdtemp(prefix="<name>-", dir=".build-workspace/")`. Unique per call; safe for concurrent builds (though not currently used concurrently).
+
+2. **Clone.** `git clone [--depth N --branch REF] <repository> <clone_dir>`.
+   - `--depth N` only when `spec.depth > 0`, and only with `--branch REF` (git rejects `--depth` with a commit SHA).
+   - Timeout: 300 seconds.
+   - Errors: non-zero exit names the stderr excerpt; timeout and missing-git-binary are named explicitly.
+
+3. **Checkout.** `git checkout --detach <ref>` in the clone.
+   - Skipped when `depth > 0` (the shallow clone already selected the ref).
+   - Timeout: 60 seconds.
+
+4. **Run script.** `[entrypoint, script, *args]` executed via `subprocess.run` with `cwd=<clone_dir>/<working_dir>` and `env = {**os.environ, **spec.env}`.
+   - Timeout: `spec.timeout_seconds`.
+   - `FileNotFoundError` → "entrypoint not found on PATH".
+   - `TimeoutExpired` → "script timed out after N s".
+   - Non-zero exit → "script exited with N", with stdout and stderr excerpts captured (last 2000 chars).
+
+5. **Expand artifacts.** Each `path` glob is expanded under `clone_dir`. Rules per §9.2.
+   - `..` in the pattern → rejected before matching.
+   - Zero matches → named failure.
+   - Multiple matches → named failure listing every candidate.
+   - Matched path resolves outside the clone directory → named failure.
+
+6. **Stage artifacts.** Each matched artifact is copied to its destination:
+   - `*.pw.toml` → `sync/downloads/.index/<name>`
+   - everything else → `sync/downloads/<name>`
+   - `dest` override → `<project_root>/<dest>` (or absolute `dest` verbatim)
+
+7. **Cleanup.** On success: `shutil.rmtree(clone_dir)`. On failure: clone is kept at `<clone_dir>` for operator inspection; the path is named in the failure outcome and in the CLI diagnostic.
+
+### 9.5 Failure handling
+
+A build failure produces:
+
+- A `BuildOutcome` with `success=False`, `failure_message`, and both stdout/stderr excerpts.
+- A CLI diagnostic via `minecraft-upgrade build-inhouse` that prints:
+  - `status: failed (<message>)`
+  - `clone kept for inspection: <path>`
+  - `stderr (tail):` followed by up to the last 2000 characters of stderr.
+- Process exit code 1.
+
+A build-spec validation failure (missing required field, malformed YAML, invalid `timeout_seconds`, undefined `${VAR}`) produces exit code 3 with a targeted diagnostic.
+
+A build that stages successfully does NOT write to `[in-house].filenames`. The operator must do so manually (see §9.7). The CLI prints a hint naming every staged jar so the operator can copy the filenames directly.
+
+### 9.6 Security posture
+
+The build script runs with the DEV operator's privileges in a fresh clone of the mod's repository. This is a **fully trusted execution model**: the mod team's code is trusted to build itself.
+
+The upgrade tool's responsibility ends at "run the script the mod declared." It does not sandbox the build, does not restrict the script's filesystem access, does not restrict network access, and does not verify that the produced artifact is "safe." Those are the operator's responsibility before adding the mod to the manifest and running `build-inhouse`.
+
+The `artifacts:` glob expansion rejects:
+
+- Patterns containing `..` (path traversal in the pattern).
+- Matches that resolve outside the clone directory (symlinks pointing elsewhere).
+
+This is defense-in-depth against accidental misconfiguration, not a security boundary against a malicious build script. A malicious script can write anywhere the operator's account can write.
+
+### 9.7 Deferred: `.pw.toml` in-house marker and `[in-house].filenames` retirement
+
+The v1.3.1 §9.5 assumed Slice 13 would introduce a `.pw.toml` writer marker and retire the `[in-house].filenames` config list. **That did not happen in Slice 14.** The transitional mechanism remains in force.
+
+**Current behavior (v1.4.0):**
+
+- The mod's own build script produces its `.pw.toml`. The `[update.*]` block, if any, comes from the mod's script.
+- The operator adds the built jar's filename to `config.d/upgrade.toml [in-house].filenames`.
+- The resolver classifies matching filenames as `provider = "in-house"` regardless of the `.pw.toml`'s provider block.
+- Omitting the jar from `[in-house].filenames` leaves the resolver to classify it from the `.pw.toml`. If the `.pw.toml` has no `[update.*]` block, the resolver classifies it as `"unknown"` and reports it in `[[lost]]` (§Spec A5.1). This is the operator error the hint in §9.4 step 4 is designed to prevent.
+
+**Retirement (Slice 17+):**
+
+The retirement requires:
+
+1. `.pw.toml` writer-level marker for in-house identity (a new top-level field, spec-frozen).
+2. `seed.py` and `inhouse.py` changes to read the marker.
+3. Migration of existing production configs.
+
+Until all three land, `[in-house].filenames` remains the authority. The v1.4.0 docs do not schedule the retirement.
 
 ---
 
@@ -1009,10 +1181,12 @@ A separate, verified pre-upgrade world backup is required before any `release_mo
 
 - Created on prod before stopping services.
 - Stored at `/srv/minecraft/backups/world/<release>/`.
-- Verified against a canonical file manifest.
+- Verified against a canonical file manifest (`backup-manifest.json` in the backup directory, containing `path`, `size_bytes`, `mode`, `sha256` per file).
 - Retained per retention policy.
 
 The DEV migration-test snapshot and the production rollback backup are distinct artifacts.
+
+Backup creation is implemented by the production daemon (§12.4 stage 13) via `minecraft.deploy_pack.daemon.backup.create_backup`. Restoration is implemented by `minecraft.deploy_pack.daemon.recovery.restore_world`, invoked automatically when a deployment fails after the stop phase (§12.4, §12.10).
 
 ---
 
@@ -1030,7 +1204,7 @@ The DEV migration-test snapshot and the production rollback backup are distinct 
 | Command | Purpose |
 |---|---|
 | `/upgrade status` | Current run state |
-| `/upgrade build-inhouse <mod> <revision>` | Trigger in-house build |
+| `/upgrade build-inhouse <name>` | Trigger in-house build from `config.d/build/<name>.yaml` |
 | `/upgrade migrate-world [survival\|creative]` | Trigger world snapshot |
 | `/upgrade approve` | Approve current prompt |
 | `/upgrade reject [reason]` | Reject current prompt |
@@ -1074,13 +1248,13 @@ Notifications MUST include a link to `www/runs/<run-id>/` and to the specific `w
 
 Privileged production control plane. Owns verification, staging, deployment, health checks, and controlled recovery.
 
-**The daemon verifies the release and the transfer. It does not resolve replacement mod versions. It does not contact upstream mod providers.**
+**The daemon verifies the release and the transfer. It does not resolve replacement mod versions. It does not contact upstream mod providers. It does not clone in-house mod repositories.**
 
 ### 12.2 Exposure
 
 - Tailscale-only HTTP endpoint.
 - Authenticated, replay-protected, idempotent.
-- Only one production deployment may run at a time.
+- Only one production deployment may run at a time (enforced by the deployment lock, §12.6).
 - A durable operation journal records each stage.
 - A rollback journal preserves prior managed file state.
 
@@ -1094,44 +1268,46 @@ MUST refuse: branch names, arbitrary commands, ambiguous pokes.
 
 ### 12.4 Lifecycle — pull-based
 
-```
-Publication phase (DEV):
-  P1. Operator runs `minecraft-upgrade publish <release-id>`.
-  P2. DEV verifies preconditions (§6.3).
-  P3. DEV writes the immutable bundle.
-  P4. DEV signs the bundle manifest and records the registry entry.
+The publication phase (steps 1–10) and deployment phase (steps 11–19) are distinct operations with separate authorization. The publication phase runs on prod, but publishes a release that was prepared on DEV. The deployment phase runs on prod and is triggered by an operator hitting `/deploy`.
 
-Deployment phase (PROD):
-  1. Receive deploy request with release ID or pointer.
-  2. Resolve pointer (if applicable) to a release ID and record the
-     channel-commit receipt.
-  3. Fetch the release registry and verify the chain against the pinned
-     trust anchor and the last accepted head.
-  4. Verify the release tag signature, tag object identity, commit,
-     slip hash, and bundle manifest.
-  5. Pull the release bundle from DEV via rsync over SSH into
+**Publication phase (PROD, triggered by `minecraft-upgrade publish` on DEV then pull on PROD):**
+
+```
+P1.  DEV: operator runs `minecraft-upgrade publish <release-id>`.
+P2.  DEV: verifies preconditions (§6.3).
+P3.  DEV: writes the immutable bundle.
+P4.  DEV: signs the bundle manifest and records the registry entry.
+P5.  PROD: pulls the release bundle from DEV via rsync over SSH into
      staging/<release>.partial/.
-  6. Verify the bundle manifest and every file hash.
-  7. Move the verified bundle to releases/<release>/.
-  8. Verify slip.runtime against effective Compose (per release_mode).
-  9. Verify slip [inputs.git] tree hashes against the working tree
+P6.  PROD: verifies the bundle manifest and every file hash.
+P7.  PROD: atomically renames staging/<release>.partial/ -> releases/<release>/.
+P8.  PROD: verifies slip.runtime against effective Compose (per release_mode).
+P9.  PROD: verifies slip [inputs.git] tree hashes against the working tree
      (release mode only).
- 10. Record publication success in the deployment ledger.
-     ─── separate authorization ───
- 11. Acquire the deployment lock.
- 12. Pre-stage runtime and artifacts.
- 13. Stop services consuming the shared mod directory.
- 14. Apply staged changes using the shipping transaction (§13.2).
- 15. Verify the resulting inventory against the selected slip.
- 16. Start services.
- 17. Run post-deployment health checks.
- 18. On success: record the active release; release the lock.
- 19. On failure: enter recovery (rollback or halt).
+P10. PROD: records publication success in the deployment ledger.
 ```
 
-Steps 1–10 are the **publication** phase on prod. Steps 11–19 are the **deployment** phase. Publication and deployment remain distinct operations with separate authorization.
+Steps P1–P4 are implemented by `minecraft-upgrade publish` (§15.1.8). Steps P5–P10 are implemented by `daemon.pull.pull_release` and the precondition checks in `daemon.deploy._run_stages`, exercised by `/deploy`.
 
-Slip modes attach a `SlipContext` (§5.8) to `DeploymentConfig` and `PreflightPlan`. Scope modules take their source sets from the context, not from `deps.resolve_mod_sources` or `overrides.py`.
+**Deployment phase (PROD, triggered by `/deploy`):**
+
+```
+11.  Acquire the deployment lock.
+12.  Pull the release bundle (if not already present).
+13.  Create pre-upgrade world backup (for release_mode="upgrade" only).
+14.  Load the release slip.
+15.  Stop services consuming the shared mod directory.
+16.  Ship artifacts via the shipping transaction (§13.2).
+17.  Start services.
+18.  Run post-start health checks.
+19.  On success: journal COMPLETE, release the lock, record the active release.
+     On failure after the stop phase: attempt recovery (§12.10), attempt
+     to start services, journal the terminal stage, release the lock.
+```
+
+Steps 11–19 are implemented by `daemon.deploy.deploy` and executed as nine functions of shape `_stage_<name>`. Every stage transition is journaled with the stage name, the run ID, the release ID, and a free-form detail string.
+
+**Refusal before start.** Before acquiring the lock, the daemon reads the operation journal (§12.7). If any prior run's last-recorded stage is not terminal, the deployment is refused with an `ActivationFailedError` (HTTP 500 / code 21). The operator must resolve the unresolved run before any new deployment can proceed. This is the "halt and require operator intervention" contract.
 
 ### 12.5 Pull transport
 
@@ -1143,18 +1319,40 @@ Slip modes attach a `SlipContext` (§5.8) to `DeploymentConfig` and `PreflightPl
 - DEV's raw `sync/downloads/` warehouse is not exposed to that account.
 - Prod cannot upload, delete, rename, or modify publication files.
 
+The prod-side implementation is `minecraft.deploy_pack.daemon.pull.pull_release`. It uses an injectable `RsyncTransport` callable for the subprocess invocation. Verification against `bundle-manifest.json` covers: every listed file exists with matching size and SHA-256; no extra files exist except `bundle-manifest.json` and `bundle-manifest.sig`, which are exempt (they cannot honestly appear in the manifest).
+
 ### 12.6 Deployment lock
 
-- A single lock file or database row enforces one concurrent deployment.
-- The lock is acquired before step 11 and released after step 18.
-- A stale lock from a crashed daemon MUST be detectable and MUST require operator confirmation before override.
-- Concurrent deployment requests are rejected or queued; they MUST NOT corrupt state.
+- A single lock file enforces one concurrent deployment.
+- Acquisition is atomic via `mkstemp`-then-`os.link`. Two concurrent attempts (from separate threads or processes) cannot both succeed; exactly one wins.
+- The lock is acquired before stage 11 and released after stage 19 (in a `finally` block, so it is released on any exit path).
+- A stale lock (mtime older than `stale_after_seconds`, default 3600) requires operator confirmation before override. The daemon refuses to auto-release stale locks.
+- A malformed lock file is treated as stale.
+- Concurrent deployment requests are rejected with `DeploymentLockHeldError` (HTTP 409 / code 25).
 
 ### 12.7 Operation journal
 
-- Every stage transition is recorded in a durable journal.
-- On restart, the daemon reads the journal and either resumes safely or halts for operator intervention.
-- An interrupted or ambiguous recovery MUST halt safely; it MUST NOT guess.
+- Every stage transition is recorded in a durable, append-only JSONL journal at `[daemon].journal_path`.
+- Each line is a `JournalRecord`: `{timestamp_utc, run_id, release_id, stage, detail}`.
+- Every write is followed by `os.fsync`. The journal is written a dozen times per deployment, not thousands; durability is the point.
+- Malformed lines are logged as warnings and skipped (defensive against partial writes after a crash). Blank lines are ignored.
+- On daemon startup or before any new deployment, `unresolved_runs()` returns the run IDs whose last-recorded stage is not terminal (COMPLETE, FAILED, RECOVERY_COMPLETED, RECOVERY_FAILED).
+- An unresolved run blocks all new deployments (see §12.4 refusal-before-start).
+
+Stage vocabulary (wire format; see `minecraft.deploy_pack.daemon.journal.Stage`):
+
+```
+pull_started          pull_completed
+backup_started        backup_completed
+lock_acquired
+ship_started          ship_completed          ship_failed
+services_stopped      services_started
+health_check_started  health_check_passed     health_check_failed
+recovery_started      recovery_completed      recovery_failed
+complete              failed
+```
+
+An interrupted or ambiguous recovery MUST halt safely; it MUST NOT guess.
 
 ### 12.8 Runtime staging
 
@@ -1166,40 +1364,51 @@ Slip modes attach a `SlipContext` (§5.8) to `DeploymentConfig` and `PreflightPl
 
 ### 12.9 Health checks
 
-The daemon performs health checks for each targeted service:
+The daemon performs health checks for each targeted service via `minecraft.deploy_pack.daemon.health.run_health_checks`. Each container's checks are:
 
-- Expected container is running.
-- Startup-completion log sentinel observed within the configured timeout (default 600 seconds).
-- No unexpected container restart during the validation window.
-- Authenticated local RCON `list` command succeeds three times, 15 seconds apart.
-- No configured fatal log condition appears during the health window.
-- Where Velocity is part of the release, a separate proxy-to-backend connection test must succeed.
+1. Container is running.
+2. Startup-completion log sentinel observed within `timeout_seconds` (default 600). The sentinel is `"Done ("` — the vanilla Minecraft convention.
+3. No unexpected restart during the health window (baseline captured at the start of the health check).
+4. RCON `list` succeeds three times, 15 seconds apart. A response on the first attempt that returns `(False, ...)` is retried at the poll interval until the overall timeout is reached.
+5. No configured fatal log marker appears in the recent logs.
 
-RCON is enabled only on the internal Docker network; it is not published to the host or public network.
+Every check runs against an injectable `HealthProbe`. Fatal markers default to `("---- Minecraft Crash Report ----", "Exception in thread", "[FATAL]", "UnsupportedClassVersionError")`. Additional fatal markers can be configured per spec via `HealthCheckSpec.fatal_markers`.
+
+The startup-sentinel and RCON-list waits both check for fatal markers on every poll, so a container that crashes before reaching the sentinel or during the RCON window is reported with the specific marker rather than a generic timeout. This is the diagnosis operators need; a container that fails with "sentinel never appeared" without the crash signature is worse than useless.
+
+Failure of any check produces a `ContainerHealthResult` with `passed=False` and one or more failure reasons. Aggregate result reports the full set so a post-mortem can see every failure at once.
+
+RCON is enabled only on the internal Docker network; it is not published to the host or public network. The health probe consumes pre-resolved `RconTransport` objects produced by `docker_runtime.select_rcon_transport`, exactly as the interactive CLI does.
 
 ### 12.10 Recovery behavior
 
-If a health check fails:
+If a deployment fails **after the stop phase** (stages 15–18: ship, start, health), the daemon attempts recovery:
 
-- The daemon stops the affected service from accepting player traffic.
-- Preserves logs and the failed deployment receipt.
-- Attempts recovery only if it can prove the required prior artifacts and world backup exist.
+1. **File restore (if inputs exist).** If a prior active release is recorded in `[daemon].state_dir/active-release`, restore the prior mods via `shipping.ship` against the prior bundle. If this was an `upgrade` deployment, restore the world from `backups/world/<release>/` after verifying the backup against its manifest.
+
+   The two restores are attempted independently: a failure in the world restore does not prevent the mods restore from running, and vice versa. The operator sees the full set of failures.
+
+2. **Start services.** Every container the deployment stopped is started. A failure to start any container escalates to a `RecoveryFailedError` (HTTP 500 / code 24), regardless of whether the file restore succeeded.
+
+3. **Journal terminal stage.** Recovery journals `RECOVERY_STARTED`, then `RECOVERY_COMPLETED` or `RECOVERY_FAILED`. The overall deployment journals `FAILED` with the original failing stage named in the detail.
+
+If the deployment fails **before the stop phase** (stages 11–14: lock, pull, backup, slip load), no files were touched, so no file recovery is attempted. Services are not started (they were never stopped). The failure is journaled as `FAILED`, the lock is released, and the outcome carries the failing stage and its error code.
 
 For a same-runtime update:
 
 - Restore the previous approved artifact/config/KubeJS state.
-- Rerun health checks.
+- Rerun health checks (deferred; the current implementation returns the failure without re-checking).
 
 For a runtime/world-format upgrade:
 
 - Restore the pre-upgrade world backup.
 - Restore the previous runtime.
 - Restore the previous artifacts.
-- Rerun health checks.
+- Rerun health checks (deferred).
 
-If the backup is missing, corrupt, or cannot be proven compatible with the rollback plan, the daemon halts and requires operator intervention.
+If the backup is missing, corrupt, or cannot be proven compatible with the rollback plan, the daemon halts (recovery is refused) and requires operator intervention. The operator must resolve the ambiguity before any new deployment can proceed (which the journal's unresolved-run check enforces).
 
-The daemon records the failure and recovery outcome, and sends a notification to the configured Discord operations channel and local system journal.
+The daemon records the failure and recovery outcome in the journal and in the audit log. The failure notification to the configured Discord operations channel is deferred to Slice 15.
 
 ### 12.11 Rollback
 
@@ -1210,17 +1419,20 @@ The daemon records the failure and recovery outcome, and sends a notification to
 
 ### 12.12 Daemon API
 
-The daemon API MUST be specified before implementation. At minimum it defines:
+The HTTP admin plugin (`minecraft.deploy_pack.daemon.plugins.http.HttpAdminPlugin`) exposes:
 
-- Endpoints and HTTP methods.
-- Request and response schemas.
-- Authentication (Tailscale identity plus a shared secret or mTLS).
-- Idempotency key semantics.
-- Replay protection.
-- Error codes and error bodies.
-- Status endpoint.
+| Method | Path | Purpose | Auth | Idempotency |
+|---|---|---|---|---|
+| GET | `/status` | Daemon status (health + Minecraft-specific fields). | Yes | — |
+| POST | `/verify` | Verify a release without side effects. | Yes | `Idempotency-Key` required |
+| POST | `/publish` | Verify a release and record a publication receipt. | Yes | `Idempotency-Key` required |
+| POST | `/deploy` | Verify then dispatch to the deployment orchestrator. | Yes | `Idempotency-Key` required |
 
-The API is an implementation deliverable with acceptance tests T15 and T16.
+Authentication is `CombinedAuth(TailscaleAuth, BearerAuth)`. The Tailscale layer restricts source IPs to the configured CIDRs and records the `Tailscale-User-Login` header principal when present. The bearer layer requires an `Authorization: Bearer <token>` header whose token matches the env var named by `[daemon].bearer_token_env`. Both layers must pass.
+
+Error responses use `ErrorResponse { code, message, detail }` with HTTP status derived from the error class (§16.3). All `MinecraftDaemonError` subclasses are caught by the plugin's exception handler; all other exceptions fall through to FastAPI's default 500 handling (intentional — framework errors should surface with their real messages, not be reformatted as 409/26).
+
+`Idempotency-Key` is required on every POST. A reused key with a different request body raises `IdempotencyConflictError` (HTTP 409 / code 27). A reused key with the same body returns the cached response.
 
 ---
 
@@ -1261,7 +1473,7 @@ Steps 3–8 are implemented as a logically atomic transaction by `modpack_upgrad
 - Verifies the resulting inventory against the desired set plus any protected files retained at their pre-transaction hashes.
 - On failure, walks the journal backwards and restores the pre-transaction inventory.
 
-The transaction does not stop or start services; the caller wraps it in lifecycle phases (§12.4 steps 13 and 16).
+The transaction does not stop or start services; the caller wraps it in lifecycle phases (either `deploy_pack`'s own hooks, or the daemon's `ServiceControl`, or the daemon's `_run_stages`).
 
 ### 13.3 Same code, different targets
 
@@ -1319,7 +1531,7 @@ Protection governs removal only. A protected file that also appears in the sourc
 Prod MUST function without:
 
 - Provider API credentials.
-- Network access to Modrinth, CurseForge, or any other mod provider.
+- Network access to Modrinth, CurseForge, any in-house mod repository, or any other mod provider.
 - Any configuration referencing provider endpoints for fetching.
 
 The only upstream mod-artifact source for prod is DEV's release bundle.
@@ -1452,7 +1664,7 @@ Entry point: `minecraft-upgrade`.
 | `acknowledge <run-id>` | Verify + record loss acceptance |
 | `materialize --run-id <run-id>` | Verify + download + seal slip |
 | `iterate --run-id <run-id>` | Boot finalized candidate |
-| `build-inhouse <mod> <rev>` | Build in-house JAR |
+| `build-inhouse <name> [--var KEY=VALUE ...]` | Clone + run + stage an in-house build |
 | `build-client` | Produce candidate client ZIP |
 | `snapshot-world [survival\|creative]` | rsync prod → DEV |
 | `validate migration` | Test snapshot against candidate |
@@ -1527,7 +1739,6 @@ minecraft-upgrade materialize --run-id <run-id>
 4. For each `[[resolved]]`:
    - In-house: source from warehouse; verify `jar_sha256` against `[[seed]]`; verify `expected_hashes` if present.
    - External: download to staging; verify every `expected_hashes[]`; compute SHA-256 for slip.
-<!-- REVIEW-FIX 3: collect-then-fail restored for unknown sides -->
 5. For each resolved artifact:
    - Copy from staging to `sync/downloads/<filename>`. Collision handling per §15.1.5.
    - Resolve final side via Side_Determination chain. If `unknown`, **record and continue** (do not fail yet).
@@ -1557,7 +1768,6 @@ minecraft-upgrade iterate --run-id <run-id>
 1. Load `state.toml`. Verify `status == "materialized"`.
 2. Load slip from `candidates/<run-id>/packing_slip.toml`.
 3. Enter boot loop (§8.2.1 caps).
-<!-- REVIEW-FIX 2: pause/notify behavior on ambiguity or cap exhaustion restored -->
 4. On classifier ambiguity or cap exhaustion: update `state.status` to `failed` (leaving `state.reason = "ambiguous_failure"` or `"cap_exhausted"` for operator diagnosis), leave the run directory in place under `www/runs/<run-id>/`, and post the Discord notification with the run link per §11.5. The operator inspects and either extends caps manually or abandons the candidate.
 
 #### 15.1.7 `promote` contract
@@ -1573,6 +1783,26 @@ minecraft-upgrade promote <tag>
 5. `git add sync/packing_slips/<tag>.toml sync/downloads/.index/` and, if changed, `docker-compose.yml`.
 6. Print exact commit/tag/push instructions.
 7. STOP.
+
+#### 15.1.8 `build-inhouse` contract
+
+```
+minecraft-upgrade build-inhouse <name> [--var KEY=VALUE ...] [--config-dir PATH]
+```
+
+1. Read `config.d/build/<name>.yaml`. Validate against §9.2.
+2. Read the manifest for default variables (`minecraft_version`, `loader`, `loader_version`). Missing or invalid manifest is a warning; only variables that appear in the spec need to resolve.
+3. Merge variables: defaults < YAML `variables:` < `--var` overrides. Substitute every `${VAR}` in the spec's string fields (§9.3). Undefined `${VAR}` → exit 3.
+4. Clone the repository into `.build-workspace/<name>-<timestamp>/` at `ref`. Missing repository, missing ref, or git failure → exit 1.
+5. Run `[entrypoint, script, *args]` in `working_dir` with merged `env`. Timeout `timeout_seconds`. Non-zero exit → exit 1 with stdout/stderr tails.
+6. Expand every artifact pattern under the clone root. Zero or multiple matches → exit 1 naming candidates. Traversal rejected → exit 1.
+7. Copy matched artifacts to destinations: `.pw.toml` → `sync/downloads/.index/`, other → `sync/downloads/`, `dest:` override → project-root-relative.
+8. On success: clone removed. On failure: clone kept at `<clone_path>` for inspection; path named in the diagnostic.
+9. Print a hint naming every staged jar so the operator can add it to `[in-house].filenames`.
+
+Exit codes: 0 (success), 1 (build failure), 3 (spec/validation error).
+
+A second positional argument (the old `build-inhouse <mod> <revision>` form) is accepted but ignored with a warning; the ref comes from the spec's `ref:` field. This tolerance exists so operators with muscle memory from the pre-Slice-14 signature don't lose their build invocation, but the correct usage is spec-file-driven.
 
 ### 15.2 `deploy-pack`
 
@@ -1608,7 +1838,7 @@ minecraft-upgrade promote <tag>
 | Code | Meaning |
 |---|---|
 | 0 | Success |
-| 1 | Operational failure (provider API, network, download) |
+| 1 | Operational failure (provider API, network, download, build failure) |
 | 2 | CLI usage error |
 | 3 | Config/schema/integrity/preflight failure |
 | 4 | Resolution failure (`no_version = "fail"` with losses) |
@@ -1618,8 +1848,8 @@ minecraft-upgrade promote <tag>
 
 **Clarifications:**
 
-- **1**: provider API errors (`update`), download errors (`materialize`).
-- **3**: manifest invalid, seed jar missing, malformed `.pw.toml` side, `side_overrides.toml` missing, dependency cycle, `materialize` hash mismatch, `materialize` side unresolved, `acknowledge`/`materialize` drift/tamper.
+- **1**: provider API errors (`update`), download errors (`materialize`), in-house build failures (`build-inhouse`).
+- **3**: manifest invalid, seed jar missing, malformed `.pw.toml` side, `side_overrides.toml` missing, dependency cycle, `materialize` hash mismatch, `materialize` side unresolved, `acknowledge`/`materialize` drift/tamper, build spec invalid, undefined build variable.
 - **4**: `update` with `no_version = "fail"` and losses.
 - **6**: `update` with `no_version = "ask"` and losses; `acknowledge` or `materialize` on unacknowledged run.
 
@@ -1627,15 +1857,21 @@ minecraft-upgrade promote <tag>
 
 ### 16.3 Prod daemon
 
-| Code | Meaning |
-|---|---|
-| 20 | Release verification blocked |
-| 21 | Activation failed |
-| 22 | Deploy command failed |
-| 23 | Post-deploy verification failed |
-| 24 | Recovery/rollback failed |
-| 25 | Concurrent deployment lock held |
-| 26 | Registry chain verification failed |
+| Code | Meaning | HTTP |
+|---|---|---|
+| 20 | Release verification blocked | 409 |
+| 21 | Activation failed | 500 |
+| 22 | Deploy command failed | 500 |
+| 23 | Post-deploy verification failed | 500 |
+| 24 | Recovery/rollback failed | 500 |
+| 25 | Concurrent deployment lock held | 409 |
+| 26 | Registry chain verification failed | 409 |
+| 27 | Idempotency conflict | 409 |
+| 28 | Authentication failed | 401 |
+| 29 | Authenticated but not authorized | 403 |
+| 30 | Endpoint present but not implemented | 501 |
+
+Error-code-to-HTTP mapping is fixed at the class level in `minecraft.deploy_pack.daemon.errors`. The plugin's exception handler serves the mapped HTTP status for every `MinecraftDaemonError` subclass. No other exception class is caught there; unexpected errors fall through to FastAPI's default 500 handling.
 
 ---
 
@@ -1690,7 +1926,7 @@ allowlist_users = ["..."]
 
 [providers]
 curseforge_api_key_env = "CURSEFORGE_API_KEY"
-modrinth_user_agent = "minecraft-upgrade/1.3.1 (contact@example.com)"
+modrinth_user_agent = "minecraft-upgrade/1.4.0 (contact@example.com)"
 
 [registry]
 trust_anchor_path = "sync/packing_slips/release-index.anchor"
@@ -1707,6 +1943,8 @@ ledger_path = "/var/lib/minecraft-upgrade/ledger.sqlite"
 
 If `[in-house]` is present, `filenames` MUST be present (may be `[]`). A missing `[in-house]` table is equivalent to `filenames = []`.
 
+Retirement of this list is deferred (§9.7).
+
 ### 17.2 `config.d/deploy_pack.toml` additions
 
 ```toml
@@ -1718,14 +1956,52 @@ packing_slip_pointer = "stable"          # pointer name or tag
 # packing_slip_pointer = "latest-slip"
 
 [daemon]
-lock_path = "/var/lib/minecraft-deploy/deploy.lock"
-journal_path = "/var/lib/minecraft-deploy/operation.jsonl"
+state_dir = "/var/lib/minecraft-deploy"
+slip_dir = "sync/packing_slips"
 release_store = "/srv/minecraft/releases"
 staging_root = "/srv/minecraft/staging"
+http_host = "127.0.0.1"
+http_port = 8765
+bearer_token_env = "MINECRAFT_DAEMON_TOKEN"
+tailscale_cidrs = "100.64.0.0/10,fd7a:115c:a1e0::/48"
+idempotency_path = "/var/lib/minecraft-deploy/idempotency.sqlite"
+audit_path = "/var/lib/minecraft-deploy/audit.jsonl"
+lock_path = "/var/lib/minecraft-deploy/daemon.lock"
+trusted_keys_path = "config.d/trusted_keys.toml"
+registry_path = "sync/packing_slips/release-index.jsonl"
+journal_path = "/var/lib/minecraft-deploy/operation.jsonl"
 world_backup_root = "/srv/minecraft/backups/world"
+
+# Slice 13 additions: pull source
+source_host = "dev.example.com"          # empty disables /deploy
+source_user = "deploy"
+source_path = "/srv/minecraft-dev/www/releases"
+ssh_key = "~/.ssh/id_deploy_warehouse_ro"
 ```
 
-### 17.3 Secrets
+If `[daemon].source_host` is empty, the daemon's `/deploy` endpoint returns 501 (NotImplementedError) after verification. This is the correct behavior for a daemon that cannot pull. Verification and `/verify` / `/publish` still work.
+
+### 17.3 `config.d/build/<name>.yaml`
+
+See §9.2 for the full schema. Summary:
+
+| Field | Required | Type |
+|---|---|---|
+| `variables` | No | mapping of string |
+| `repository` | Yes | string (git URL) |
+| `ref` | Yes | string (branch/tag/SHA) |
+| `entrypoint` | Yes | string |
+| `script` | Yes | string |
+| `args` | No | list of strings |
+| `env` | No | mapping of string |
+| `timeout_seconds` | No | float > 0 |
+| `working_dir` | No | string |
+| `depth` | No | int ≥ 0 |
+| `artifacts` | Yes | list of string or `{path, dest}` |
+
+Variable resolution and failure handling are described in §9.3 through §9.5.
+
+### 17.4 Secrets
 
 - Provider API keys: DEV-host secret store.
 - Discord bot token: DEV.
@@ -1735,7 +2011,7 @@ world_backup_root = "/srv/minecraft/backups/world"
 - SSH keys for rsync transport: on prod (initiating pull) and DEV (allowing read-only access).
 - No secrets in manifests, slips, bundles, `www/`, or logs.
 
-### 17.4 Naming
+### 17.5 Naming
 
 | Context | Form |
 |---|---|
@@ -1771,6 +2047,7 @@ world_backup_root = "/srv/minecraft/backups/world"
 22. Interrupted or ambiguous deployment recovery MUST halt safely.
 23. `materialize` MUST NOT mutate `sync/downloads/.index/`. Only `promote` writes to `.index/`.
 24. Staging isolation: candidate downloads MUST be staged in run-local directories and verified before publishing to the shared warehouse.
+25. **The in-house build script runs with the DEV operator's privileges.** The tool's responsibility ends at running the script the mod declared; it does not sandbox the build, restrict network access, or verify that the resulting artifact is safe. Operators MUST review a mod's build script before running `build-inhouse` against it.
 
 ---
 
@@ -1830,43 +2107,45 @@ Do not delete immutable slips or rewrite release history as rollback.
 
 ## 20. Acceptance-Test Checklist
 
-| ID | Test | Required pass condition |
-|---|---|---|
-| T01 | Provider-isolated production deployment | Deploy a valid release with Modrinth/CurseForge credentials absent and endpoints blocked. All artifacts validate; no provider API is contacted. |
-| T02 | Tag and pointer integrity | Retarget a signed test tag, alter its registry entry, create an invalid channel reference, and create ambiguous/malformed pointer cases. All invalid cases fail closed. |
-| T03 | Filename collision | Attempt to stage two different byte sequences under the same artifact filename. The resolver rejects the collision or generates a deterministic collision-safe filename before changing any existing artifact. |
-| T04 | Dirty working tree | Release and integration deployments reject dirty deployment inputs. A clean integration run accepts a newer committed HEAD while continuing to use the selected candidate JAR set. |
-| T05 | Partial transfer | Interrupt rsync after partial transfer. The staging directory cannot be selected for deployment; the previous active release remains untouched. |
-| T06 | Approval invalidation | Change candidate hash, runtime, snapshot ID, or required evidence independently. Promotion/deployment is denied until applicable validation and approval are repeated. |
-| T07 | World-aware rollback | Deploy a test upgrade that changes a simulated world-format sentinel and then fails health checks. Verify the prior world snapshot, runtime, and exact prior artifact inventory are restored together. |
-| T08 | Interrupted deployment | Inject failure during file copy, rename, permission change, hash verification, and service start. Final state matches either previous release or fully validated new release; never a mixed active state. |
-| T09 | Runtime payload offline | Start a candidate with provider credentials absent and egress to Modrinth/CurseForge blocked. Runtime and all artifacts are available; recorded hashes match. |
-| T10 | Registry chain integrity | Truncate, fork, or alter a historical registry entry. Production rejects the chain and refuses to deploy. |
-| T11 | Approval replay and expiry | Replay the same Discord interaction; submit an expired approval; change each identity field. Stale or duplicate actions are rejected or return the previously recorded result. |
-| T12 | Config merge semantics | Test additions, replacements, target-only files, explicit deletions, protected paths, and path-pattern edge cases against a golden fixture. |
-| T13 | KubeJS delete semantics | Seed the target with stale scripts, nested directories, and a local-only file. After shipping, only files from the captured source tree remain. |
-| T14 | Client pack reproducibility | Build the ZIP twice from identical inputs; compare hashes. Test side filtering. Enumerate ZIP members and compare every hash with its manifest. |
-| T15 | Daemon API auth and idempotency | Submit forged, unauthorized, and replayed requests. All invalid cases fail; repeated valid requests return the original result. |
-| T16 | Concurrent deployment lock | Start two deployment requests simultaneously. One proceeds; the other is rejected or queued without corrupting state. |
-| T17 | Shared-mod shipping | Seed every case in a test `mods/` directory: enabled JAR in slip, enabled JAR not in slip, stale JAR, `.jar.disabled`, nested directory, non-JAR file. Assert exact preflight decision and resulting inventory. |
-| T18 | Config/KubeJS rollback | Deploy a release that changes config and KubeJS, then roll back. Previous approved bundle's config and KubeJS are restored exactly. |
-| T19 | Health-check failure recovery | Simulate startup timeout, missing RCON response, repeated container restarts, fatal logs, and proxy backend failure. Daemon halts or rolls back per contract. |
-| T20 | Migration rollback drill | Run the migration rollback on a production-like clone. Old command path, artifact inventory, and active release are restorable without data loss. |
-| T21 | Release bundle immutability | Attempt to republish an existing release ID with changed content. Publication fails; existing bundle remains untouched. |
-| T22 | Bundle manifest verification | Alter any file in a published bundle. Prod rejects the bundle and refuses to deploy. |
-| T23 | Pointer ambiguity | Create a state where both an alias file and a tag share a name. Alias wins. Malformed or path-traversing pointers fail closed. |
-| T24 | In-house build registration | Build an in-house mod; verify it enters `sync/downloads/`, appears as a unified `[[jar]]` entry, and passes the same validation as provider artifacts. |
-| T25 | Publication precondition failure | Attempt to publish with a missing artifact, mismatched hash, or invalid approval. Publication aborts; no partial bundle is written. |
-| **T26** | **Four-command lifecycle** | `update` → `acknowledge` → `materialize` → `iterate` completes successfully. Each command exits with documented code; each prints correct next command. |
-| **T27** | **`no_version = "drop"` skips acknowledgment** | `update` with losses and `drop` → exit 0, state=resolved. `materialize` proceeds directly. No `acknowledgment.json` written. |
-| **T28** | **`no_version = "fail"` halts at update** | `update` with losses and `fail` → exit 4, state=failed. No slip sealed; `materialize` refuses (exit 3). |
-| **T29** | **Materialize detects drift** | After `update`, modify manifest, seed, or side overrides. `materialize` fails with exit 3 (report hash or `resolution_inputs_sha256` mismatch). |
-| **T30** | **Staging isolation** | `materialize` downloads to `runs/<run-id>/staging/`; publishes to warehouse; does not write to `.index/`. Only `promote` writes to `.index/`. |
-| **T31** | **In-house bypass** | In-house mods in `[in-house].filenames` are not queried against providers. Their current version is preserved. Their `jar_sha256` in the slip matches the warehouse artifact. |
-| **T32** | **`expected_hashes` multi-algorithm verification** | Materialize verifies every listed digest (sha512, sha1, md5 as applicable). Any mismatch → exit 3. Slip's `sha256` is locally computed independently. |
-| **T33** | **Side precedence chain** | Override beats jar metadata; jar metadata beats provider; provider beats `.pw.toml`. All five scenarios tested. |
-| **T34** | **Filename collision at warehouse** | Attempt to materialize artifact with same filename as warehouse artifact but different SHA-256. Exit 3 without overwriting. Same SHA-256 reuses without copy. |
-| **T35** | **`resolution_inputs_sha256` stability** | Formatting-only edits to manifest or `side_overrides.toml` produce identical fingerprint. Semantic edits change it. |
+**Status as of v1.4.0:** 34 of 35 acceptance tests covered. Only T11 (approval replay/expiry) remains, blocked on Slice 15. T20 (migration rollback drill) is a rehearsal, not a code test, and is scheduled for Slice 16.
+
+| ID | Test | Required pass condition | Status |
+|---|---|---|---|
+| T01 | Provider-isolated production deployment | Deploy a valid release with Modrinth/CurseForge credentials absent and endpoints blocked. All artifacts validate; no provider API is contacted. | OK |
+| T02 | Tag and pointer integrity | Retarget a signed test tag, alter its registry entry, create an invalid channel reference, and create ambiguous/malformed pointer cases. All invalid cases fail closed. | OK |
+| T03 | Filename collision | Attempt to stage two different byte sequences under the same artifact filename. The resolver rejects the collision or generates a deterministic collision-safe filename before changing any existing artifact. | OK |
+| T04 | Dirty working tree | Release and integration deployments reject dirty deployment inputs. A clean integration run accepts a newer committed HEAD while continuing to use the selected candidate JAR set. | OK |
+| T05 | Partial transfer | Interrupt rsync after partial transfer. The staging directory cannot be selected for deployment; the previous active release remains untouched. | OK |
+| T06 | Approval invalidation | Change candidate hash, runtime, snapshot ID, or required evidence independently. Promotion/deployment is denied until applicable validation and approval are repeated. | OK |
+| T07 | World-aware rollback | Deploy a test upgrade that changes a simulated world-format sentinel and then fails health checks. Verify the prior world snapshot, runtime, and exact prior artifact inventory are restored together. | OK |
+| T08 | Interrupted deployment | Inject failure during file copy, rename, permission change, hash verification, and service start. Final state matches either previous release or fully validated new release; never a mixed active state. | OK |
+| T09 | Runtime payload offline | Start a candidate with provider credentials absent and egress to Modrinth/CurseForge blocked. Runtime and all artifacts are available; recorded hashes match. | OK |
+| T10 | Registry chain integrity | Truncate, fork, or alter a historical registry entry. Production rejects the chain and refuses to deploy. | OK |
+| T11 | Approval replay and expiry | Replay the same Discord interaction; submit an expired approval; change each identity field. Stale or duplicate actions are rejected or return the previously recorded result. | PENDING Slice 15 |
+| T12 | Config merge semantics | Test additions, replacements, target-only files, explicit deletions, protected paths, and path-pattern edge cases against a golden fixture. | OK |
+| T13 | KubeJS delete semantics | Seed the target with stale scripts, nested directories, and a local-only file. After shipping, only files from the captured source tree remain. | OK |
+| T14 | Client pack reproducibility | Build the ZIP twice from identical inputs; compare hashes. Test side filtering. Enumerate ZIP members and compare every hash with its manifest. | OK |
+| T15 | Daemon API auth and idempotency | Submit forged, unauthorized, and replayed requests. All invalid cases fail; repeated valid requests return the original result. | OK |
+| T16 | Concurrent deployment lock | Start two deployment requests simultaneously. One proceeds; the other is rejected or queued without corrupting state. | OK |
+| T17 | Shared-mod shipping | Seed every case in a test `mods/` directory: enabled JAR in slip, enabled JAR not in slip, stale JAR, `.jar.disabled`, nested directory, non-JAR file. Assert exact preflight decision and resulting inventory. | OK |
+| T18 | Config/KubeJS rollback | Deploy a release that changes config and KubeJS, then roll back. Previous approved bundle's config and KubeJS are restored exactly. | OK |
+| T19 | Health-check failure recovery | Simulate startup timeout, missing RCON response, repeated container restarts, fatal logs, and proxy backend failure. Daemon halts or rolls back per contract. | OK |
+| T20 | Migration rollback drill | Run the migration rollback on a production-like clone. Old command path, artifact inventory, and active release are restorable without data loss. | SLICE 16 (rehearsal) |
+| T21 | Release bundle immutability | Attempt to republish an existing release ID with changed content. Publication fails; existing bundle remains untouched. | OK |
+| T22 | Bundle manifest verification | Alter any file in a published bundle. Prod rejects the bundle and refuses to deploy. | OK |
+| T23 | Pointer ambiguity | Create a state where both an alias file and a tag share a name. Alias wins. Malformed or path-traversing pointers fail closed. | OK |
+| T24 | In-house build registration | Build an in-house mod via `build-inhouse`; verify it enters `sync/downloads/`, appears as a unified `[[jar]]` entry after operator marks it in `[in-house].filenames`, and passes the same validation as provider artifacts. | OK |
+| T25 | Publication precondition failure | Attempt to publish with a missing artifact, mismatched hash, or invalid approval. Publication aborts; no partial bundle is written. | OK |
+| T26 | Four-command lifecycle | `update` -> `acknowledge` -> `materialize` -> `iterate` completes successfully. Each command exits with documented code; each prints correct next command. | OK |
+| T27 | `no_version = "drop"` skips acknowledgment | `update` with losses and `drop` -> exit 0, state=resolved. `materialize` proceeds directly. No `acknowledgment.json` written. | OK |
+| T28 | `no_version = "fail"` halts at update | `update` with losses and `fail` -> exit 4, state=failed. No slip sealed; `materialize` refuses (exit 3). | OK |
+| T29 | Materialize detects drift | After `update`, modify manifest, seed, or side overrides. `materialize` fails with exit 3 (report hash or `resolution_inputs_sha256` mismatch). | OK |
+| T30 | Staging isolation | `materialize` downloads to `runs/<run-id>/staging/`; publishes to warehouse; does not write to `.index/`. Only `promote` writes to `.index/`. | OK |
+| T31 | In-house bypass | In-house mods in `[in-house].filenames` are not queried against providers. Their current version is preserved. Their `jar_sha256` in the slip matches the warehouse artifact. | OK |
+| T32 | `expected_hashes` multi-algorithm verification | Materialize verifies every listed digest (sha512, sha1, md5 as applicable). Any mismatch -> exit 3. Slip's `sha256` is locally computed independently. | OK |
+| T33 | Side precedence chain | Override beats jar metadata; jar metadata beats provider; provider beats `.pw.toml`. All five scenarios tested. | OK |
+| T34 | Filename collision at warehouse | Attempt to materialize artifact with same filename as warehouse artifact but different SHA-256. Exit 3 without overwriting. Same SHA-256 reuses without copy. | OK |
+| T35 | `resolution_inputs_sha256` stability | Formatting-only edits to manifest or `side_overrides.toml` produce identical fingerprint. Semantic edits change it. | OK |
 
 ---
 
@@ -1875,7 +2154,7 @@ Do not delete immutable slips or rewrite release history as rollback.
 The system is acceptable for production use only when:
 
 1. Candidate runtime read from effective Compose; not duplicated.
-2. Resolution follows RELEASE → BETA → authorized ALPHA per `[policy].selection`.
+2. Resolution follows RELEASE -> BETA -> authorized ALPHA per `[policy].selection`.
 3. Dependency closure is iterative and unambiguous.
 4. Slip identifies exact provider versions and verified SHA-256.
 5. Failed resolution leaves approved slip and artifacts intact.
@@ -1906,12 +2185,13 @@ The system is acceptable for production use only when:
 30. Automated tests meet project coverage gates.
 31. Full behavior manually verified on DEV before first production use.
 32. All acceptance tests in §20 pass.
-33. Four-command resolver lifecycle (`update` → `acknowledge` → `materialize` → `iterate`) works end-to-end.
+33. Four-command resolver lifecycle (`update` -> `acknowledge` -> `materialize` -> `iterate`) works end-to-end.
 34. State machine transitions correctly per §8.2.
 35. `resolution_inputs_sha256` is stable across formatting-only changes.
 36. `materialize` performs full integrity checks.
 37. Staging isolation preserves active `.index/`.
 38. In-house mods identified via `[in-house].filenames` and bypass provider query.
+39. **In-house build pipeline clones the mod's own repository, checks out its declared ref, runs its own build script, and stages the artifacts its build produces. The upgrade toolchain does not own build logic.**
 
 ---
 
@@ -1926,13 +2206,19 @@ The system is acceptable for production use only when:
 - Human testing is mandatory for first approved candidate and for world-affecting changes.
 - Live world snapshot may capture torn chunks; re-run with `--stop-prod` on failure.
 - Multi-world gate collapsed to single world per run; slip records which world was tested.
-- SMB/NFS transports are not supported in v1.3.1; rsync over SSH is required.
+- SMB/NFS transports are not supported; rsync over SSH is required.
 - Provider hash algorithms vary (sha512/sha1/md5); SHA-256 always computed locally.
-- In-house identification is transitional via `[in-house].filenames`; retired when slice 13 introduces `.pw.toml` marker.
+- **In-house build pipeline runs with the DEV operator's privileges.** The tool does not sandbox the build script. Malicious build scripts have full operator access. Review before running.
+- **In-house build pipeline requires the mod's repository to be reachable from DEV.** Offline DEV cannot run `build-inhouse` unless the repository is a local clone.
+- **In-house build pipeline does not cache clones across invocations.** Every `build-inhouse` is a fresh clone. Slow repositories make slow builds.
+- **In-house build pipeline does not clean up failed clones automatically.** A failed build leaves the clone at `.build-workspace/<name>-<timestamp>/` for operator inspection. The operator is expected to remove it manually after investigation.
+- **In-house `[in-house].filenames` marker is still manual.** After `build-inhouse` succeeds, the operator must add the jar's filename to `config.d/upgrade.toml [in-house].filenames`. The `.pw.toml` writer marker that would retire this step is deferred (§9.7).
+- In-house identification is transitional via `[in-house].filenames`; retirement is deferred to Slice 17+.
 - `iterate` requires prior `materialize`; no combined mode.
 - CurseForge-sourced mods always require overrides (no side field in provider metadata).
 - The full log-classifier pattern catalog evolves after interface freeze; its status model and fix-application permissions are fixed.
-- In-house build toolchain image is selected during implementation; its identity, source commit, output artifacts, dependencies, and reproducibility record are fixed now.
+- **Production daemon deployment orchestration is implemented but not yet exercised against a real production deployment.** All modules (`deploy`, `pull`, `health`, `backup`, `recovery`, `service_control`, `health_probe`, `deploy_runtime`) are tested at module and HTTP-endpoint level. First production deployment will exercise the plumbing end-to-end for the first time.
+- **Production daemon's recovery paths are implemented but not yet exercised against a real failure.** T07, T08, and T19 cover them via injected failures; a real prod failure (network drop, disk full, OOM) may find gaps in the failure modes we didn't anticipate.
 - Production readiness is not claimed until §20 tests pass and the migration runbook is exercised on DEV.
 
 ---
@@ -1950,6 +2236,8 @@ The system is acceptable for production use only when:
 | Runtime authority — upgrade | Packing slip `[runtime]` |
 | Seed (active pack) | `sync/downloads/.index/*.pw.toml` |
 | In-house filenames | `config.d/upgrade.toml [in-house].filenames` |
+| **In-house build specification** | **`config.d/build/<name>.yaml`** |
+| **In-house build execution** | **Mod's repository (own build script)** |
 | Side policy | `config.d/side_overrides.toml` |
 | Selection policy | `[policy].selection` |
 | Loss policy | `[policy].no_version` |
@@ -1967,7 +2255,8 @@ The system is acceptable for production use only when:
 | Resolution evidence | `www/runs/<run-id>/resolution-report.toml` |
 | Loss acknowledgment | `/var/lib/minecraft-upgrade/runs/<run-id>/acknowledgment.json` |
 | Candidate slip | `/var/lib/minecraft-upgrade/candidates/<run-id>/packing_slip.toml` |
-| `.pw.toml` writer | `modpack_upgrade.pw_toml` (§5.7) |
+| `.pw.toml` writer (external) | `modpack_upgrade.pw_toml` (§5.7) |
+| `.pw.toml` writer (in-house) | Mod's own build script (§9.4) |
 | Slip-mode source sets | `SlipContext` (§5.8) |
 | Side precedence | `docs/Side_Determination.md` |
 | Protect-pattern matching | `fnmatch.fnmatch`, two scopes (§13.5) |
@@ -1975,6 +2264,7 @@ The system is acceptable for production use only when:
 | Instance/container mapping | `deploy_pack.toml` + Compose |
 | Deployment interface | Release bundle + slip |
 | Production lifecycle | `deploy_pack` v2 |
+| **Production deployment orchestration** | **`minecraft.deploy_pack.daemon` (§12.4)** |
 | World migration | Isolated test copy of verified snapshot |
 | World rollback | Pre-upgrade world backup + previous release bundle |
 | Velocity topology | Isolated DEV proxy; prod proxy if present |
@@ -2009,7 +2299,7 @@ See §16.
 - **SlipContext** — immutable bridge between a verified slip and the existing pipeline (§5.8).
 - **Promote** — copy candidate slip to release registry; print git instructions; do not commit.
 - **Publish** — create an immutable release bundle. Explicit operator command.
-- **Deploy** — activate staged release; invoke `deploy-pack --release <tag>`.
+- **Deploy** — activate staged release; invoke `deploy-pack --release <tag>`, or hit `/deploy` on the production daemon.
 - **Iteration** — one boot attempt after candidate artifact change.
 - **Cap** — hard stop on automated resolution.
 - **Ambiguous failure** — classifier cannot confidently fix; pause.
@@ -2017,11 +2307,14 @@ See §16.
 - **Provenance metadata** — `provider` / `project_id` / `version_id` / `provider_endpoint`. Record origin; do not drive prod fetches.
 - **`latest-slip`** — DEV-local candidate pointer.
 - **`stable`** — Git-tracked pointer consumed by production.
-- **Operation journal** — durable record of deployment stage transitions.
-- **Rollback journal** — durable record of prior managed file state.
+- **Operation journal** — durable record of deployment stage transitions (§12.7).
+- **Rollback journal** — durable record of prior managed file state (§12.10).
 - **Bundle manifest** — signed inventory of every file in a release bundle.
 - **`resolution_inputs_sha256`** — canonical semantic fingerprint of resolver inputs.
 - **`expected_hashes`** — provider-supplied hashes (any algorithm) for download verification; distinct from slip's locally-computed `sha256`.
+- **In-house build spec** — `config.d/build/<name>.yaml`. Declares repository, ref, entrypoint, script, and artifact patterns. The tool runs the script; the mod's repository owns the build logic.
+- **Build workspace** — `.build-workspace/<name>-<timestamp>/`. Transient; kept on failure for inspection, removed on success.
+- **Build outcome** — structured result of `run_build`. Success flag, staged artifacts map, failure message, stdout/stderr excerpts.
 
 ---
 
@@ -2035,9 +2328,10 @@ See §16.
 | Materialize | Verify + download + seal slip. Staging isolation. Final side determination. |
 | Iterate | Boot loop on finalized candidate. |
 | Promote | Stage slip + metadata to git; print instructions. No commit. |
+| **Build-inhouse** | **Clone repository, check out ref, run build script, expand artifact patterns, stage artifacts. Exit 0/1/3.** |
 | Publish | Create immutable bundle. |
-| Pull (DEV→Prod) | rsync-over-SSH pull from DEV publication dir. |
-| Deploy | `deploy-pack --release <tag>` after acquiring deployment lock. |
+| Pull (DEV->Prod) | rsync-over-SSH pull from DEV publication dir. |
+| Deploy | `/deploy` on daemon: lock -> pull -> backup -> stop -> ship -> start -> health -> complete, with recovery on post-stop failure. |
 | Config load | Slip is additive. `SlipContext` attached when slip present. |
 | Runtime check — update | Compose authoritative. Slip must match. `compose_tree` enforced. |
 | Runtime check — upgrade | Slip authoritative. Compose must match slip + `compose_tree` hash. |
@@ -2049,22 +2343,27 @@ See §16.
 | `latest` Git source | One clean committed HEAD revision, captured once per deployment. |
 | Release identity | Signed tag + registry chain + bundle manifest. |
 | Slip parsing | Preserves document order. Canonical ordering applied only for hashing. |
-| `.pw.toml` writer | One external provider block or zero for in-house. `side = "unknown"` sentinel. Byte-stable. |
+| `.pw.toml` writer (external) | One external provider block or zero for in-house. `side = "unknown"` sentinel. Byte-stable. |
+| `.pw.toml` writer (in-house) | Mod's own build script. Tool does not write it. |
 | Shipping | Logically atomic transaction. |
 | Protect patterns | `fnmatch.fnmatch`. |
 | Rollback | Previous approved bundle + pre-upgrade world backup (for upgrades). |
-| Concurrent deployment | Single exclusive lock. |
-| Interrupted deployment | Recovery from journal or halt. |
+| Concurrent deployment | Single exclusive lock. Atomic acquisition via `mkstemp`-then-link. |
+| Interrupted deployment | Journal records every stage. Startup refuses if any run is unresolved. |
 | Approval | Signed, bound to immutable identity including `resolution_report_sha256`, expires after seven days. |
 | Runtime startup | Uses staged payload. No silent downloads. |
 | Side determination | Override > jar metadata > provider > `.pw.toml`. Exit 3 if all unknown. |
 | In-house mods | `[in-house].filenames`; bypass provider; preserve version; `jar_sha256` or `build_id`. |
-| `expected_hashes` verification | Multi-algorithm; any mismatch → exit 3. |
-| Filename collision | Same SHA-256 → reuse; different → exit 3. |
+| `expected_hashes` verification | Multi-algorithm; any mismatch -> exit 3. |
+| Filename collision | Same SHA-256 -> reuse; different -> exit 3. |
+| **In-house build script** | **Runs with operator's privileges. Not sandboxed. Reviewed before running.** |
+| **In-house build artifact staging** | **`.pw.toml` -> `sync/downloads/.index/`; other -> `sync/downloads/`. Traversal-rejected at glob expansion.** |
+| **In-house build failure** | **Clone kept for inspection. Exit 1. Diagnostic names the clone path.** |
+| **Health probe** | **Five checks per container. Missing container, stopped, no health block, restart drift, RCON unreachable, or fatal marker all report with specific reasons.** |
 
 ---
 
-**End of specification v1.3.1.**
+**End of specification v1.4.0.**
 
 ---
 
@@ -2072,21 +2371,17 @@ See §16.
 
 | Deliverable | Status |
 |---|---|
-| Slice 7b implementation (resolver, provider adapters, four CLI commands) | Not started |
-| `docs/Manifest_Schema.md` | Frozen (rev e) |
+| Slice 15 implementation (Discord bot, approval flow) | Not started |
+| Slice 16 implementation (migration runbook, T20 rehearsal) | Not started |
+| Slice 17+ (full log classifier, `[in-house].filenames` retirement) | Not started |
+| `docs/Manifest_Schema.md` | Frozen (rev f) |
 | `docs/Resolution_Report.md` | Frozen (rev g) |
-| `docs/Side_Determination.md` | Frozen (rev e) |
+| `docs/Side_Determination.md` | Frozen (rev f) |
+| `docs/Build_Specs.md` | Not written (Slice 14 follow-up) |
 | Migration runbook | Not written |
-| Prod daemon API contract | Not frozen |
-| Log classifier design | Not written; interface fixed |
-| DEV Compose project spec | Not written |
-| `deploy_pack` refactor plan | Not written |
-| In-house build toolchain spec | Not written; record format fixed |
-| rsync-over-SSH warehouse contract | Not written |
-| Release registry and trust-anchor operational procedure | Not written |
 | OCI registry allowlist and image pinning procedure | Not written |
 | World backup and restoration drill | Not written |
-| All §20 acceptance tests | Not fully implemented |
+| All §20 acceptance tests | 34/35 covered; T11 pending Slice 15 |
 | Verification that existing SMB config is truly inactive | Not verified |
 
-**Design freeze is complete.** Implementation is authorized against §20 and the frozen v1.3.1 contract. Production cutover requires all §20 tests passing and the migration runbook exercised on DEV.
+**Design freeze is complete.** Implementation is authorized against §20 and the frozen v1.4.0 contract. Production cutover requires all §20 tests passing and the migration runbook exercised on DEV.

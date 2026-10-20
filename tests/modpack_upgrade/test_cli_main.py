@@ -89,7 +89,6 @@ def test_verify_help_exits_zero(capsys: pytest.CaptureFixture[str]):
     [
         ["build-client"],
         ["snapshot-world"],
-        ["build-inhouse", "mymod", "abc123"],
         ["validate", "migration"],
         ["validate", "velocity"],
     ],
@@ -103,6 +102,22 @@ def test_stubs_exit_one(
     assert code == 1
     captured = capsys.readouterr()
     assert "not yet implemented" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# build-inhouse (implemented in Slice 14; no longer a stub)
+# ---------------------------------------------------------------------------
+
+
+def test_build_inhouse_missing_spec_exits_three(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """``build-inhouse`` with no spec file exits 3 (not the stub 1)."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    code = main(["--config-dir", str(config_dir), "build-inhouse", "missing"])
+    assert code == 3
+    captured = capsys.readouterr()
+    assert "build spec error" in captured.err
+    assert "not yet implemented" not in captured.err
 
 
 # ---------------------------------------------------------------------------
