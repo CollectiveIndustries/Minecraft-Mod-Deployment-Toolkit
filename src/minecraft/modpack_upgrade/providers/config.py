@@ -38,7 +38,7 @@ from .registry import ProviderRegistry
 __all__ = ["ProviderConfig", "build_registry", "load_provider_config"]
 
 
-_DEFAULT_MODRINTH_USER_AGENT = "minecraft-upgrade/1.4.0"
+_DEFAULT_MODRINTH_USER_AGENT = "minecraft-upgrade/1.3.1"
 _DEFAULT_CURSEFORGE_API_KEY_ENV = "CURSEFORGE_API_KEY"
 _DEFAULT_HTTP_TIMEOUT = 30.0
 _DEFAULT_HTTP_MAX_RETRIES = 3
@@ -126,25 +126,15 @@ def load_provider_config(
     section = _read_providers_section(config_dir)
     effective_env = env if env is not None else os.environ
 
-    api_key_env_name = _get_str(
-        section, "curseforge_api_key_env", _DEFAULT_CURSEFORGE_API_KEY_ENV
-    )
+    api_key_env_name = _get_str(section, "curseforge_api_key_env", _DEFAULT_CURSEFORGE_API_KEY_ENV)
 
     return ProviderConfig(
-        modrinth_user_agent=_get_str(
-            section, "modrinth_user_agent", _DEFAULT_MODRINTH_USER_AGENT
-        ),
+        modrinth_user_agent=_get_str(section, "modrinth_user_agent", _DEFAULT_MODRINTH_USER_AGENT),
         curseforge_api_key=_resolve_api_key(api_key_env_name, effective_env),
         http_timeout=_get_float(section, "http_timeout", _DEFAULT_HTTP_TIMEOUT),
-        http_max_retries=_get_int(
-            section, "http_max_retries", _DEFAULT_HTTP_MAX_RETRIES
-        ),
-        http_backoff_base=_get_float(
-            section, "http_backoff_base", _DEFAULT_HTTP_BACKOFF_BASE
-        ),
-        max_artifact_bytes=_get_int(
-            section, "max_artifact_bytes", _DEFAULT_MAX_ARTIFACT_BYTES
-        ),
+        http_max_retries=_get_int(section, "http_max_retries", _DEFAULT_HTTP_MAX_RETRIES),
+        http_backoff_base=_get_float(section, "http_backoff_base", _DEFAULT_HTTP_BACKOFF_BASE),
+        max_artifact_bytes=_get_int(section, "max_artifact_bytes", _DEFAULT_MAX_ARTIFACT_BYTES),
     )
 
 
@@ -173,12 +163,6 @@ def build_registry(
         )
     )
     registry = ProviderRegistry()
-    registry.register(
-        ModrinthProvider(
-            effective_transport, user_agent=config.modrinth_user_agent
-        )
-    )
-    registry.register(
-        CurseForgeProvider(effective_transport, api_key=config.curseforge_api_key)
-    )
+    registry.register(ModrinthProvider(effective_transport, user_agent=config.modrinth_user_agent))
+    registry.register(CurseForgeProvider(effective_transport, api_key=config.curseforge_api_key))
     return registry
