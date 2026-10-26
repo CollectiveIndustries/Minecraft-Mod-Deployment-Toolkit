@@ -32,6 +32,27 @@ Handlers do not touch state files directly. They invoke the
 preserves the "bot is not the controller" property: the CLI owns the
 state machine, the bot is a relay.
 
+Approval identity forwarding (Slice 15 T11)
+-------------------------------------------
+The ``approve`` and ``reject`` handlers forward two identity fields to
+the CLI:
+
+  * ``--interaction-id <ctx.interaction_id>`` - activates the CLI's
+    existing replay protection (spec Section 11.4). A repeated Discord click
+    reaches the CLI with the same interaction ID, the CLI's
+    ``_lookup_interaction`` finds the prior record, and the previously-
+    recorded result is returned without touching the resolver or the
+    state machine a second time.
+  * ``--operator discord:<ctx.user_id>`` - populates the audit field
+    ``signed_by`` on the approval record so the audit trail names the
+    Discord user who actually clicked the button, not the fixed
+    ``interactive-cli`` default.
+
+Without these two flags, the CLI works but the resulting approvals are
+indistinguishable from manual CLI approvals and are not protected from
+Discord replay. The wiring lives in this module because it is the
+boundary that has the interaction identity.
+
 Discord message limit
 ---------------------
 Discord caps individual messages at 2000 characters.
@@ -163,7 +184,14 @@ async def _handle_status(ctx: InteractionContext, invoker: CliInvoker, bot_clien
 
 
 async def _handle_approve(ctx: InteractionContext, invoker: CliInvoker, bot_client: BotClient) -> None:
-    """``/upgrade approve <run-id>`` - record a mod-set approval."""
+    """``/upgrade approve <run-id>`` - record a mod-set approval.
+
+    Forwards ``--interaction-id`` and ``--operator`` so the CLI's replay
+    protection and audit trail see the Discord identity of this click
+    (spec Section 11.4). Without these flags the approval would be accepted but
+    would be indistinguishable from a manual CLI invocation, and would
+    not be protected against Discord-side replay.
+    """
     run_id = ctx.options.get("run_id")
     if not run_id:
         await bot_client.send(
@@ -171,12 +199,25 @@ async def _handle_approve(ctx: InteractionContext, invoker: CliInvoker, bot_clie
             OutboundMessage(content="Usage: /upgrade approve <run-id>"),
         )
         return
-    result = await invoker.invoke(["approve", run_id])
+    result = await invoker.invoke(
+        [
+            "approve",
+            run_id,
+            "--interaction-id",
+            ctx.interaction_id,
+            "--operator",
+            f"discord:{ctx.user_id}",
+        ]
+    )
     await bot_client.send(ctx.to_ref(), OutboundMessage(content=_format_cli_output(result)))
 
 
 async def _handle_reject(ctx: InteractionContext, invoker: CliInvoker, bot_client: BotClient) -> None:
-    """``/upgrade reject <run-id> [reason]`` - record a rejection."""
+    """``/upgrade reject <run-id> [reason]`` - record a rejection.
+
+    Forwards ``--interaction-id`` and ``--operator`` for the same
+    replay-protection and audit reasons as :func:`_handle_approve`.
+    """
     run_id = ctx.options.get("run_id")
     if not run_id:
         await bot_client.send(
@@ -184,7 +225,14 @@ async def _handle_reject(ctx: InteractionContext, invoker: CliInvoker, bot_clien
             OutboundMessage(content="Usage: /upgrade reject <run-id> [reason]"),
         )
         return
-    args = ["reject", run_id]
+    args = [
+        "reject",
+        run_id,
+        "--interaction-id",
+        ctx.interaction_id,
+        "--operator",
+        f"discord:{ctx.user_id}",
+    ]
     reason = ctx.options.get("reason")
     if reason:
         args.extend(["--reason", reason])

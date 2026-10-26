@@ -57,6 +57,19 @@ def _last_content(bot: FakeBotClient) -> str:
     return bot.sent[-1].message.content
 
 
+def _approve_args(ctx: InteractionContext, run_id: str) -> list[str]:
+    """Return the exact argv the approve handler is expected to pass."""
+    return ["approve", run_id, "--interaction-id", ctx.interaction_id, "--operator", f"discord:{ctx.user_id}"]
+
+
+def _reject_args(ctx: InteractionContext, run_id: str, reason: str | None = None) -> list[str]:
+    """Return the exact argv the reject handler is expected to pass."""
+    args = ["reject", run_id, "--interaction-id", ctx.interaction_id, "--operator", f"discord:{ctx.user_id}"]
+    if reason:
+        args.extend(["--reason", reason])
+    return args
+
+
 # ---------------------------------------------------------------------------
 # Authorization
 # ---------------------------------------------------------------------------
@@ -154,12 +167,12 @@ async def test_handle_status_invokes_cli() -> None:
 
 
 async def test_handle_approve_invokes_cli() -> None:
-    """``/upgrade approve`` invokes ``approve <run-id>``."""
+    """``/upgrade approve`` invokes ``approve <run-id>`` with identity flags."""
     ctx = _make_ctx(options={"subcommand": "approve", "run_id": "run-42"})
     bot = FakeBotClient()
-    invoker = FakeCliInvoker().expect(["approve", "run-42"], CliResult(exit_code=0, stdout="recorded", stderr=""))
+    invoker = FakeCliInvoker().expect(_approve_args(ctx, "run-42"), CliResult(exit_code=0, stdout="recorded", stderr=""))
     await dispatch(ctx, bot_config=_make_config(), invoker=invoker, bot_client=bot)
-    assert invoker.calls == [["approve", "run-42"]]
+    assert invoker.calls == [_approve_args(ctx, "run-42")]
     assert "recorded" in _last_content(bot)
 
 
@@ -174,12 +187,12 @@ async def test_handle_approve_without_run_id_replies_usage() -> None:
 
 
 async def test_handle_reject_invokes_cli() -> None:
-    """``/upgrade reject`` invokes ``reject <run-id>``."""
+    """``/upgrade reject`` invokes ``reject <run-id>`` with identity flags."""
     ctx = _make_ctx(options={"subcommand": "reject", "run_id": "run-42"})
     bot = FakeBotClient()
-    invoker = FakeCliInvoker().expect(["reject", "run-42"], CliResult(exit_code=0, stdout="recorded", stderr=""))
+    invoker = FakeCliInvoker().expect(_reject_args(ctx, "run-42"), CliResult(exit_code=0, stdout="recorded", stderr=""))
     await dispatch(ctx, bot_config=_make_config(), invoker=invoker, bot_client=bot)
-    assert invoker.calls == [["reject", "run-42"]]
+    assert invoker.calls == [_reject_args(ctx, "run-42")]
 
 
 async def test_handle_reject_with_reason() -> None:
@@ -187,11 +200,11 @@ async def test_handle_reject_with_reason() -> None:
     ctx = _make_ctx(options={"subcommand": "reject", "run_id": "run-42", "reason": "not ready"})
     bot = FakeBotClient()
     invoker = FakeCliInvoker().expect(
-        ["reject", "run-42", "--reason", "not ready"],
+        _reject_args(ctx, "run-42", "not ready"),
         CliResult(exit_code=0, stdout="", stderr=""),
     )
     await dispatch(ctx, bot_config=_make_config(), invoker=invoker, bot_client=bot)
-    assert invoker.calls == [["reject", "run-42", "--reason", "not ready"]]
+    assert invoker.calls == [_reject_args(ctx, "run-42", "not ready")]
 
 
 async def test_handle_reject_without_run_id_replies_usage() -> None:
@@ -248,6 +261,39 @@ async def test_handle_migrate_world_explicit_world() -> None:
     )
     await dispatch(ctx, bot_config=_make_config(), invoker=invoker, bot_client=bot)
     assert invoker.calls == [["snapshot-world", "creative"]]
+
+
+# ---------------------------------------------------------------------------
+# T11: identity forwarding
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_approve_forwards_interaction_id() -> None:
+    """The interaction ID is forwarded so the CLI can enforce replay protection (Section 11.4).
+
+    Without ``--interaction-id``, a replayed Discord interaction would
+    reach the CLI indistinguishable from a fresh approval and would be
+    recorded as such. ``FakeCliInvoker.expect()`` enforces an exact argv
+    match, so this test fails if the flag is dropped from the invocation.
+    """
+    ctx = _make_ctx(options={"subcommand": "approve", "run_id": "run-42"})
+    bot = FakeBotClient()
+    invoker = FakeCliInvoker().expect(
+        ["approve", "run-42", "--interaction-id", ctx.interaction_id, "--operator", f"discord:{ctx.user_id}"],
+        CliResult(exit_code=0, stdout="", stderr=""),
+    )
+    await dispatch(ctx, bot_config=_make_config(), invoker=invoker, bot_client=bot)
+
+
+async def test_handle_reject_forwards_interaction_id() -> None:
+    """The interaction ID is forwarded for reject as well (Section 11.4)."""
+    ctx = _make_ctx(options={"subcommand": "reject", "run_id": "run-42"})
+    bot = FakeBotClient()
+    invoker = FakeCliInvoker().expect(
+        ["reject", "run-42", "--interaction-id", ctx.interaction_id, "--operator", f"discord:{ctx.user_id}"],
+        CliResult(exit_code=0, stdout="", stderr=""),
+    )
+    await dispatch(ctx, bot_config=_make_config(), invoker=invoker, bot_client=bot)
 
 
 # ---------------------------------------------------------------------------
