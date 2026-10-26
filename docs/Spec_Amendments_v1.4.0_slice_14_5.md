@@ -1,6 +1,6 @@
-# docs/Spec_Amendments_v1.4.0_slice_14_5.md
+docs/Spec_Amendments_v1.4.0_slice_14_5.md
 
-**Status:** Ready to apply to `Upgrade_System_specifications.md` v1.4.0
+**Status:** Applied to `Upgrade_System_specifications.md` v1.4.0 (2026-10-26)
 **Scope:** Slice 14.5 — API and byte budget enforcement
 
 ---
@@ -10,6 +10,8 @@
 The v1.4.0 spec declared a phantom `[state] ledger_path` config and a "SQLite event ledger" for cap persistence. Neither existed in code. Slice 14.5 implements cap enforcement using an append-only JSONL usage log, matching the pattern already proven by `release-index.jsonl`, `operation.jsonl`, and the shipping transaction's backup journal.
 
 The phantom ledger is retired. The `[iteration]` `max_api_requests` and `max_downloaded_bytes` fields (declared in §17.1 but never read) move to a new `[budget]` section that actually enforces them.
+
+**Note on application status:** The amendments below were applied to `Upgrade_System_specifications.md` v1.4.0 on 2026-10-26. They are now present in that spec; this document is preserved as the rationale and audit record of what changed and why.
 
 ---
 

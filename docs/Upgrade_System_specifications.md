@@ -1,6 +1,6 @@
-# docs/Upgrade_System_specifications.md
+docs/Upgrade_System_specifications.md
 
-**Status:** Design of record. Architecture frozen at v1.4.0. Slices 1–14 implemented and passing (2421 tests, 92.43% coverage). Slice 15 (Discord bot) and Slice 16 (migration rehearsal) remain before production cutover.
+**Status:** Design of record. Architecture frozen at v1.4.0. Slices 1–14 implemented and passing (2421 tests, 92.43% coverage at Slice 14 close). Slice 15 T3b+T3c implemented and passing (2711 tests, 92.55% coverage); T11 (approval replay and expiry) remains. Slice 16 (migration rehearsal) remains. Production cutover is gated on T11 and T20.
 
 **Supersedes:** v1.3.1
 
@@ -17,6 +17,8 @@
 5. **§20 updated** — 34 of 35 acceptance tests covered. Only T11 (approval replay/expiry) remains, blocked on Slice 15.
 6. **§22 updated** — new known limits from Slice 13/14.
 7. **§23.1 updated** — authority table reflects new `config.d/build/` authority and repository-trigger build semantics.
+8. **§11 and §17 updated** — Slice 15 T3b/T3c Discord bot interface documented: signed-HTTP interaction endpoint (§11.1.1) and `/notify` service endpoint (§11.1.2), distinct auth models per route (§11.3.1), `[discord].application_id` and `[discord].public_key` added to `config.d/upgrade.toml` (§17.1), `[discord.notify_dispatch]` added to `config.d/deploy_pack.toml` (§17.2), new `config.d/discord_bot.toml` config class (§17.6).
+9. **Slice 14.5 amendments applied** — §4.1 storage tree (`usage.jsonl` replaces the phantom `ledger.sqlite`), §8.2.1 caps implementation, §17.1 `[budget]` block, §20 T36, §22 known limits, §23.1 authority table rows.
 
 **Retained from v1.3.1:**
 - Artifact authority: prod receives exact tested bytes.
@@ -172,7 +174,7 @@ repo/
 # DEV-local operational state (not Git-tracked)
 /var/lib/minecraft-upgrade/
 ├── latest-slip                     # candidate pointer (one line)
-├── ledger.sqlite                   # deployment ledger + API/byte budgets
+├── usage.jsonl                    # API + byte budget log (append-only)
 ├── runs/<run-id>/                  # per-run resolver state
 │   ├── state.toml
 │   ├── acknowledgment.json         # absent if not required
@@ -372,9 +374,9 @@ The enum comments are normative. `config_mode ∈ {merge, delete}`. `kubejs_mode
 7. Every `[[jar]]` MUST follow the same promotion and release-packaging workflow. Provider origin MUST NOT create a separate deployment pipeline or distinct registry section.
 8. Every `[[jar]]` MUST declare dependency edges with:
 
-   - `namespace` ∈ `{"project", "modid"}`
-   - `source` ∈ `{"pw_toml", "jar_manifest", "provider_metadata"}`
-   - `type` ∈ `{"required", "optional", "incompatible", "embedded", "tool", "include"}`
+   - `namespace ∈ {"project", "modid"}`
+   - `source ∈ {"pw_toml", "jar_manifest", "provider_metadata"}`
+   - `type ∈ {"required", "optional", "incompatible", "embedded", "tool", "include"}`
 
    Empty array if none.
 
@@ -812,7 +814,9 @@ iterate --run-id <run-id>
 | API requests | Configurable budget, journaled persistently |
 | Downloaded bytes | Configurable budget, journaled persistently |
 
-Budgets are persisted in a SQLite event ledger keyed by run ID and resolution attempt. A controller restart resumes the same run and its accumulated usage. It MUST NOT reset caps. A corrupt or unreadable budget ledger fails closed and requires operator intervention.
+Budgets are persisted in an append-only JSONL usage log at `[budget].usage_log_path` (default `<project_root>/var/usage.jsonl`). Each line records one API call or one download with a timestamp and, for downloads, a byte count. The log is read on every cap check; records older than `[budget].window_hours` (default 24) are ignored. A malformed line is logged and skipped; an unreadable log file aborts the run with exit 3 (fails closed per the original spec).
+
+The resolver's per-run `provider_requests_made` counter and the usage log record the same facts. The log persists across runs and across restarts; the report counter does not.
 
 ### 8.3 Phase B — mod-set approval
 
@@ -1194,12 +1198,41 @@ Backup creation is implemented by the production daemon (§12.4 stage 13) via `m
 
 ### 11.1 Bot
 
-- `discord.py`
-- Separate service on DEV
-- Narrow commands only
+The bot is a **standalone peer daemon**, not a submodule of `deploy_pack` or `modpack_upgrade`. It runs on DaemonCore, owns Discord communication end-to-end (inbound interactions and outbound notifications), and never mutates approval state directly — it forwards every slash-command action to the `minecraft-upgrade` CLI subprocess.
+
+Implementation:
+
+- Discord REST calls are made via a narrow `BotClient` protocol; the concrete transport is `DiscordRestClient` (Slice 15 T3b). No gateway/websocket connection is used; the bot operates entirely over Discord's HTTP APIs.
+- Slash-command interactions are delivered as signed HTTP POSTs to the bot's interaction endpoint. The endpoint verifies Discord's Ed25519 request signature before any handler runs (§11.3).
+- Outbound notifications from `deploy_pack` are delivered via a separate `POST /notify` route authenticated by a shared bearer token (§11.3).
+- The bot invokes the `minecraft-upgrade` CLI as a subprocess for every command handler; it does not import the resolver, approval, or materialize logic directly.
 - The bot is not the controller and has no direct filesystem access to mutate approvals.
 
+#### 11.1.1 Interaction endpoint
+
+`POST /interactions` receives Discord's application-command payloads. The endpoint enforces, in order:
+
+1. Ed25519 signature verification (`X-Signature-Ed25519` + `X-Signature-Timestamp` headers, validated against the bot's configured `public_key`). Missing or invalid signature → HTTP 401 before any payload bytes are parsed.
+2. JSON parse. Malformed body → HTTP 400.
+3. PING/PONG handshake (`type: 1` → `type: 1`).
+4. Application commands (`type: 2`) normalized into an `InteractionContext` and scheduled on a background task. The endpoint returns DEFERRED (`type: 5`) immediately, satisfying Discord's three-second initial-response window even when the CLI subprocess takes longer.
+5. Component, modal, and autocomplete interactions → HTTP 400 until those surfaces land in a later slice.
+
+#### 11.1.2 Notify endpoint
+
+`POST /notify` receives outbound notifications from the `deploy_pack` process. It is registered only when the bot daemon is configured with a non-`None` `notify_bearer_token` (see §17.6). The endpoint enforces, in order:
+
+1. Bearer-token authentication (`Authorization: Bearer <token>` header, constant-time comparison against the configured token). Missing or invalid token → HTTP 401.
+2. JSON parse. Malformed body → HTTP 400.
+3. Payload validation: `{"content": str, "kind": str}` with both non-empty → HTTP 400 on violation.
+4. Delivery to the bot's configured operator channel via `BotClient.send`. Delivery failure → HTTP 502 (so the caller can report failure without falling back to the webhook).
+5. Success → HTTP 200 with `{"status": "ok"}`.
+
+Both endpoints are served by the same `DiscordBotPlugin` and share the same `BotClient` for outbound delivery, so the delivery path is unified.
+
 ### 11.2 Commands
+
+Discord slash commands (delivered via `POST /interactions`, §11.1.1):
 
 | Command | Purpose |
 |---|---|
@@ -1209,16 +1242,31 @@ Backup creation is implemented by the production daemon (§12.4 stage 13) via `m
 | `/upgrade approve` | Approve current prompt |
 | `/upgrade reject [reason]` | Reject current prompt |
 
+The `POST /notify` route (§11.1.2) is **not a Discord command**. It is a service-to-service endpoint that `deploy_pack` calls to deliver notifications through the bot's outbound Discord path. Its existence does not add any user-facing slash commands.
+
 ### 11.3 Rules
 
-- Allowlist users/roles.
-- Idempotent button clicks; interaction ID persisted with a unique constraint.
-- Approval bound to candidate/snapshot identity.
+- Allowlist users/roles for slash commands. Users whose ID or role is not allowlisted receive a rejection reply and no CLI invocation.
+- Idempotent button clicks; interaction ID persisted with a unique constraint (§11.4).
+- Approval bound to candidate/snapshot identity (§11.4).
 - Approval state persisted.
 - No arbitrary shell commands.
 - Bot token outside git and out of logs.
 - Bot MUST NOT be the controller.
 - Approval actions use Discord's signed HTTP interaction mechanism. The controller verifies Discord's Ed25519 request signature, validates guild/channel/user identity and authorized role, and checks the pending approval against stored candidate state.
+
+#### 11.3.1 Auth model
+
+The two bot routes use **different auth mechanisms**, by design:
+
+| Route | Auth | Provided by |
+|---|---|---|
+| `POST /interactions` | `X-Signature-Ed25519` + `X-Signature-Timestamp` headers, verified against the bot's configured `public_key` | Discord |
+| `POST /notify` | `Authorization: Bearer <token>`, constant-time comparison against the bot's configured `notify_bearer_token` | `deploy_pack` |
+
+The `/interactions` signature is the same Ed25519 mechanism Discord requires for every registered application. The `/notify` bearer token is the same `.env` variable the bot daemon's `[daemon].notify_bearer_token_key` names — one secret, two consumers (§17.6). Neither route shares credentials with the other.
+
+The `/notify` route is deliberately not reachable when the bot is built without a notify token: the plugin registers it only when the token is configured, so a bot daemon that does not participate in the notify path has no authenticated notify surface at all.
 
 ### 11.4 Approval replay and expiry
 
@@ -1887,6 +1935,17 @@ allow_alpha = false
 [iteration]
 max_boot_iterations = 15
 max_wall_clock_seconds = 2700
+
+[budget]
+# Optional. Default: <project_root>/var/usage.jsonl. Absolute paths are
+# used verbatim; relative paths resolve against the project root.
+usage_log_path = "var/usage.jsonl"
+
+# Rolling window for cap enforcement. Default 24.
+usage_window_hours = 24
+
+# Optional. When both are unset, no usage log is written and no caps
+# are enforced.
 max_api_requests = 5000
 max_downloaded_bytes = 10_000_000_000
 
@@ -1918,7 +1977,22 @@ filenames = [
 ]
 
 [discord]
+# The bot token is read from config.d/.env under the fixed key
+# DISCORD_BOT_TOKEN. The bot_token_env field documents the key name for
+# forward compatibility; the current implementation reads the literal
+# key directly.
 bot_token_env = "DISCORD_BOT_TOKEN"
+
+# Discord application snowflake. Required by the signed-HTTP interaction
+# endpoint (Section 11.1.1) to validate that inbound interactions target
+# this application.
+application_id = "1234567890123456789"
+
+# Ed25519 public key (64 lowercase hex) issued by Discord on the
+# application page. Verifies every inbound interaction signature
+# (Section 11.3.1).
+public_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 guild_id = "..."
 channel_id = "..."
 allowlist_roles = ["..."]
@@ -1936,7 +2010,6 @@ trusted_keys_path = "config.d/trusted-release-keys.toml"
 latest_slip_path = "/var/lib/minecraft-upgrade/latest-slip"
 candidate_store = "/var/lib/minecraft-upgrade/candidates"
 runs_store = "/var/lib/minecraft-upgrade/runs"
-ledger_path = "/var/lib/minecraft-upgrade/ledger.sqlite"
 ```
 
 **`[in-house].filenames`** declares which jars in the seed are in-house mods. Filenames in the list are treated as `provider = "in-house"`, bypass provider query, and preserve their current version. The sorted filename list participates in `resolution_inputs_sha256`.
@@ -1944,6 +2017,10 @@ ledger_path = "/var/lib/minecraft-upgrade/ledger.sqlite"
 If `[in-house]` is present, `filenames` MUST be present (may be `[]`). A missing `[in-house]` table is equivalent to `filenames = []`.
 
 Retirement of this list is deferred (§9.7).
+
+**`[discord]` additions (Slice 15 T3b/T3c):** `application_id` and `public_key` are consumed by the bot daemon's signed-HTTP interaction endpoint (§11.1.1). `application_id` is a Discord snowflake string; `public_key` is 64 lowercase hex chars. Both are issued by Discord on the application page. The bot reads its token from `config.d/.env` under the fixed key named by `bot_token_env`.
+
+**`[budget]` (Slice 14.5):** replaces the phantom `[state].ledger_path` from earlier spec revisions. `max_api_requests` and `max_downloaded_bytes` were previously declared under `[iteration]` but never read; they now live under `[budget]` and are enforced via the append-only usage log described in §8.2.1.
 
 ### 17.2 `config.d/deploy_pack.toml` additions
 
@@ -1977,6 +2054,21 @@ source_host = "dev.example.com"          # empty disables /deploy
 source_user = "deploy"
 source_path = "/srv/minecraft-dev/www/releases"
 ssh_key = "~/.ssh/id_deploy_warehouse_ro"
+
+[discord.notify_dispatch]
+# Opt into bot-daemon notification delivery (Slice 15 T3c). When this
+# section is present, deploy_pack dispatches every notification through
+# the bot daemon's POST /notify endpoint rather than the legacy
+# webhook. Both keys are required when the section is present.
+#
+# When this section is absent, deploy_pack uses the legacy webhook
+# path (unchanged behavior from prior slices).
+bot_daemon_url = "http://127.0.0.1:8766"
+
+# Name of the .env key whose value is the shared bearer token. This is
+# the same .env value the bot daemon's [daemon].notify_bearer_token_key
+# names; one secret, two consumers (Section 17.6).
+bot_daemon_token_env = "DISCORD_BOT_NOTIFY_TOKEN"
 ```
 
 If `[daemon].source_host` is empty, the daemon's `/deploy` endpoint returns 501 (NotImplementedError) after verification. This is the correct behavior for a daemon that cannot pull. Verification and `/verify` / `/publish` still work.
@@ -2019,6 +2111,43 @@ Variable resolution and failure handling are described in §9.3 through §9.5.
 | TOML keys/sections | snake_case |
 | `.env` keys | snake_case |
 
+### 17.6 `config.d/discord_bot.toml`
+
+New in Slice 15. The bot daemon reads its runtime configuration from this file's `[daemon]` section. It is separate from `config.d/upgrade.toml` (application-level config: guild, channel, allowlists, keys) and `config.d/deploy_pack.toml` (deploy-side configuration).
+
+```toml
+[daemon]
+# Directory for daemon-owned durable state (lock file, audit journal).
+# Relative paths resolve against the project root (config_dir.parent).
+state_dir = "var/discord-bot"
+
+# Single-file deployment lock. Mirrors deploy_pack daemon lock semantics.
+lock_path = "var/discord-bot/bot.lock"
+
+# Signed-HTTP interaction endpoint bind address. Loopback by default;
+# Discord requires a public-reachable URL, so in practice the daemon
+# sits behind a reverse proxy or Tailscale funnel that terminates TLS
+# and forwards to this address.
+http_host = "127.0.0.1"
+http_port = 8766
+
+# Name of the .env key whose value authenticates POST /notify calls
+# from the deploy_pack process. Absent = /notify disabled (the plugin
+# will not register the route). When set, the .env key's value MUST
+# be non-empty; a missing value raises at daemon construction so a
+# partially-configured notify path cannot silently do nothing.
+notify_bearer_token_key = "DISCORD_BOT_NOTIFY_TOKEN"
+
+# CLI binary and timeout for minecraft-upgrade subprocess invocations
+# triggered by slash-command handlers.
+cli_binary = "minecraft-upgrade"
+cli_timeout_seconds = 60
+```
+
+The file is required for the daemon to start. A bot that should not run a daemon simply has no `discord_bot.toml`. This contrasts with `config.d/upgrade.toml`'s `[discord]` section, which is optional and disables the bot when absent.
+
+The bot daemon does not begin serving HTTP until `DiscordBotPlugin.start` is invoked by DaemonCore's plugin lifecycle. See §11.1 for the plugin's HTTP lifecycle contract.
+
 ---
 
 ## 18. Security & Reliability
@@ -2048,6 +2177,7 @@ Variable resolution and failure handling are described in §9.3 through §9.5.
 23. `materialize` MUST NOT mutate `sync/downloads/.index/`. Only `promote` writes to `.index/`.
 24. Staging isolation: candidate downloads MUST be staged in run-local directories and verified before publishing to the shared warehouse.
 25. **The in-house build script runs with the DEV operator's privileges.** The tool's responsibility ends at running the script the mod declared; it does not sandbox the build, restrict network access, or verify that the resulting artifact is safe. Operators MUST review a mod's build script before running `build-inhouse` against it.
+26. **The bot daemon's `/notify` endpoint is a service-to-service route, not a Discord command.** It authenticates via bearer token (constant-time compare) and MUST NOT be reachable when the bot is built without a notify token (§11.3.1). The `/interactions` route's Ed25519 signature is independent and is the only signature Discord issues.
 
 ---
 
@@ -2107,7 +2237,7 @@ Do not delete immutable slips or rewrite release history as rollback.
 
 ## 20. Acceptance-Test Checklist
 
-**Status as of v1.4.0:** 34 of 35 acceptance tests covered. Only T11 (approval replay/expiry) remains, blocked on Slice 15. T20 (migration rollback drill) is a rehearsal, not a code test, and is scheduled for Slice 16.
+**Status as of v1.4.0:** 35 of 36 acceptance tests covered. Only T11 (approval replay/expiry) remains, blocked on Slice 15. T20 (migration rollback drill) is a rehearsal, not a code test, and is scheduled for Slice 16.
 
 | ID | Test | Required pass condition | Status |
 |---|---|---|---|
@@ -2146,6 +2276,7 @@ Do not delete immutable slips or rewrite release history as rollback.
 | T33 | Side precedence chain | Override beats jar metadata; jar metadata beats provider; provider beats `.pw.toml`. All five scenarios tested. | OK |
 | T34 | Filename collision at warehouse | Attempt to materialize artifact with same filename as warehouse artifact but different SHA-256. Exit 3 without overwriting. Same SHA-256 reuses without copy. | OK |
 | T35 | `resolution_inputs_sha256` stability | Formatting-only edits to manifest or `side_overrides.toml` produce identical fingerprint. Semantic edits change it. | OK |
+| T36 | API cap enforcement | Configure `max_api_requests = 5`, resolve a manifest requiring more than 5 API calls. Resolution aborts with exit 6 and the cap diagnostic. The `usage.jsonl` log records exactly 5 `api` lines for the run. | OK |
 
 ---
 
@@ -2219,6 +2350,9 @@ The system is acceptable for production use only when:
 - The full log-classifier pattern catalog evolves after interface freeze; its status model and fix-application permissions are fixed.
 - **Production daemon deployment orchestration is implemented but not yet exercised against a real production deployment.** All modules (`deploy`, `pull`, `health`, `backup`, `recovery`, `service_control`, `health_probe`, `deploy_runtime`) are tested at module and HTTP-endpoint level. First production deployment will exercise the plumbing end-to-end for the first time.
 - **Production daemon's recovery paths are implemented but not yet exercised against a real failure.** T07, T08, and T19 cover them via injected failures; a real prod failure (network drop, disk full, OOM) may find gaps in the failure modes we didn't anticipate.
+- **Cap enforcement is best-effort under concurrency.** The usage log assumes a single writer. Concurrent `update` invocations may briefly exceed the configured cap by up to one call per concurrent writer. Multi-writer coordination is deferred to v2.0.0.
+- **Cap enforcement is per-window.** A cap of 5000 API requests per 24 hours resets at the window boundary; there is no cross-window accumulation.
+- **Byte cap can be exceeded by one download.** The byte-cap check runs before each download. If a single download pushes the total past the cap, the *next* download is refused. Operators mitigate by setting `max_bytes` on individual downloads below their cap surplus.
 - Production readiness is not claimed until §20 tests pass and the migration runbook is exercised on DEV.
 
 ---
@@ -2241,6 +2375,9 @@ The system is acceptable for production use only when:
 | Side policy | `config.d/side_overrides.toml` |
 | Selection policy | `[policy].selection` |
 | Loss policy | `[policy].no_version` |
+| Usage log | `[budget].usage_log_path` (append-only JSONL) |
+| API cap | `[budget].max_api_requests` |
+| Byte cap | `[budget].max_downloaded_bytes` |
 | Selected artifacts | Candidate slip |
 | Approved release | `packing_slips/<tag>.toml` |
 | Release slip | `sync/packing_slips/<tag>.toml` |
@@ -2270,6 +2407,10 @@ The system is acceptable for production use only when:
 | Velocity topology | Isolated DEV proxy; prod proxy if present |
 | Final promotion | Human-committed git tag + `stable` update |
 | Publication | Explicit `minecraft-upgrade publish` |
+| Discord bot application config | `config.d/upgrade.toml [discord]` (§17.1) |
+| Discord bot daemon runtime | `config.d/discord_bot.toml [daemon]` (§17.6) |
+| Bot → Discord notifications | `POST /notifications` dispatch via `BotClient` |
+| Deploy → bot daemon notifications | `config.d/deploy_pack.toml [discord.notify_dispatch]` (§17.2) |
 
 ### 23.2 Placeholder reference (Discord)
 
@@ -2315,6 +2456,10 @@ See §16.
 - **In-house build spec** — `config.d/build/<name>.yaml`. Declares repository, ref, entrypoint, script, and artifact patterns. The tool runs the script; the mod's repository owns the build logic.
 - **Build workspace** — `.build-workspace/<name>-<timestamp>/`. Transient; kept on failure for inspection, removed on success.
 - **Build outcome** — structured result of `run_build`. Success flag, staged artifacts map, failure message, stdout/stderr excerpts.
+- **Usage log** — append-only JSONL record of API calls and downloaded bytes. Bounds the resolver's total spend against `[budget]` caps (§8.2.1).
+- **Discord bot daemon** — standalone peer service over DaemonCore. Owns Discord communication end-to-end (§11.1).
+- **`/interactions` endpoint** — signed-HTTP endpoint for Discord application-command payloads. Auth via Ed25519 signature (§11.1.1).
+- **`/notify` endpoint** — service-to-service endpoint for `deploy_pack` notifications. Auth via bearer token (§11.1.2). Not a Discord command.
 
 ---
 
@@ -2360,6 +2505,10 @@ See §16.
 | **In-house build artifact staging** | **`.pw.toml` -> `sync/downloads/.index/`; other -> `sync/downloads/`. Traversal-rejected at glob expansion.** |
 | **In-house build failure** | **Clone kept for inspection. Exit 1. Diagnostic names the clone path.** |
 | **Health probe** | **Five checks per container. Missing container, stopped, no health block, restart drift, RCON unreachable, or fatal marker all report with specific reasons.** |
+| **Usage log** | **Append-only JSONL at `[budget].usage_log_path`. Read on every cap check; records older than `[budget].usage_window_hours` ignored. Malformed lines logged and skipped; unreadable log aborts (exit 3).** |
+| **Discord `/interactions`** | **Ed25519 signature required. PING/PONG handshake. Application commands normalized, scheduled, DEFERRED. Unsupported types -> HTTP 400.** |
+| **Discord `/notify`** | **Bearer-token auth (constant-time compare). Payload validated. Delivery failure -> HTTP 502, no webhook fallback. Route not registered when `notify_bearer_token` is `None`.** |
+| **Discord bot HTTP lifecycle** | **`start()` constructs uvicorn server, awaits readiness, holds task. `stop()` signals shutdown, awaits task. `health()` reports `unhealthy` when not serving.** |
 
 ---
 
@@ -2371,7 +2520,7 @@ See §16.
 
 | Deliverable | Status |
 |---|---|
-| Slice 15 implementation (Discord bot, approval flow) | Not started |
+| Slice 15 implementation (Discord bot, approval flow) | T3b+T3c implemented and passing; T11 (approval replay/expiry) pending |
 | Slice 16 implementation (migration runbook, T20 rehearsal) | Not started |
 | Slice 17+ (full log classifier, `[in-house].filenames` retirement) | Not started |
 | `docs/Manifest_Schema.md` | Frozen (rev f) |
@@ -2381,7 +2530,7 @@ See §16.
 | Migration runbook | Not written |
 | OCI registry allowlist and image pinning procedure | Not written |
 | World backup and restoration drill | Not written |
-| All §20 acceptance tests | 34/35 covered; T11 pending Slice 15 |
+| All §20 acceptance tests | 35/36 covered; T11 pending Slice 15 |
 | Verification that existing SMB config is truly inactive | Not verified |
 
 **Design freeze is complete.** Implementation is authorized against §20 and the frozen v1.4.0 contract. Production cutover requires all §20 tests passing and the migration runbook exercised on DEV.
