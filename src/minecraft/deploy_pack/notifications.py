@@ -12,6 +12,34 @@ Responsibilities (Section 9.2):
   * posting via HTTP, best-effort, never authoritative over the
     deployment outcome (Section 5.12)
 
+Slice 15 T3c: bot-daemon dispatch
+---------------------------------
+When ``config.d/deploy_pack.toml`` declares ``[discord.notify_dispatch]``,
+this module routes notifications through the Discord bot daemon's
+``POST /notify`` endpoint instead of the legacy webhook. The bot daemon
+owns the outbound Discord path (peer-service architecture). The dispatch
+decision lives here so call sites in ``deploy_pack/main.py`` do not need
+to change their notification-invocation shape.
+
+Dispatch semantics (per Q5 in the T2/T3 planning):
+
+  * **Bot daemon configured** (``[discord.notify_dispatch]`` present in
+    ``deploy_pack.toml`` AND ``bot_daemon_token`` resolved from
+    ``.env``): every notification is POSTed to the bot daemon. A
+    delivery failure reports ``success=False, transport="bot_daemon"``
+    and **does not fall back** to the webhook. Silent fallback on an
+    ambiguous delivery failure would risk duplicate notifications once
+    the bot daemon recovers.
+
+  * **Bot daemon not configured**: notifications go through the legacy
+    webhook. This is the migration-time path.
+
+  * **Neither configured** (no bot daemon, no webhook): the notification
+    is skipped. ``notify_live`` and friends return ``skipped=True``.
+
+The token is the *same* ``.env`` variable the bot daemon's
+``[daemon].notify_bearer_token_key`` names. One secret, two consumers.
+
 Dependency direction
 --------------------
 
@@ -54,11 +82,12 @@ a successful post is an INFO, and every intermediate step is a DEBUG.
 Rendered message bodies are never logged - the templates carry player
 role IDs and deployment details that should not land in a log sink.
 Every DEBUG and INFO line records the *length* of the rendered content
-or a category, not the content itself. ``_post`` is the single INFO
+or a category, not the content itself. ``_dispatch`` is the single INFO
 site for the post outcome, so exactly one "posted" or "skipped" line
-appears per notification kind regardless of which helper dispatched
-it. ``_default_poster`` is the HTTP boundary and logs transport-level
-diagnostics at WARN (RequestException, HTTP >= 400). ``_check`` logs
+appears per notification kind regardless of which transport
+dispatched it. ``_default_poster`` and ``BotDaemonNotifier`` are the
+HTTP boundaries and log transport-level diagnostics at WARN
+(RequestException, HTTP >= 400, network errors). ``_check`` logs
 its template-validation outcome at DEBUG and leaves severity to the
 caller, which already aggregates failures before logging them.
 """
@@ -71,6 +100,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 import requests
 from requests.exceptions import RequestException
 
@@ -93,6 +123,8 @@ __all__ = [
     "STATE_START_FAILED",
     "STATE_STOPPED",
     "STATE_STOPPED_BY_DEPLOYMENT",
+    "BotDaemonDeliveryResult",
+    "BotDaemonNotifier",
     "DiagnosticContext",
     "FailureContext",
     "LiveContext",
@@ -558,6 +590,11 @@ class NotifyResult:
         error: Optional error message if the notification failed.
         skipped: Whether the notification was skipped.
         rendered_length: Length of the rendered notification content.
+        transport: Which transport delivered (or attempted to deliver):
+            ``"webhook"`` or ``"bot_daemon"``. This field distinguishes
+            a bot-daemon delivery failure from a webhook delivery failure
+            so callers can report the correct diagnostic without inspecting
+            the error string.
     """
 
     kind: str
@@ -565,9 +602,83 @@ class NotifyResult:
     error: str | None = None
     skipped: bool = False
     rendered_length: int = 0
+    transport: str = "webhook"
 
 
 Poster = Callable[[str, str, dict[str, Any], float], tuple[bool, str | None]]
+
+
+# ---------------------------------------------------------------------------
+# Bot-daemon notifier (Slice 15 T3c)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BotDaemonDeliveryResult:
+    """Outcome of one bot-daemon notification dispatch."""
+
+    success: bool
+    error: str | None = None
+
+
+class BotDaemonNotifier:
+    """Synchronous HTTP client that POSTs notifications to the bot daemon's ``/notify``.
+
+    The deployment pipeline is synchronous; the notifier uses
+    :class:`httpx.Client` rather than the async client. The bot daemon's
+    side of the interface is async (FastAPI), but the client is free to
+    be sync.
+
+    Inject ``http_client`` for tests: ``httpx.Client(transport=httpx.MockTransport(handler))``.
+    When omitted, a fresh client is created per call with the given
+    timeout; the client is closed in a ``finally`` block so no connection
+    leaks between deployments.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        http_client: httpx.Client | None = None,
+        timeout: float = 10.0,
+        logger: Any = None,
+    ) -> None:
+        """Store the base URL, token, and (optional) injected HTTP client."""
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        self._http_client = http_client
+        self._timeout = timeout
+        self._logger = logger if logger is not None else _log
+
+    def notify(self, content: str, kind: str) -> BotDaemonDeliveryResult:
+        """POST ``content`` to the bot daemon's ``/notify`` endpoint.
+
+        Returns ``BotDaemonDeliveryResult(success=True)`` on 2xx.
+        Returns ``BotDaemonDeliveryResult(success=False, error=...)`` for
+        network failures and non-2xx responses. Never raises.
+        """
+        url = f"{self._base_url}/notify"
+        payload = {"content": content, "kind": kind}
+        headers = {"Authorization": f"Bearer {self._token}"}
+
+        owned_client = self._http_client is None
+        client = self._http_client if self._http_client is not None else httpx.Client(timeout=self._timeout)
+        try:
+            response = client.post(url, json=payload, headers=headers)
+        except httpx.HTTPError as exc:
+            self._logger.warning(f"bot_daemon_notifier: network error: {type(exc).__name__}: {exc}")
+            return BotDaemonDeliveryResult(success=False, error=f"network error: {type(exc).__name__}: {exc}")
+        finally:
+            if owned_client:
+                client.close()
+
+        if response.status_code >= 400:
+            preview = response.text[:200]
+            self._logger.warning(f"bot_daemon_notifier: HTTP {response.status_code}: {preview!r}")
+            return BotDaemonDeliveryResult(success=False, error=f"HTTP {response.status_code}: {preview}")
+        self._logger.debug(f"bot_daemon_notifier: HTTP {response.status_code} ({len(content)} chars)")
+        return BotDaemonDeliveryResult(success=True)
 
 
 def _default_poster(webhook_url: str, content: str, allowed_mentions: dict[str, Any], timeout: float) -> tuple[bool, str | None]:
@@ -591,42 +702,103 @@ def _default_poster(webhook_url: str, content: str, allowed_mentions: dict[str, 
     return (True, None)
 
 
-def _post(
-    webhook_url: str | None, content: str, allowed_mentions: dict[str, Any], kind: str, poster: Poster, logger: Any, timeout: float = 10.0
-) -> NotifyResult:
-    """Shared posting logic: guard, post, translate failure (Section 5.12, Section 5.13).
-
-    Emits the single INFO line per notification outcome. ``kind`` is the NotifyKind constant; the content body is never logged, only its length.
-    """
-    if logger is None:
-        logger = _log
-    logger.debug(f"_post: kind={kind} content_len={len(content)} webhook_set={webhook_url is not None}")
-    if len(content) > DISCORD_CONTENT_LIMIT:
-        msg = f"rendered content is {len(content)} chars, exceeding the {DISCORD_CONTENT_LIMIT}-char limit (Section 5.13)"
-        logger.warning(msg)
-        return NotifyResult(kind=kind, success=False, error=msg, rendered_length=len(content))
-    if not webhook_url:
-        logger.warning(f"webhook_url is not configured; {kind} notification skipped")
-        return NotifyResult(kind=kind, success=False, skipped=True)
-    try:
-        ok, err = poster(webhook_url, content, allowed_mentions, timeout)
-    except Exception as exc:
-        ok, err = (False, f"poster raised: {exc}")
-        logger.debug(f"_post: {kind} poster raised: {exc}")
-    if not ok:
-        logger.warning(f"{kind} notification failed: {err}")
-    else:
-        logger.info(f"{kind} notification posted ({len(content)} chars)")
-    return NotifyResult(kind=kind, success=ok, error=err, rendered_length=len(content))
-
-
 def _allowed_mentions(ctx_roles: list[str]) -> dict[str, Any]:
     """Section 5.14: parse=[]; roles = union of all configured role IDs."""
     return {"parse": [], "roles": ctx_roles, "users": []}
 
 
+# ---------------------------------------------------------------------------
+# Dispatch selection (Slice 15 T3c)
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_webhook(
+    webhook_url: str | None,
+    content: str,
+    allowed_mentions: dict[str, Any],
+    kind: str,
+    poster: Poster,
+    logger: Any,
+    timeout: float = 10.0,
+) -> NotifyResult:
+    """Deliver via the legacy webhook (existing behaviour)."""
+    if not webhook_url:
+        logger.warning(f"webhook_url is not configured; {kind} notification skipped")
+        return NotifyResult(kind=kind, success=False, skipped=True, transport="webhook")
+    try:
+        ok, err = poster(webhook_url, content, allowed_mentions, timeout)
+    except Exception as exc:
+        ok, err = (False, f"poster raised: {exc}")
+        logger.debug(f"_dispatch_webhook: {kind} poster raised: {exc}")
+    if not ok:
+        logger.warning(f"{kind} notification failed via webhook: {err}")
+    else:
+        logger.info(f"{kind} notification posted via webhook ({len(content)} chars)")
+    return NotifyResult(kind=kind, success=ok, error=err, rendered_length=len(content), transport="webhook")
+
+
+def _dispatch(
+    content: str,
+    webhook_url: str | None,
+    all_role_ids: list[str],
+    kind: str,
+    discord_config: DiscordConfig | None,
+    poster: Poster,
+    bot_daemon_notifier: BotDaemonNotifier | None,
+    logger: Any,
+) -> NotifyResult:
+    """Route ``content`` through the bot daemon or the webhook.
+
+    Selection rules (Slice 15 T3c, per Q5):
+
+      * ``discord_config.bot_daemon_url`` and ``.bot_daemon_token`` both
+        set: dispatch to the bot daemon. A delivery failure reports
+        ``success=False, transport="bot_daemon"`` and **does not fall
+        back to webhook**: silent fallback on an ambiguous failure
+        would risk duplicate notifications once the bot daemon recovers.
+      * Bot daemon not configured (URL or token absent): legacy webhook
+        path. This is the migration-time behaviour.
+      * Neither configured: skipped.
+
+    The 2000-character guard is applied before transport selection.
+    """
+    if len(content) > DISCORD_CONTENT_LIMIT:
+        msg = f"rendered content is {len(content)} chars, exceeding the {DISCORD_CONTENT_LIMIT}-char limit (Section 5.13)"
+        logger.warning(msg)
+        return NotifyResult(kind=kind, success=False, error=msg, rendered_length=len(content))
+
+    bot_daemon_url = discord_config.bot_daemon_url if discord_config is not None else None
+    bot_daemon_token = discord_config.bot_daemon_token if discord_config is not None else None
+    if bot_daemon_url is not None and bot_daemon_token is None:
+        logger.warning(f"discord_config.bot_daemon_url is set but bot_daemon_token is None; {kind} dispatching via webhook")
+
+    if bot_daemon_url is not None and bot_daemon_token is not None:
+        notifier = bot_daemon_notifier or BotDaemonNotifier(base_url=bot_daemon_url, token=bot_daemon_token, logger=logger)
+        result = notifier.notify(content, kind=kind)
+        if result.success:
+            logger.info(f"{kind} notification delivered via bot daemon ({len(content)} chars)")
+            return NotifyResult(kind=kind, success=True, rendered_length=len(content), transport="bot_daemon")
+        logger.warning(f"{kind} notification failed via bot daemon: {result.error}; not falling back to webhook")
+        return NotifyResult(kind=kind, success=False, error=result.error, rendered_length=len(content), transport="bot_daemon")
+
+    return _dispatch_webhook(webhook_url, content, _allowed_mentions(all_role_ids), kind, poster, logger)
+
+
+# ---------------------------------------------------------------------------
+# Public notify_* entry points
+# ---------------------------------------------------------------------------
+
+
 def notify_live(
-    template: str | None, ctx: LiveContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
+    template: str | None,
+    ctx: LiveContext,
+    webhook_url: str | None,
+    all_role_ids: list[str],
+    *,
+    discord_config: DiscordConfig | None = None,
+    logger: Any = None,
+    poster: Poster | None = None,
+    bot_daemon_notifier: BotDaemonNotifier | None = None,
 ) -> NotifyResult:
     """Render and post the live message (Section 5.4)."""
     if logger is None:
@@ -636,11 +808,19 @@ def notify_live(
         logger.warning("live template is not configured; notification skipped")
         return NotifyResult(kind=NotifyKind.LIVE, success=False, skipped=True)
     content = render_live(template, ctx, logger)
-    return _post(webhook_url, content, _allowed_mentions(all_role_ids), NotifyKind.LIVE, poster or _default_poster, logger)
+    return _dispatch(content, webhook_url, all_role_ids, NotifyKind.LIVE, discord_config, poster or _default_poster, bot_daemon_notifier, logger)
 
 
 def notify_online(
-    template: str | None, ctx: OnlineContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
+    template: str | None,
+    ctx: OnlineContext,
+    webhook_url: str | None,
+    all_role_ids: list[str],
+    *,
+    discord_config: DiscordConfig | None = None,
+    logger: Any = None,
+    poster: Poster | None = None,
+    bot_daemon_notifier: BotDaemonNotifier | None = None,
 ) -> NotifyResult:
     """Render and post the online message (Section 5.5)."""
     if logger is None:
@@ -650,11 +830,19 @@ def notify_online(
         logger.warning("online template is not configured; notification skipped")
         return NotifyResult(kind=NotifyKind.ONLINE, success=False, skipped=True)
     content = render_online(template, ctx, logger)
-    return _post(webhook_url, content, _allowed_mentions(all_role_ids), NotifyKind.ONLINE, poster or _default_poster, logger)
+    return _dispatch(content, webhook_url, all_role_ids, NotifyKind.ONLINE, discord_config, poster or _default_poster, bot_daemon_notifier, logger)
 
 
 def notify_failure(
-    template: str | None, ctx: FailureContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
+    template: str | None,
+    ctx: FailureContext,
+    webhook_url: str | None,
+    all_role_ids: list[str],
+    *,
+    discord_config: DiscordConfig | None = None,
+    logger: Any = None,
+    poster: Poster | None = None,
+    bot_daemon_notifier: BotDaemonNotifier | None = None,
 ) -> NotifyResult:
     """Render and post the failure message (Section 5.6)."""
     if logger is None:
@@ -666,11 +854,19 @@ def notify_failure(
         logger.warning("failure template is not configured; notification skipped")
         return NotifyResult(kind=NotifyKind.FAILURE, success=False, skipped=True)
     content = render_failure(template, ctx, logger)
-    return _post(webhook_url, content, _allowed_mentions(all_role_ids), NotifyKind.FAILURE, poster or _default_poster, logger)
+    return _dispatch(content, webhook_url, all_role_ids, NotifyKind.FAILURE, discord_config, poster or _default_poster, bot_daemon_notifier, logger)
 
 
 def notify_diagnostic(
-    template: str | None, ctx: DiagnosticContext, webhook_url: str | None, all_role_ids: list[str], logger: Any = None, poster: Poster | None = None
+    template: str | None,
+    ctx: DiagnosticContext,
+    webhook_url: str | None,
+    all_role_ids: list[str],
+    *,
+    discord_config: DiscordConfig | None = None,
+    logger: Any = None,
+    poster: Poster | None = None,
+    bot_daemon_notifier: BotDaemonNotifier | None = None,
 ) -> NotifyResult:
     """Render and post the diagnostic message (Section 5.7)."""
     if logger is None:
@@ -680,4 +876,4 @@ def notify_diagnostic(
         logger.warning("diagnostic template is not configured; notification skipped")
         return NotifyResult(kind=NotifyKind.DIAGNOSTIC, success=False, skipped=True)
     content = render_diagnostic(template, ctx, logger)
-    return _post(webhook_url, content, _allowed_mentions(all_role_ids), NotifyKind.DIAGNOSTIC, poster or _default_poster, logger)
+    return _dispatch(content, webhook_url, all_role_ids, NotifyKind.DIAGNOSTIC, discord_config, poster or _default_poster, bot_daemon_notifier, logger)

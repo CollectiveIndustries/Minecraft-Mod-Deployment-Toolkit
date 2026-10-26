@@ -12,6 +12,8 @@ Responsibilities (Section 9.2):
   * parse stop_grace_period Go duration strings (Section 3.2)
   * validate in-game templates (Section 5.11), output_filename (Section 7.1),
     download_base_url (Section 7.5), docker timing keys (Section 3.9)
+  * load ``[discord.notify_dispatch]`` and resolve the bot-daemon token
+    (Slice 15 T3c)
 
 Explicit non-responsibilities:
   * No os.environ access (Section 9.2). The environment-variable config source
@@ -32,6 +34,28 @@ Non-raising compose handling:
   failures collected before any write") - a broken compose must not
   short-circuit a run that also has, say, an orphan [resource_pack.X]
   section.
+
+Bot-daemon notification dispatch (Slice 15 T3c)
+-----------------------------------------------
+``[discord.notify_dispatch]`` in ``deploy_pack.toml`` opts into bot-daemon
+notification delivery. Two keys are required when the section is present:
+
+  * ``bot_daemon_url`` - the bot daemon's base URL, e.g.
+    ``http://127.0.0.1:8766``.
+  * ``bot_daemon_token_env`` - the name of a ``.env`` key that holds the
+    shared bearer token. This is the **same** ``.env`` variable the bot
+    daemon's ``[daemon].notify_bearer_token_key`` names; one secret, two
+    consumers.
+
+When the section is absent, ``bot_daemon_url`` and ``bot_daemon_token``
+are ``None`` and ``notifications.py`` dispatches via the legacy webhook
+during the migration window. When the section is present but any of
+URL/token-env/token-value is missing, this module raises ``ConfigError``
+(exit 3): a URL without a token means the operator intended to enable
+the bot daemon path but forgot a required piece.
+
+The token is loaded from ``.env`` here so ``notifications.py`` (which
+does not know ``config_dir``) can dispatch without re-reading the file.
 
 Structure
 ---------
@@ -84,6 +108,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 from ConfigCore import ConfigManager
+from ConfigCore.loader import load_env
 
 from .errors import ConfigError
 from .logging_setup import get_logger
@@ -259,6 +284,16 @@ class DiscordConfig:
 
     Holds the role names permitted to issue privileged commands and the optional message templates used for live, online, failure, and diagnostic
     notifications. Templates left as None fall back to the implementations' built-in defaults.
+
+    Slice 15 T3c adds bot-daemon dispatch:
+
+      * ``bot_daemon_url`` - base URL of the Discord bot daemon's HTTP
+        interface, e.g. ``http://127.0.0.1:8766``. ``None`` (the default)
+        means notifications go through the legacy webhook path.
+      * ``bot_daemon_token`` - the resolved bearer token for ``POST
+        /notify``. Loaded from ``config.d/.env`` by ``config_model``; the
+        field is excluded from ``repr`` because it is a credential. Set
+        exactly when ``bot_daemon_url`` is set.
     """
 
     player_roles: list[str] = field(default_factory=list)
@@ -267,6 +302,8 @@ class DiscordConfig:
     online_template: str | None = None
     failure_template: str | None = None
     diagnostic_template: str | None = None
+    bot_daemon_url: str | None = None
+    bot_daemon_token: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -325,9 +362,6 @@ class DeploymentConfig:
 # ===========================================================================
 
 
-# ----- Section 3.2  Go-duration parsing --------------------------------------
-
-
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600}
 _DURATION_TOKEN = re.compile("(\\d+)([smh])")
 
@@ -372,9 +406,6 @@ def parse_go_duration(value: str) -> int:
     return total
 
 
-# ----- Section 5.11  In-game templates ---------------------------------------
-
-
 _PLACEHOLDER_RE = re.compile("\\{([^{}]*)\\}")
 
 
@@ -410,9 +441,6 @@ def validate_in_game_templates(docker: DockerConfig) -> None:
     _log.debug("validate_in_game_templates: both in-game templates valid")
 
 
-# ----- Section 7.1  Output filename ------------------------------------------
-
-
 def _filename_check_messages(name: str) -> list[tuple[bool, str]]:
     """Return ``(violated, message)`` pairs in the order checks must run.
 
@@ -444,9 +472,6 @@ def validate_output_filename(name: str) -> None:
     _log.debug(f"validate_output_filename: {name!r} OK")
 
 
-# ----- Section 7.5  download_base_url ----------------------------------------
-
-
 def validate_download_base_url(url: str) -> None:
     """Validates the download base URL.
 
@@ -457,9 +482,6 @@ def validate_download_base_url(url: str) -> None:
         _log.error("validate_download_base_url: download_base_url is empty")
         raise ConfigError("download_base_url must be non-empty")
     _log.debug(f"validate_download_base_url: {url!r} OK")
-
-
-# ----- Section 3.9  Docker timing keys ---------------------------------------
 
 
 _NON_NEGATIVE_KEYS = (
@@ -1314,11 +1336,65 @@ def _extract_message_template(messages_raw: dict, name: str, logger: Any) -> str
     return str(t) if t is not None else None
 
 
-def _build_discord_config(raw: dict[str, Any], logger: Any) -> DiscordConfig:
-    """Build the ``[discord]`` section: roles and message templates (Section 3.9)."""
+def _build_notify_dispatch_config(
+    discord_raw: dict,
+    config_dir: Path,
+    logger: Any,
+) -> tuple[str | None, str | None]:
+    """Return ``(bot_daemon_url, bot_daemon_token)`` from ``[discord.notify_dispatch]``.
+
+    ``(None, None)`` when the section is absent (webhook fallback is
+    enabled). When the section is present, both ``bot_daemon_url`` and
+    ``bot_daemon_token_env`` are required; the token itself is loaded
+    from ``config_dir/.env`` under the named key. Any missing or
+    malformed piece raises :class:`ConfigError` (exit 3): the operator
+    said to enable the bot daemon path; a broken configuration is a
+    bug, not an opt-out.
+    """
+    notify_raw = discord_raw.get("notify_dispatch")
+    if notify_raw is None:
+        return (None, None)
+    if not isinstance(notify_raw, dict):
+        logger.error("config: [discord.notify_dispatch] is not a table")
+        raise ConfigError("[discord.notify_dispatch] must be a table")
+
+    url_raw = notify_raw.get("bot_daemon_url")
+    if not isinstance(url_raw, str) or not url_raw:
+        logger.error("config: [discord.notify_dispatch].bot_daemon_url is required")
+        raise ConfigError("[discord.notify_dispatch].bot_daemon_url must be a non-empty string")
+    url = url_raw.strip()
+
+    token_env_raw = notify_raw.get("bot_daemon_token_env")
+    if not isinstance(token_env_raw, str) or not token_env_raw:
+        logger.error("config: [discord.notify_dispatch].bot_daemon_token_env is required")
+        raise ConfigError("[discord.notify_dispatch].bot_daemon_token_env must be a non-empty string")
+    token_env = token_env_raw.strip()
+
+    env_path = config_dir / ".env"
+    if not env_path.is_file():
+        logger.error(f"config: [discord.notify_dispatch] is configured but {env_path} does not exist")
+        raise ConfigError(f"[discord.notify_dispatch] is configured but {env_path} does not exist")
+    try:
+        env = load_env(env_path)
+    except OSError as exc:
+        logger.error(f"config: could not read {env_path}: {exc}")
+        raise ConfigError(f"could not read {env_path}: {exc}") from exc
+    token_raw = env.get(token_env)
+    if not isinstance(token_raw, str) or not token_raw.strip():
+        logger.error(f"config: [discord.notify_dispatch].bot_daemon_token_env={token_env!r} has no value in {env_path}")
+        raise ConfigError(f"[discord.notify_dispatch].bot_daemon_token_env={token_env!r} has no value in {env_path}")
+    token = token_raw.strip()
+
+    logger.debug(f"config: [discord.notify_dispatch] resolved bot_daemon_url={url!r} token_env={token_env!r}")
+    return (url, token)
+
+
+def _build_discord_config(raw: dict[str, Any], logger: Any, config_dir: Path) -> DiscordConfig:
+    """Build the ``[discord]`` section: roles, message templates, dispatch config (Section 3.9)."""
     discord_raw = _require_table(raw, "discord", logger=logger)
     tags_raw = _require_table(discord_raw, "tags", logger=logger)
     messages_raw = _require_table(discord_raw, "messages", logger=logger)
+    bot_daemon_url, bot_daemon_token = _build_notify_dispatch_config(discord_raw, config_dir, logger)
     discord = DiscordConfig(
         player_roles=[str(x) for x in tags_raw.get("player_roles") or []],
         operator_roles=[str(x) for x in tags_raw.get("operator_roles") or []],
@@ -1326,11 +1402,14 @@ def _build_discord_config(raw: dict[str, Any], logger: Any) -> DiscordConfig:
         online_template=_extract_message_template(messages_raw, "online", logger),
         failure_template=_extract_message_template(messages_raw, "failure", logger),
         diagnostic_template=_extract_message_template(messages_raw, "diagnostic", logger),
+        bot_daemon_url=bot_daemon_url,
+        bot_daemon_token=bot_daemon_token,
     )
     logger.debug(
         f"config: [discord] resolved; player_roles={len(discord.player_roles)} operator_roles={len(discord.operator_roles)} "
         f"templates live={'y' if discord.live_template else 'n'} online={'y' if discord.online_template else 'n'} "
-        f"failure={'y' if discord.failure_template else 'n'} diagnostic={'y' if discord.diagnostic_template else 'n'}"
+        f"failure={'y' if discord.failure_template else 'n'} diagnostic={'y' if discord.diagnostic_template else 'n'} "
+        f"bot_daemon={'enabled' if bot_daemon_url else 'disabled'}"
     )
     return discord
 
@@ -1440,6 +1519,7 @@ def _resolve_protect_file(protect_file_raw: Any, project_root: Path) -> Path | N
 
 def _build_all_sections(
     raw: dict[str, Any],
+    config_dir: Path,
     project_root: Path,
     instances: dict[str, InstanceConfig],
     logger: Any,
@@ -1462,7 +1542,7 @@ def _build_all_sections(
     resource_packs = _build_resource_packs(raw, instances, logger)
     sync_mapping = _build_sync_mapping(raw, logger)
     restart_policy = _build_restart_policy(raw, logger)
-    discord = _build_discord_config(raw, logger)
+    discord = _build_discord_config(raw, logger, config_dir)
     webhook_url = _resolve_webhook_url(raw)
     www_dir_triple = _resolve_www_dir(raw, project_root, compose_result, logger)
     return (docker, compose_result, resource_packs, sync_mapping, restart_policy, discord, webhook_url, www_dir_triple)
@@ -1595,7 +1675,7 @@ def _build_deployment_config(
     instances = _build_instances(raw, compose_result, logger)
     partition, partition_unknown = resolve_partition(instances, requested_instances)
 
-    sections = _build_all_sections(raw, project_root, instances, logger)
+    sections = _build_all_sections(raw, config_dir, project_root, instances, logger)
     # docker and compose_result are rebuilt inside _build_all_sections; drop
     # the earlier copies so only one set flows to assembly.
     docker, compose_result = sections[0], sections[1]

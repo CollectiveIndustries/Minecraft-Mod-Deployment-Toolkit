@@ -33,6 +33,11 @@ New CLI flags:
 Legacy mode is preserved: without any slip flag, ``deploy_pack`` behaves
 exactly as v2 and slip-context construction is skipped.
 
+Slice 15 T3c: notification dispatch now passes ``discord_config`` so
+``notifications.py`` can route through the bot daemon when
+``[discord.notify_dispatch]`` is configured. When the bot daemon is not
+configured, the legacy webhook path is used unchanged.
+
 Exit codes (Section 2.4):
   0 success
   1 runtime failure
@@ -668,7 +673,14 @@ def _run_diagnostic_notify(config: DeploymentConfig, logger: Any) -> None:
         timestamp=notifications.render_timestamp_now(),
     )
     all_roles = config.discord.player_roles + config.discord.operator_roles
-    notifications.notify_diagnostic(config.discord.diagnostic_template, ctx, config.webhook_url, all_roles, logger=logger)
+    notifications.notify_diagnostic(
+        config.discord.diagnostic_template,
+        ctx,
+        config.webhook_url,
+        all_roles,
+        discord_config=config.discord,
+        logger=logger,
+    )
 
 
 # ===========================================================================
@@ -785,7 +797,14 @@ def _send_live(
         section_resource_pack=_build_rp_section(plan, rp_result) if scopes.scope_set.resource_pack else "",
     )
     all_roles = config.discord.player_roles + config.discord.operator_roles
-    return notifications.notify_live(config.discord.live_template, ctx, config.webhook_url, all_roles, logger=logger)
+    return notifications.notify_live(
+        config.discord.live_template,
+        ctx,
+        config.webhook_url,
+        all_roles,
+        discord_config=config.discord,
+        logger=logger,
+    )
 
 
 def _send_failure(
@@ -805,7 +824,14 @@ def _send_failure(
         container_status=container_status,
     )
     all_roles = config.discord.player_roles + config.discord.operator_roles
-    return notifications.notify_failure(config.discord.failure_template, ctx, config.webhook_url, all_roles, logger=logger)
+    return notifications.notify_failure(
+        config.discord.failure_template,
+        ctx,
+        config.webhook_url,
+        all_roles,
+        discord_config=config.discord,
+        logger=logger,
+    )
 
 
 def _send_online(config: DeploymentConfig, container_status: dict[str, str], logger: Any) -> notifications.NotifyResult:
@@ -817,7 +843,14 @@ def _send_online(config: DeploymentConfig, container_status: dict[str, str], log
         container_status=container_status,
     )
     all_roles = config.discord.player_roles + config.discord.operator_roles
-    return notifications.notify_online(config.discord.online_template, ctx, config.webhook_url, all_roles, logger=logger)
+    return notifications.notify_online(
+        config.discord.online_template,
+        ctx,
+        config.webhook_url,
+        all_roles,
+        discord_config=config.discord,
+        logger=logger,
+    )
 
 
 # ===========================================================================
