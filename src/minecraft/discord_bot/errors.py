@@ -25,6 +25,10 @@ Subclasses
   dispatcher should surface to the user as a command failure.
 - :class:`DiscordBotCliError` - the ``minecraft-upgrade`` subprocess
   failed to start, timed out, or could not be located.
+- :class:`DiscordBotDeliveryError` - Discord REST delivery failed.
+  Raised by :class:`minecraft.discord_bot.discord_client.DiscordRestClient`
+  on network errors or non-2xx responses. The transport never returns
+  silently after a failed delivery.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ __all__ = [
     "DiscordBotAuthorizationError",
     "DiscordBotCliError",
     "DiscordBotConfigError",
+    "DiscordBotDeliveryError",
     "DiscordBotError",
     "DiscordBotHandlerError",
     "DiscordBotSignatureError",
@@ -103,4 +108,16 @@ class DiscordBotCliError(DiscordBotError):
     configured timeout. A non-zero exit code from a successfully-started
     subprocess is *not* an exception: it is reported in the returned
     :class:`CliResult`.
+    """
+
+
+class DiscordBotDeliveryError(DiscordBotError):
+    """Discord REST delivery failed.
+
+    Raised by :class:`minecraft.discord_bot.discord_client.DiscordRestClient`
+    when a network error occurs, when Discord returns a non-2xx
+    response, or when the request itself is malformed. A silent return
+    after failed delivery violates the "deliver exactly once or raise"
+    contract; callers distinguish delivery failure from "bot disabled"
+    by catching this class specifically.
     """
