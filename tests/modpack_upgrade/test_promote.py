@@ -1,45 +1,38 @@
 # tests/modpack_upgrade/test_promote.py
 
-"""Tests for ``minecraft-upgrade promote`` (Section 15.1.7).
+"""Tests for ``minecraft-upgrade promote`` (Section 15.1.7, T11).
 
-Update-mode promote is a regression check (unchanged behavior: copy
-slip + metadata, ``git add``, print instructions).
+Update-mode promote is a regression check (copy slip + metadata,
+``git add``, print instructions) plus the mod_set approval gate.
 
 Upgrade-mode promote additionally reconciles ``docker-compose.yml``
 against the slip's ``[runtime]``, refreshes the slip's
-``[inputs.git].compose_tree`` to reflect the working-tree blob hash,
-and re-seals with a fresh ``content_sha256``. The four possible
-outcomes are covered:
+``[inputs.git].compose_tree``, and re-seals with a fresh
+``content_sha256``.
 
-  * compose matches + tree matches -> no-op reconciliation, slip
-    copied as-is;
-  * compose matches + tree drifted -> re-seal only, compose file
-    untouched;
-  * compose differs + tree drifted -> reconcile compose, re-seal,
-    compose file becomes part of ``git add``;
-  * compose missing or ambiguous -> exit 3 (preconditions unchanged).
+Approval gate (T11 acceptance)
+------------------------------
+Every promote invocation requires a valid ``mod_set`` approval record
+bound to the sealed candidate's identity. Failure modes covered:
 
-The ``_setup_promote_env`` fixture defaults the compose file to match
-the slip's runtime (no drift). Tests that exercise reconciliation
-diffing must pass an explicit drifted ``compose_body``; the fixture is
-deliberately conservative so most tests read cleanly.
+  * No approval record present.
+  * Record decision is ``rejected``, not ``approved``.
+  * Record has expired (``expires_at_utc`` in the past).
+  * Record binding hash does not match the candidate identity.
 
-``_git_add`` and ``_git_blob_hash`` are monkeypatched at the module
-level for the behavior tests, so those tests focus on orchestration,
-not on git mechanics. Slice 9 Turn C1 additionally adds integration
-tests (bottom of file) that call the real ``_git_add`` and
-``_git_blob_hash`` against a real ``tmp_path`` git repository. Those
-tests close the ~10% coverage gap on the two function bodies after the
-migration to ``PlatformCore.git``.
+The gate consumes the *pre-reconcile* slip: upgrade-mode reconciliation
+changes ``content_sha256`` in place, so verification uses the snapshot
+taken before ``_reconcile_for_upgrade`` runs.
 
-Every test that wires ``_wire_git`` captures its return value, even
-when only one half is used. For pre-condition failure tests, the
-``added == []`` assertion pins that promote aborted before staging
-anything - a stronger check than merely "raised exit 3."
+Gate ordering invariant
+-----------------------
+The gate runs before ``_git_add``. Every gate-failure test also asserts
+``added == []`` to pin that no staging occurred before the refusal.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tomllib
 from pathlib import Path
@@ -49,12 +42,17 @@ import tomli_w
 import yaml
 
 from minecraft.modpack_upgrade import slip as slip_mod
+from minecraft.modpack_upgrade.approval import (
+    ApprovalBinding,
+    record_approval,
+)
 from minecraft.modpack_upgrade.cli.commands import promote
 from minecraft.modpack_upgrade.cli.commands.promote import run
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 from minecraft.modpack_upgrade.state import (
     STATUS_MATERIALIZED,
     RunState,
+    load_state,
     save_state,
 )
 
@@ -147,6 +145,37 @@ def _compose_body(
     )
 
 
+def _record_mod_set_approval(
+    *,
+    state_dir: Path,
+    run_state_dir: Path,
+    run_id: str,
+    slip_path: Path,
+    state: RunState,
+    decision: str = "approved",
+    now: str | None = None,
+) -> None:
+    """Record a mod_set approval bound to the sealed candidate slip."""
+    sealed_slip = slip_mod.load_slip(slip_path)
+    binding = ApprovalBinding(
+        slip_content_sha256=sealed_slip.content_sha256,
+        runtime_sha256=sealed_slip.fingerprints.runtime_sha256,
+        server_inputs_sha256=sealed_slip.fingerprints.server_inputs_sha256,
+        client_inputs_sha256=sealed_slip.fingerprints.client_inputs_sha256,
+        resolution_report_sha256=state.report_sha256,
+    )
+    record_approval(
+        state_dir=state_dir,
+        run_dir=run_state_dir,
+        run_id=run_id,
+        scope="mod_set",
+        decision=decision,
+        binding=binding,
+        signed_by="test-setup",
+        now=now,
+    )
+
+
 def _setup_promote_env(
     tmp_path: Path,
     *,
@@ -157,19 +186,14 @@ def _setup_promote_env(
     slip_compose_tree: str = "abc123",
     compose_body: str | None = None,
     write_compose: bool = True,
+    record_approval_record: bool = True,
 ) -> tuple[Path, Path, str]:
     """Set up a project tree with one candidate ready for promote.
 
-    When ``compose_body`` is None, the default compose file matches the
-    slip's runtime (no drift). Callers exercising reconciliation diffing
-    must pass an explicit drifted body.
-
-    When ``release_mode == "update"``, the state includes a placeholder
-    ``effective_compose_sha256``. ``state.load_state`` requires this field
-    for update mode (Resolution_Report Section 6.1); promote itself does
-    not read it, so any non-None value suffices.
-
-    Returns ``(config_dir, project_root, run_id)``.
+    Records a valid mod_set approval by default so the approval gate
+    passes and the tests exercise downstream logic. Pass
+    ``record_approval_record=False`` for tests that exercise the gate
+    itself.
     """
     config_dir = tmp_path / "config.d"
     config_dir.mkdir()
@@ -190,7 +214,8 @@ def _setup_promote_env(
         loader_version=slip_loader_version,
         compose_tree=slip_compose_tree,
     )
-    (candidate_dir / "packing_slip.toml").write_text(tomli_w.dumps(slip_raw), encoding="utf-8")
+    slip_path = candidate_dir / "packing_slip.toml"
+    slip_path.write_text(tomli_w.dumps(slip_raw), encoding="utf-8")
 
     metadata_dir = candidate_dir / "metadata"
     metadata_dir.mkdir()
@@ -209,6 +234,15 @@ def _setup_promote_env(
         effective_compose_sha256=(_hex("c") if release_mode == "update" else None),
     )
     save_state(run_state_dir / "state.toml", state)
+
+    if record_approval_record:
+        _record_mod_set_approval(
+            state_dir=state_dir,
+            run_state_dir=run_state_dir,
+            run_id=run_id,
+            slip_path=slip_path,
+            state=state,
+        )
 
     if write_compose:
         (tmp_path / "docker-compose.yml").write_text(
@@ -251,6 +285,11 @@ def _wire_git(monkeypatch: pytest.MonkeyPatch) -> tuple[list[Path], dict[str, st
     return added, blob_state
 
 
+def _load_state_for_test(run_state_dir: Path) -> RunState:
+    """Return the parsed RunState for test helpers."""
+    return load_state(run_state_dir / "state.toml")
+
+
 # ---------------------------------------------------------------------------
 # Update-mode regression (unchanged behavior)
 # ---------------------------------------------------------------------------
@@ -274,12 +313,7 @@ def test_update_mode_copies_slip_and_metadata(tmp_path: Path, _wire_git: tuple[l
 
 
 def test_update_mode_does_not_touch_compose(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
-    """Update mode leaves compose bytes untouched regardless of runtime drift.
-
-    Also pins that compose is NOT staged: even though the slip runtime
-    (1.21.2) disagrees with compose (1.21.1), update mode must not
-    reconcile or stage the compose file.
-    """
+    """Update mode leaves compose bytes untouched regardless of runtime drift."""
     added, _ = _wire_git
     compose_before = _compose_body(mc_version="1.21.1")
     config_dir, project_root, _ = _setup_promote_env(
@@ -323,13 +357,7 @@ def test_upgrade_mode_no_changes_no_reseal(tmp_path: Path, _wire_git: tuple[list
 
 
 def test_upgrade_mode_reconciles_compose_and_reseals_slip(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
-    """Compose drifted from slip runtime -> reconciled; slip re-sealed; compose staged.
-
-    The fixture's default compose matches the slip runtime, so this test
-    passes an explicit drifted ``compose_body`` (mc=1.21.1) while the
-    slip targets 1.21.2. Reconciliation must update VERSION to 1.21.2,
-    re-seal the slip with the new tree hash, and stage docker-compose.yml.
-    """
+    """Compose drifted from slip runtime -> reconciled; slip re-sealed; compose staged."""
     added, blob_state = _wire_git
     blob_state["value"] = "post_reconcile_tree_hash"
     config_dir, project_root, _ = _setup_promote_env(
@@ -364,7 +392,6 @@ def test_upgrade_mode_reseals_when_tree_drifted_but_runtime_matches(tmp_path: Pa
         release_mode="upgrade",
         slip_compose_tree="original_tree_hash",
     )
-    # Simulate operator comment edit: append a comment; runtime unchanged.
     compose_path = project_root / "docker-compose.yml"
     compose_path.write_text(
         compose_path.read_text(encoding="utf-8") + "# operator note\n",
@@ -374,15 +401,12 @@ def test_upgrade_mode_reseals_when_tree_drifted_but_runtime_matches(tmp_path: Pa
     code = run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
 
     assert code == 0
-    # Compose file NOT modified by reconciliation (only the operator edit).
     final_compose = compose_path.read_text(encoding="utf-8")
     assert final_compose.endswith("# operator note\n")
 
-    # Slip re-sealed with new tree hash.
     copied = tomllib.loads((project_root / "sync" / "packing_slips" / "v1.0.0.toml").read_text())
     assert copied["inputs"]["git"]["compose_tree"] == "edited_tree_hash"
 
-    # Compose not staged (reconciliation did not change it).
     added_rel = {str(p.relative_to(project_root)) for p in added}
     assert "docker-compose.yml" not in added_rel
 
@@ -399,19 +423,12 @@ def test_upgrade_mode_resealed_slip_reloads_cleanly(tmp_path: Path, _wire_git: t
 
     run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
 
-    # load_slip re-verifies the content_sha256; raises on corruption.
     loaded = slip_mod.load_slip(project_root / "sync" / "packing_slips" / "v1.0.0.toml")
     assert loaded.inputs_git.compose_tree == "new_tree_hash"
 
 
 def test_upgrade_mode_reseal_preserves_other_fields(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
-    """Re-sealing preserves runtime and other tree hashes; release_id becomes the tag.
-
-    Slice 10 Turn 0: promote re-seals the release slip with
-    ``release_id = tag``. The candidate slip keeps ``release_id = <run-id>``
-    (identity is the resolver run, not the operator's tag); every other
-    field is untouched by the re-seal.
-    """
+    """Re-sealing preserves runtime and other tree hashes; release_id becomes the tag."""
     _, blob_state = _wire_git
     blob_state["value"] = "new_tree_hash"
     config_dir, project_root, _ = _setup_promote_env(
@@ -551,18 +568,6 @@ def test_refuses_to_overwrite_different_slip(tmp_path: Path, _wire_git: tuple[li
 # ---------------------------------------------------------------------------
 # Integration tests: real _git_add / _git_blob_hash against a real repo
 # ---------------------------------------------------------------------------
-#
-# The `_wire_git` fixture used above monkeypatches `_git_add` and
-# `_git_blob_hash`, so those function bodies were not exercised by the
-# behavior tests above (which is why the coverage report flagged them at
-# ~10%). These tests call the functions directly against a real git
-# repository. No monkeypatch of the internal helpers; `subprocess.run` is
-# used only as ground-truth verification, not as a replacement for the
-# code under test.
-#
-# PlatformCore.git.stage_paths / hash_object are the shared implementation
-# this migration targets (Slice 9 Turn C1); these tests pin the application
-# adapter layer that translates their exceptions into UpgradeCliError(3).
 
 
 def _init_git_repo(repo: Path) -> None:
@@ -694,13 +699,6 @@ def test_git_blob_hash_empty_output_translated(real_git_repo: Path, monkeypatch:
 # ---------------------------------------------------------------------------
 # Slice 10 Turn 0: release slip's release_id is the tag, not the run-id
 # ---------------------------------------------------------------------------
-#
-# The candidate slip uses release_id = <run-id> (set by materialize; identity
-# of the resolver run). The release slip uses release_id = <tag> (set by
-# promote; identity that the release registry, publication, and Phase B
-# approval all bind to). Upgrade_System_specifications Section 5.2 and
-# Section 5.3 rule 1.  Covered for both modes because the re-seal is
-# unconditional in the release path.
 
 
 @pytest.mark.parametrize("release_mode", ["update", "upgrade"])
@@ -715,11 +713,9 @@ def test_release_slip_has_tag_as_release_id(
 
     run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
 
-    # Release slip: release_id == tag.
     released = slip_mod.load_slip(project_root / "sync" / "packing_slips" / "v1.0.0.toml")
     assert released.release_id == "v1.0.0"
 
-    # Candidate slip: release_id == run-id (unchanged identity).
     candidate = slip_mod.load_slip(project_root / "state" / "candidates" / run_id / "packing_slip.toml")
     assert candidate.release_id == run_id
 
@@ -741,8 +737,102 @@ def test_release_slip_content_sha256_verifies_after_reseal(
 
     run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
 
-    # load_slip recomputes content_sha256 over the body and raises on
-    # mismatch; a clean load is proof the re-seal recomputed it correctly.
     released = slip_mod.load_slip(project_root / "sync" / "packing_slips" / "v1.0.0.toml")
     assert released.release_id == "v1.0.0"
     assert len(released.content_sha256) == 64
+
+
+# ---------------------------------------------------------------------------
+# T11: Approval gate
+# ---------------------------------------------------------------------------
+
+
+def test_promote_refuses_when_no_approval_record(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
+    """A candidate without an approval record fails at the gate."""
+    added, _ = _wire_git
+    config_dir, project_root, _ = _setup_promote_env(tmp_path, record_approval_record=False)
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "approval gate" in str(ei.value)
+    assert "no approval record found" in str(ei.value)
+    assert added == []
+
+
+def test_promote_refuses_when_approval_rejected(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
+    """A rejected approval blocks promotion."""
+    added, _ = _wire_git
+    config_dir, project_root, run_id = _setup_promote_env(tmp_path, record_approval_record=False)
+    state_dir = project_root / "state"
+    run_state_dir = state_dir / "runs" / run_id
+    state = _load_state_for_test(run_state_dir)
+    slip_path = project_root / "state" / "candidates" / run_id / "packing_slip.toml"
+    _record_mod_set_approval(
+        state_dir=state_dir,
+        run_state_dir=run_state_dir,
+        run_id=run_id,
+        slip_path=slip_path,
+        state=state,
+        decision="rejected",
+    )
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "approval gate" in str(ei.value)
+    assert "not 'approved'" in str(ei.value)
+    assert added == []
+
+
+def test_promote_refuses_when_approval_expired(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
+    """An expired approval blocks promotion."""
+    added, _ = _wire_git
+    config_dir, project_root, run_id = _setup_promote_env(tmp_path, record_approval_record=False)
+    state_dir = project_root / "state"
+    run_state_dir = state_dir / "runs" / run_id
+    state = _load_state_for_test(run_state_dir)
+    slip_path = project_root / "state" / "candidates" / run_id / "packing_slip.toml"
+    _record_mod_set_approval(
+        state_dir=state_dir,
+        run_state_dir=run_state_dir,
+        run_id=run_id,
+        slip_path=slip_path,
+        state=state,
+        now="2020-01-01T00:00:00Z",
+    )
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "approval gate" in str(ei.value)
+    assert "expired" in str(ei.value)
+    assert added == []
+
+
+def test_promote_refuses_when_binding_mismatched(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
+    """A tampered approval binding hash blocks promotion."""
+    added, _ = _wire_git
+    config_dir, project_root, run_id = _setup_promote_env(tmp_path)
+    approval_path = project_root / "state" / "runs" / run_id / "approval.mod_set.json"
+    data = json.loads(approval_path.read_text())
+    data["binding_hash"] = "0" * 64
+    approval_path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(UpgradeCliError) as ei:
+        run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
+    assert ei.value.exit_code == 3
+    assert "approval gate" in str(ei.value)
+    assert "binding does not match" in str(ei.value)
+    assert added == []
+
+
+def test_promote_succeeds_with_valid_approval(tmp_path: Path, _wire_git: tuple[list[Path], dict[str, str]]) -> None:
+    """A valid mod_set approval allows promotion to proceed."""
+    _, _ = _wire_git
+    config_dir, project_root, _ = _setup_promote_env(tmp_path)
+
+    code = run(config_dir=config_dir, project_root=project_root, tag="v1.0.0")
+
+    assert code == 0
+    assert (project_root / "sync" / "packing_slips" / "v1.0.0.toml").is_file()

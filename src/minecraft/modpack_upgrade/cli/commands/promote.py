@@ -1,8 +1,13 @@
 # src/minecraft/modpack_upgrade/cli/commands/promote.py
 
-"""``minecraft-upgrade promote <tag>`` -- stage slip + metadata (15.1.7).
+"""``minecraft-upgrade promote <tag>`` - stage slip + metadata (15.1.7).
 
 * Load ``state`` and ``packing_slip.toml`` from ``candidates/<run-id>/``.
+* Enforce the mod-set approval gate. A valid, unexpired ``approved``
+  record for scope ``mod_set`` bound to the sealed candidate's identity
+  is required. The gate consumes the *pre-reconcile* slip: upgrade-mode
+  reconciliation changes ``content_sha256`` and the approval is bound to
+  the sealed candidate, not the post-reconcile release slip.
 * If ``release_mode == "upgrade"``: reconcile docker-compose.yml against
   the slip's ``[runtime]``, update ``[inputs.git].compose_tree``, and
   recompute ``content_sha256``. The re-sealed slip is what gets copied to
@@ -15,6 +20,23 @@
 * ``git add`` those paths (plus ``docker-compose.yml`` when reconciliation
   modified it).
 * Emit exact commit/tag/push instructions and STOP.
+
+Approval gate ordering
+----------------------
+The gate runs after overwrite safety but before any mutation. Ordering:
+
+1. Load state and slip.
+2. Snapshot the pre-reconcile slip for approval binding verification.
+3. Reconcile docker-compose.yml (upgrade mode only; modifies the
+   candidate slip in place).
+4. Refuse to overwrite an existing release slip that differs from the
+   candidate on disk.
+5. Verify mod_set approval against the pre-reconcile slip.
+6. Copy, re-seal, and stage.
+
+Any ``UpgradeCliError(3)`` from the gate names the reason and points the
+operator at ``minecraft-upgrade approve <run-id>``. Acceptance test T11
+covers replay, expiry, and identity-change rejection at this gate.
 
 Two distinct identities
 -----------------------
@@ -50,10 +72,15 @@ from PlatformCore.git import hash_object, stage_paths
 
 from minecraft.deploy_pack.daemon.config import load_config as load_daemon_config
 from minecraft.modpack_upgrade import slip as slip_mod
+from minecraft.modpack_upgrade.approval import (
+    ApprovalBinding,
+    load_approval,
+    verify_approval,
+)
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
 from minecraft.modpack_upgrade.errors import SchemaError
 from minecraft.modpack_upgrade.slip import load_slip
-from minecraft.modpack_upgrade.state import load_state
+from minecraft.modpack_upgrade.state import RunState, load_state
 
 from . import _compose
 
@@ -115,6 +142,49 @@ def _git_blob_hash(project_root: Path, relpath: str) -> str:
     if not hash_value:
         raise UpgradeCliError(3, f"git hash-object returned empty output for {relpath}")
     return hash_value
+
+
+# ---------------------------------------------------------------------------
+# Approval gate
+# ---------------------------------------------------------------------------
+
+
+def _require_mod_set_approval(
+    *,
+    state_dir: Path,
+    run_id: str,
+    slip: slip_mod.PackingSlip,
+    state: RunState,
+) -> None:
+    """Raise :class:`UpgradeCliError(3)` when no valid mod_set approval exists.
+
+    Verifies, in order, that an approval record exists for scope
+    ``mod_set``, that its decision is ``approved``, that its binding
+    hash matches the sealed candidate identity, and that its expiry is
+    in the future. Any failure names the specific reason in the error
+    message and points the operator at ``minecraft-upgrade approve
+    <run-id>``.
+
+    The binding is constructed from the *pre-reconcile* slip: upgrade
+    mode's in-place reconciliation changes ``content_sha256``, so
+    approval must be checked against the identity that was actually
+    approved.
+    """
+    binding = ApprovalBinding(
+        slip_content_sha256=slip.content_sha256,
+        runtime_sha256=slip.fingerprints.runtime_sha256,
+        server_inputs_sha256=slip.fingerprints.server_inputs_sha256,
+        client_inputs_sha256=slip.fingerprints.client_inputs_sha256,
+        resolution_report_sha256=state.report_sha256,
+    )
+    run_dir = state_dir / "runs" / run_id
+    record = load_approval(run_dir, "mod_set")
+    ok, reason = verify_approval(record, expected_binding=binding)
+    if not ok:
+        raise UpgradeCliError(
+            3,
+            f"approval gate: {reason}. Run `minecraft-upgrade approve {run_id}` first.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +345,9 @@ def run(*, config_dir: Path, project_root: Path, tag: str) -> int:
     except Exception as exc:
         raise UpgradeCliError(3, f"could not load candidate slip: {exc}") from exc
 
+    # Snapshot the pre-reconcile slip for approval binding verification.
+    original_slip = slip
+
     # Upgrade mode: reconcile compose, re-seal candidate slip if needed.
     compose_to_stage: Path | None = None
     if state.release_mode == "upgrade":
@@ -290,6 +363,15 @@ def run(*, config_dir: Path, project_root: Path, tag: str) -> int:
     dst_slip = slip_dir / f"{tag}.toml"
     if dst_slip.exists() and dst_slip.read_bytes() != slip_path.read_bytes():
         raise UpgradeCliError(3, f"refusing to overwrite existing different slip at {dst_slip}")
+
+    # Approval gate: consumed pre-reconcile slip identity.
+    _require_mod_set_approval(
+        state_dir=Path(daemon_config.state_dir),
+        run_id=run_id,
+        slip=original_slip,
+        state=state,
+    )
+
     shutil.copy2(slip_path, dst_slip)
     _log_cli.info(f"copied slip: {slip_path} -> {dst_slip}")
 

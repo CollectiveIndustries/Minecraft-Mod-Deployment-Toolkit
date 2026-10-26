@@ -39,12 +39,35 @@ fingerprints. Any change to a bound field invalidates the approval at
 verify time. The bound fields are the five that identify the artifact
 set and its resolution evidence; optional fields (``snapshot_id``,
 ``validation_report_sha256``) are included when present.
+
+Nonce (spec Section 11.4)
+------------------
+Every newly-recorded approval carries a server-generated UUID4 nonce
+(:attr:`ApprovalRecord.nonce`). The nonce is a one-time, unguessable
+identifier for this specific approval event; it is audit-correlated
+data, not a candidate-identity field, so it does not participate in the
+binding hash. Records written before Slice 15 T11 have
+``nonce=None``; consumers must treat ``None`` as "unknown nonce" and
+must not attempt to validate it.
+
+Durability
+----------
+The audit log writer fsyncs after each record. Replay protection scans
+this log via :func:`_lookup_interaction`; a silently-lost line would
+allow a replayed Discord interaction to be accepted as a fresh
+approval. The ``current-decision`` file at
+``runs/<run-id>/approval.<scope>.json`` is written atomically via
+temp-then-replace; unlike the audit log, it does not need a per-write
+fsync because the atomic rename guarantees it either has the new
+content or preserves the old, and the audit log is the durable record
+of what happened.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -142,6 +165,11 @@ class ApprovalRecord:
 
     ``schema_version`` is fixed at 1 for v1.4.0; a future schema change
     bumps it and the reader rejects unknown versions.
+
+    ``nonce`` is the spec Section 11.4 one-time approval nonce. Populated by
+    :func:`record_approval` on every newly-recorded approval. ``None``
+    only on records written before Slice 15 T11. Placed last with a
+    default so pre-existing records (which lack the field) still parse.
     """
 
     schema_version: int
@@ -156,6 +184,7 @@ class ApprovalRecord:
     signed_at_utc: str
     expires_at_utc: str
     reason: str | None
+    nonce: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -276,14 +305,23 @@ def _write_current(run_dir: Path, scope: str, record: ApprovalRecord) -> None:
 
 
 def _append_audit(state_dir: Path, record: ApprovalRecord) -> None:
-    """Append ``record`` to the audit log."""
+    """Append ``record`` to the audit log and fsync.
+
+    The fsync is load-bearing: :func:`_lookup_interaction` scans this
+    log for interaction-ID replay protection, so a record lost between
+    the write and the OS flush would silently allow a replayed Discord
+    interaction to be accepted as a fresh approval. The prior
+    implementation used a second ``f.flush()`` here, which is a no-op
+    relative to the first ``flush()`` and does *not* push bytes to
+    stable storage.
+    """
     log_path = _audit_log_path(state_dir)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(dataclasses.asdict(record), sort_keys=True) + "\n"
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(line)
         f.flush()
-        f.flush()  # idempotent; ensured below for durability on real FS
+        os.fsync(f.fileno())
 
 
 def record_approval(
@@ -299,6 +337,7 @@ def record_approval(
     reason: str | None = None,
     expires_in_hours: int = DEFAULT_EXPIRY_HOURS,
     now: str | None = None,
+    nonce: str | None = None,
 ) -> ApprovalRecord:
     """Record an approval decision for ``scope``.
 
@@ -310,6 +349,11 @@ def record_approval(
       * ``run_dir/approval.<scope>.json`` -- the current decision
       * ``state_dir/approvals.jsonl``      -- the durable audit log
 
+    ``nonce`` is the spec Section 11.4 one-time approval nonce. When ``None``
+    (the default), a fresh UUID4 is generated and stored; callers who
+    need to correlate externally (e.g. a future distributed-approval
+    flow) may supply their own unguessable value.
+
     Raises ``ValueError`` on invalid scope/decision, ``OSError`` on
     write failure.
     """
@@ -320,6 +364,8 @@ def record_approval(
         if existing is not None:
             _log.debug(f"approval: replay of interaction_id={interaction_id!r} returning existing record {existing.approval_id}")
             return existing
+
+    effective_nonce = nonce if nonce is not None else str(uuid.uuid4())
 
     signed_at = _now_iso(now)
     signed_dt = _parse_iso(signed_at)
@@ -338,11 +384,12 @@ def record_approval(
         signed_at_utc=signed_at,
         expires_at_utc=expires_at,
         reason=reason,
+        nonce=effective_nonce,
     )
 
     _write_current(run_dir, scope, record)
     _append_audit(state_dir, record)
-    _log.info(f"approval: recorded {decision} for run={run_id!r} scope={scope!r} by {signed_by!r}")
+    _log.info(f"approval: recorded {decision} for run={run_id!r} scope={scope!r} by {signed_by!r} (nonce={effective_nonce[:8]}...)")
     return record
 
 
