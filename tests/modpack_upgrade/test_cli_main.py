@@ -80,28 +80,50 @@ def test_verify_help_exits_zero(capsys: pytest.CaptureFixture[str]):
 
 
 # ---------------------------------------------------------------------------
-# Stubs (later-slice commands still not implemented)
+# Previously-stubbed commands are now implemented
 # ---------------------------------------------------------------------------
+#
+# ``build-client``, ``snapshot-world``, and both ``validate`` subcommands
+# were dispatched to ``stubs.not_implemented`` through the T3b/T3c era. The
+# final round of the upgrade-toolchain build-out replaced those stubs with
+# real handlers. This test confirms the stub path is gone: each command now
+# produces a meaningful exit-3 config error against a minimal sandbox,
+# rather than exit 1 with "not yet implemented".
 
 
 @pytest.mark.parametrize(
     "argv",
     [
-        ["build-client"],
-        ["snapshot-world"],
-        ["validate", "migration"],
-        ["validate", "velocity"],
+        pytest.param(["build-client"], id="build-client"),
+        pytest.param(["snapshot-world"], id="snapshot-world"),
+        pytest.param(["validate", "migration"], id="validate-migration"),
+        pytest.param(["validate", "velocity"], id="validate-velocity"),
     ],
 )
-def test_stubs_exit_one(
+def test_previously_stubbed_commands_are_implemented(
     argv: list[str],
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-):
-    """Commands still unimplemented exit 1 with a 'not yet implemented' message."""
-    code = main(argv)
-    assert code == 1
+) -> None:
+    """The four commands previously stubbed now reach real handlers.
+
+    Against a minimal sandbox each produces a specific exit-3 config error
+    (missing candidate / missing config / missing compose). None emits the
+    old "not yet implemented" message.
+    """
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    (config_dir / "deploy_pack.toml").write_text(
+        f'[daemon]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n',
+        encoding="utf-8",
+    )
+
+    code = main(["--config-dir", str(config_dir), *argv])
+
     captured = capsys.readouterr()
-    assert "not yet implemented" in captured.err
+    combined = captured.out + captured.err
+    assert "not yet implemented" not in combined, f"stub marker still emitted by {argv!r}"
+    assert code == 3, f"{argv!r} should exit 3 with config error; got {code}"
 
 
 # ---------------------------------------------------------------------------

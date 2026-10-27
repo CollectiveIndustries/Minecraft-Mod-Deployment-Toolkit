@@ -1,6 +1,6 @@
 # src/minecraft/modpack_upgrade/cli/main.py
 
-"""Entry point for the ``minecraft-upgrade`` CLI (spec v1.3 Section 15.1).
+"""Entry point for the ``minecraft-upgrade`` CLI (spec v1.4.0 Section 15.1).
 
 Dispatches subcommands to their implementations. Exit codes follow
 Section 16.2:
@@ -17,6 +17,14 @@ Section 16.2:
 All user-facing output flows through LoggingCore with a CLI-namespaced
 logger (see :mod:`minecraft.common.cli_logging`). argparse's own usage
 and help output is emitted by argparse itself and is unaffected.
+
+Command surface (spec Section 15.1)
+-----------------------------------
+Every subcommand documented in Section 15.1 is implemented. No stubs
+remain. ``build-client``, ``snapshot-world``, and both ``validate``
+subcommands were wired in the final round of the upgrade-toolchain
+build-out; ``iterate`` uses the subprocess-to-``deploy-pack
+--integration`` production driver.
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ from minecraft.modpack_upgrade import __version__
 from .commands import (
     acknowledge,
     approve,
+    build_client,
     build_inhouse,
     iterate,
     manifest,
@@ -42,9 +51,10 @@ from .commands import (
     publish,
     reject,
     runtime,
+    snapshot_world,
     status,
-    stubs,
     update,
+    validate,
     verify,
 )
 from .errors import UpgradeCliError
@@ -180,13 +190,40 @@ def _cmd_reject(args: argparse.Namespace, config_dir: Path, project_root: Path) 
     )
 
 
-def _cmd_stub(name: str, hint: str = "") -> _CommandHandler:
-    """Return a stub handler for a not-yet-implemented command."""
+def _cmd_build_client(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the build-client command (spec Section 15.1)."""
+    return build_client.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        run_id=args.run_id,
+        with_resources=args.with_resources,
+    )
 
-    def _run(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
-        return stubs.not_implemented(name, hint or None)
 
-    return _run
+def _cmd_snapshot_world(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the snapshot-world command (spec Section 15.1, Section 10)."""
+    return snapshot_world.run(
+        config_dir=config_dir,
+        project_root=project_root,
+        world=args.world,
+    )
+
+
+def _cmd_validate_migration(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the validate migration command (spec Section 15.1, Section 8.4)."""
+    return validate.run_migration(
+        config_dir=config_dir,
+        project_root=project_root,
+        snapshot_id=args.snapshot_id,
+    )
+
+
+def _cmd_validate_velocity(args: argparse.Namespace, config_dir: Path, project_root: Path) -> int:
+    """Dispatch to the validate velocity command (spec Section 15.1, Section 8.5)."""
+    return validate.run_velocity(
+        config_dir=config_dir,
+        project_root=project_root,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +235,7 @@ def _build_parser() -> argparse.ArgumentParser:
     """Construct the argparse parser with every subcommand."""
     parser = argparse.ArgumentParser(
         prog="minecraft-upgrade",
-        description="Minecraft pack upgrade CLI (spec v1.3 Section 15.1)",
+        description="Minecraft pack upgrade CLI (spec v1.4.0 Section 15.1)",
     )
     parser.add_argument(
         "--config-dir",
@@ -376,26 +413,55 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_reject.set_defaults(func=_cmd_reject)
 
-    # -- stubs (later slices) ----------------------------------------
-    p_client = sub.add_parser("build-client", help="Produce candidate client ZIP")
-    p_client.set_defaults(func=_cmd_stub("build-client"))
+    # -- build-client ------------------------------------------------
+    p_client = sub.add_parser(
+        "build-client",
+        help="Produce candidate client ZIP from a materialized candidate (spec 15.1)",
+    )
+    p_client.add_argument(
+        "--run-id",
+        default=None,
+        help="Run ID to build client ZIP from (default: most recent materialized candidate)",
+    )
+    p_client.add_argument(
+        "--with-resources",
+        action="store_true",
+        help="Include resource packs in the client ZIP (spec 7.6)",
+    )
+    p_client.set_defaults(func=_cmd_build_client)
 
-    p_snapshot = sub.add_parser("snapshot-world", help="Snapshot prod world to DEV")
+    # -- snapshot-world ----------------------------------------------
+    p_snapshot = sub.add_parser(
+        "snapshot-world",
+        help="Snapshot prod world to DEV via rsync-over-SSH (spec 15.1, Section 10)",
+    )
     p_snapshot.add_argument(
         "world",
         nargs="?",
-        default="survival",
+        default=None,
         choices=["survival", "creative"],
-        help="World to snapshot (default: survival)",
+        help=("World to snapshot (default: [world_snapshot].default_world or 'survival')"),
     )
-    p_snapshot.set_defaults(func=_cmd_stub("snapshot-world"))
+    p_snapshot.set_defaults(func=_cmd_snapshot_world)
 
-    p_validate = sub.add_parser("validate", help="Validation commands")
+    # -- validate ----------------------------------------------------
+    p_validate = sub.add_parser("validate", help="Validation commands (spec Section 8.4, Section 8.5)")
     p_validate_sub = p_validate.add_subparsers(dest="validate_action", metavar="<action>", required=True)
-    p_validate_migration = p_validate_sub.add_parser("migration", help="Test snapshot against candidate")
-    p_validate_migration.set_defaults(func=_cmd_stub("validate migration"))
-    p_validate_velocity = p_validate_sub.add_parser("velocity", help="Isolated proxy integration")
-    p_validate_velocity.set_defaults(func=_cmd_stub("validate velocity"))
+    p_validate_migration = p_validate_sub.add_parser(
+        "migration",
+        help="Test snapshot against candidate (partial; manual world check required)",
+    )
+    p_validate_migration.add_argument(
+        "--snapshot-id",
+        default=None,
+        help="Specific snapshot ID to validate (default: most recent)",
+    )
+    p_validate_migration.set_defaults(func=_cmd_validate_migration)
+    p_validate_velocity = p_validate_sub.add_parser(
+        "velocity",
+        help="Isolated proxy integration (partial; manual handshake check required)",
+    )
+    p_validate_velocity.set_defaults(func=_cmd_validate_velocity)
 
     return parser
 
