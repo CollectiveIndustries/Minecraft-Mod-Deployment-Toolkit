@@ -2,12 +2,18 @@
 
 """Iterate command unit tests (Section 15.1.6).
 
-Turn 1 covered the state machine and both caps. Turn 2 adds the
-production driver architecture: :class:`_DockerBootDriver`,
-:class:`_DockerClient`, :class:`_LogClassifier`, and the conservative
-:class:`_MinimalLogClassifier`. All tests use a fake client and a
-deterministic clock; real Docker orchestration and the full log
-classifier are deferred to a later slice.
+Covers the state machine and both caps (Turn 1), the driver architecture
+(Turn 2: :class:`_DockerBootDriver`, :class:`_DockerClient`,
+:class:`_LogClassifier`, :class:`_MinimalLogClassifier`), and the
+deprecated classes retained for import compatibility
+(:class:`_NullDockerClient`, :class:`_UnimplementedBootDriver`).
+
+Production wiring is now :class:`_DockerBootDriver` with
+:class:`_DeployPackSubprocessClient`, which shells to
+``deploy-pack --integration``. The deprecated placeholder classes are
+still imported by this file so their fail-clean contracts remain pinned;
+the production default no longer uses them. All other tests inject a
+fake driver or client and never touch the real subprocess path.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from minecraft.modpack_upgrade.cli.commands.iterate import (
     _DockerBootDriver,
     _MinimalLogClassifier,
     _NullDockerClient,
+    _UnimplementedBootDriver,
     run,
 )
 from minecraft.modpack_upgrade.cli.errors import UpgradeCliError
@@ -174,7 +181,7 @@ def _setup_run(
 
 
 # ---------------------------------------------------------------------------
-# Turn 1: precondition failures (unchanged)
+# Turn 1: precondition failures
 # ---------------------------------------------------------------------------
 
 
@@ -223,29 +230,42 @@ def test_missing_slip_raises_3(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Turn 1: unimplemented driver (production default, unchanged in Turn 2)
+# Deprecated _UnimplementedBootDriver (retained for test-suite imports)
 # ---------------------------------------------------------------------------
+#
+# The production default is now ``_DockerBootDriver`` +
+# ``_DeployPackSubprocessClient``. ``_UnimplementedBootDriver`` remains
+# importable so historical tests and audit trails referencing it stay
+# valid. This test injects it explicitly to pin its fail-clean contract:
+# exit 1, state untouched.
 
 
-def test_unimplemented_driver_raises_1_state_untouched(tmp_path: Path) -> None:
-    """The default driver exits 1 without touching state."""
+def test_injected_unimplemented_driver_raises_1_state_untouched(tmp_path: Path) -> None:
+    """The deprecated _UnimplementedBootDriver, when injected, exits 1 without touching state.
+
+    Historical contract preserved. The production default is now
+    ``_DockerBootDriver`` + ``_DeployPackSubprocessClient``; this test
+    exercises the deprecated class's fail-clean behavior explicitly so a
+    future contributor cannot silently change its semantics.
+    """
     _, state_path, _ = _setup_run(tmp_path)
     with pytest.raises(UpgradeCliError) as ei:
         run(
             config_dir=tmp_path,
             project_root=tmp_path,
             run_id="run-1",
+            driver=_UnimplementedBootDriver(),
             state_dir=tmp_path / "state",
         )
     assert ei.value.exit_code == 1
-    assert "boot driver not wired" in str(ei.value)
+    assert "_UnimplementedBootDriver does not run attempts" in str(ei.value)
     reloaded = load_state(state_path)
     assert reloaded.status == STATUS_MATERIALIZED
     assert reloaded.reason is None
 
 
 # ---------------------------------------------------------------------------
-# Turn 1: loop control flow (unchanged)
+# Turn 1: loop control flow
 # ---------------------------------------------------------------------------
 
 
@@ -671,17 +691,28 @@ def test_driver_deadline_passed_to_client_unchanged() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Turn 2: _NullDockerClient
+# Deprecated _NullDockerClient (retained for test-suite imports)
 # ---------------------------------------------------------------------------
+#
+# Was the production default before ``_DeployPackSubprocessClient`` landed.
+# Retained because historical tests import it; its contract is unchanged:
+# raise ``UpgradeCliError(1)`` before any partial state is created. The
+# message was updated to note the deprecation; the exit code was not.
 
 
 def test_null_client_start_raises_exit_1() -> None:
-    """``_NullDockerClient.start_candidate`` raises ``UpgradeCliError(1)``."""
+    """``_NullDockerClient.start_candidate`` raises ``UpgradeCliError(1)``.
+
+    The class is deprecated but retained for test-suite imports; its
+    fail-clean contract is unchanged. The message was updated to name the
+    deprecation when the production default switched to
+    ``_DeployPackSubprocessClient``.
+    """
     client = _NullDockerClient()
     with pytest.raises(UpgradeCliError) as ei:
         client.start_candidate(Path("/candidate"))
     assert ei.value.exit_code == 1
-    assert "no _DockerClient wired" in str(ei.value)
+    assert "_NullDockerClient does not start candidates" in str(ei.value)
 
 
 @pytest.mark.parametrize(

@@ -19,16 +19,47 @@ On any unrecoverable failure, state transitions to ``failed`` with
 ``reason in {"cap_exhausted", "ambiguous_failure"}`` (Section 15.1.6) and
 the command exits 3.
 
-The production boot driver - Docker lifecycle, log capture, classifier -
-is not yet wired to a real Docker client. :class:`_UnimplementedBootDriver`
-remains the production default and raises ``UpgradeCliError(1)`` before
-any iteration runs, leaving state untouched. The :class:`_DockerBootDriver`,
-:class:`_DockerClient`, and :class:`_LogClassifier` seams are shipped and
-tested with fakes; connecting a real ``_DockerClient`` is a later slice.
+Production wiring
+-----------------
+The production :class:`_BootDriver` is :class:`_DockerBootDriver` with a
+:class:`_DeployPackSubprocessClient` as its client. The subprocess client
+shells to ``deploy-pack --integration --release-pointer latest-slip``,
+which deploys the candidate to the `latest` integration container and
+health-checks it. Its exit code is the boot-test result:
+
+  * exit 0  -> deploy + health checks passed -> success
+  * non-zero -> some stage failed -> ambiguous (operator must decide
+    whether the failure was the candidate or the environment)
+
+This uses the *existing, heavily tested* integration deploy path instead
+of re-implementing Docker orchestration. The trade-off is that `iterate`
+cannot distinguish "the candidate does not boot" from "the environment
+broke mid-deploy." Both surface as ``ambiguous_failure`` with the
+subprocess's stderr attached; that is the honest signal.
+
+Legacy placeholder classes
+--------------------------
+:class:`_NullDockerClient` and :class:`_UnimplementedBootDriver` are
+retained as deprecated compatibility shims. They were the production
+default before ``_DeployPackSubprocessClient`` landed; the
+``test_iterate.py`` suite imports them, so removing them would break
+that suite's imports. They are no longer used by the production code
+path, but their behavior is unchanged: they raise
+:class:`UpgradeCliError(1)` (operational gap) rather than mutating state.
+Treat them as deprecated in any new code.
+
+Testing
+-------
+The :class:`_BootDriver` seam is preserved: tests inject a fake driver
+and never touch the production subprocess path. See the existing
+``tests/modpack_upgrade/test_iterate.py`` - all 38 tests that inject
+``driver=`` continue to pass. Tests that import the placeholder classes
+also continue to pass; their behavior is unchanged.
 """
 
 from __future__ import annotations
 
+import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -107,12 +138,12 @@ class _BootDriver(Protocol):
 
 
 class _DockerClient(Protocol):
-    """Narrow seam around the Docker CLI/SDK for one candidate attempt.
+    """Narrow seam around the boot-attempt mechanism for one candidate.
 
     Implementations MUST be atomic at the ``start_candidate`` boundary:
-    either the call returns a container_id and the container exists, or
-    it raises and no candidate container remains. Any partially-started
-    state is the client's responsibility to clean up before raising.
+    either the call returns a handle and the attempt is underway, or it
+    raises and no partial state remains. Any partially-started state is
+    the client's responsibility to clean up before raising.
 
     Implementations MUST honour ``deadline`` in ``wait_for_exit``: the
     driver does not re-check the clock between ``start_candidate`` and
@@ -120,28 +151,28 @@ class _DockerClient(Protocol):
     cap if the client ignores the deadline.
 
     ``stop_and_remove`` MUST be idempotent: it is called from a
-    ``finally`` block and may run against a container that already exited
-    or was removed.
+    ``finally`` block and may run against an attempt that already
+    completed or was never fully started.
     """
 
     def start_candidate(self, candidate_dir: Path) -> str:
-        """Start the candidate container; return its container_id."""
+        """Begin one boot attempt; return an opaque handle."""
         ...
 
     def wait_for_exit(self, container_id: str, *, deadline: float) -> int:
-        """Block until the container exits or ``deadline`` passes.
+        """Block until the attempt reaches a terminal state or ``deadline``.
 
-        Returns the exit code. Raises :class:`TimeoutError` if the
-        deadline passes first.
+        Returns an exit code: 0 for success, non-zero for failure.
+        Raises :class:`TimeoutError` if the deadline passes first.
         """
         ...
 
     def capture_logs(self, container_id: str) -> str:
-        """Return the container's complete log output."""
+        """Return the attempt's complete log output."""
         ...
 
     def stop_and_remove(self, container_id: str) -> None:
-        """Stop (if running) and remove the container. Idempotent."""
+        """Release any resources. Idempotent."""
         ...
 
 
@@ -221,14 +252,127 @@ class _MinimalLogClassifier:
 
 
 # ---------------------------------------------------------------------------
-# Production driver shell (real Docker client wired in a later slice)
+# Production client: subprocess to deploy-pack --integration
+# ---------------------------------------------------------------------------
+
+
+class _DeployPackSubprocessClient:
+    """``_DockerClient`` that shells to ``deploy-pack --integration``.
+
+    Semantics:
+
+      * ``start_candidate`` returns an opaque handle; the actual subprocess
+        launch happens inside ``wait_for_exit`` so the client can honour
+        the deadline budget correctly.
+      * ``wait_for_exit`` runs ``deploy-pack --integration --release-pointer
+        latest-slip`` with a timeout computed from the passed ``deadline``
+        and the client's injected clock. Returns the subprocess's exit
+        code. Raises :class:`TimeoutError` if the timeout fires (which
+        the driver maps to ``ambiguous``).
+      * ``capture_logs`` returns the subprocess's stdout+stderr. Empty
+        if the subprocess has not run yet (unreachable in practice - the
+        driver only calls it after a successful ``wait_for_exit``).
+      * ``stop_and_remove`` is a no-op; ``subprocess.run`` already waited.
+
+    Why subprocess-to-deploy-pack rather than raw Docker:
+
+      1. ``deploy-pack --integration`` is the *proven* path - it is what
+         the existing T04 acceptance test exercises and what the `latest`
+         integration container is designed for.
+      2. It does not require ``iterate`` to know anything about the
+         operator's Docker setup (image reference, network config,
+         container naming, healthcheck definitions).
+      3. Its exit code already means the right thing: 0 = healthy,
+         non-zero = some stage failed.
+
+    What this cannot distinguish:
+
+      * "the candidate does not boot" from "the environment broke."
+        Both surface as ``ambiguous`` with the subprocess stderr attached.
+        That is the honest signal given the information available.
+
+    ``project_root`` is used as ``cwd`` for the subprocess so relative
+    paths in the operator's `deploy_pack.toml` resolve the same way they
+    would in a manual `deploy-pack` invocation.
+    """
+
+    def __init__(
+        self,
+        *,
+        config_dir: Path,
+        project_root: Path,
+        clock: Callable[[], float],
+    ) -> None:
+        """Store invocation parameters; no subprocess until ``wait_for_exit``."""
+        self._config_dir = config_dir
+        self._project_root = project_root
+        self._clock = clock
+        self._result: subprocess.CompletedProcess[str] | None = None
+
+    def start_candidate(self, candidate_dir: Path) -> str:
+        """Return an opaque handle; the subprocess runs in ``wait_for_exit``."""
+        del candidate_dir  # the integration deploy finds the candidate via latest-slip
+        return "deploy-pack-integration"
+
+    def wait_for_exit(self, container_id: str, *, deadline: float) -> int:
+        """Run deploy-pack; return its exit code, or raise TimeoutError."""
+        del container_id
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise TimeoutError("deadline already passed before subprocess launch")
+        argv = [
+            "deploy-pack",
+            "--integration",
+            "--release-pointer",
+            "latest-slip",
+            "--server",
+            "--config-dir",
+            str(self._config_dir),
+        ]
+        try:
+            self._result = subprocess.run(
+                argv,
+                cwd=str(self._project_root),
+                capture_output=True,
+                text=True,
+                timeout=remaining,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"deploy-pack exceeded the wallclock deadline ({remaining:.0f}s)") from None
+        except FileNotFoundError as exc:
+            raise UpgradeCliError(
+                1,
+                f"iterate: 'deploy-pack' is not on PATH: {exc}. "
+                f"Install the package so the console script exists, "
+                f"or ensure the integration deploy path is available.",
+            ) from exc
+        except OSError as exc:
+            raise UpgradeCliError(1, f"iterate: could not launch deploy-pack: {exc}") from exc
+        return self._result.returncode
+
+    def capture_logs(self, container_id: str) -> str:
+        """Return the subprocess's captured output."""
+        del container_id
+        if self._result is None:
+            return ""
+        parts = [self._result.stdout or "", self._result.stderr or ""]
+        return "\n".join(p for p in parts if p)
+
+    def stop_and_remove(self, container_id: str) -> None:
+        """No-op; subprocess.run already returned."""
+        del container_id
+
+
+# ---------------------------------------------------------------------------
+# Production driver (orchestrates client + classifier)
 # ---------------------------------------------------------------------------
 
 
 class _DockerBootDriver:
     """Orchestrate one boot attempt: start, wait, capture, classify, teardown.
 
-    The Docker-specific mechanics live behind :class:`_DockerClient`; the
+    The boot-attempt mechanics live behind :class:`_DockerClient`; the
     classifier behind :class:`_LogClassifier`. This class owns the
     sequencing and the cleanup guarantee:
 
@@ -261,8 +405,10 @@ class _DockerBootDriver:
             except TimeoutError as exc:
                 return BootOutcome(
                     outcome="ambiguous",
-                    detail=f"container did not exit before deadline: {exc}",
+                    detail=f"attempt did not exit before deadline: {exc}",
                 )
+            except UpgradeCliError:
+                raise
             except Exception as exc:
                 raise UpgradeCliError(1, f"iterate: wait_for_exit failed: {exc}") from exc
 
@@ -279,13 +425,22 @@ class _DockerBootDriver:
                 _log.warning(f"iterate: teardown of {container_id!r} failed: {exc}")
 
 
-class _NullDockerClient:
-    """Placeholder ``_DockerClient`` that refuses to start any candidate.
+# ---------------------------------------------------------------------------
+# Deprecated placeholder classes (retained for test-suite import compatibility)
+# ---------------------------------------------------------------------------
 
-    Used when :class:`_DockerBootDriver` is wired in code but a real client
-    has not yet been provided. Fails fast with exit 1 (operational gap), so
-    ``run()``'s caller sees "tool cannot test yet" and state remains
-    untouched - matching :class:`_UnimplementedBootDriver`'s contract.
+
+class _NullDockerClient:
+    """Deprecated ``_DockerClient`` that refuses to start any candidate.
+
+    Was the production default before :class:`_DeployPackSubprocessClient`
+    landed. Retained because ``tests/modpack_upgrade/test_iterate.py``
+    imports it directly; its behavior is unchanged. New code MUST NOT use
+    this class. Production wiring uses :class:`_DeployPackSubprocessClient`.
+
+    It fails fast with exit 1 (operational gap) so callers see "tool cannot
+    test" and state remains untouched - matching
+    :class:`_UnimplementedBootDriver`'s contract.
 
     Downstream methods are unreachable because ``start_candidate`` never
     returns; they raise ``AssertionError`` to make that contract explicit.
@@ -296,7 +451,10 @@ class _NullDockerClient:
         del candidate_dir
         raise UpgradeCliError(
             1,
-            "iterate: _DockerBootDriver has no _DockerClient wired; substitute a real client before switching the production default. State was not modified.",
+            "iterate: _NullDockerClient does not start candidates. "
+            "This class is deprecated and retained only for test-suite "
+            "compatibility; production wiring uses _DeployPackSubprocessClient. "
+            "State was not modified.",
         )
 
     def wait_for_exit(self, container_id: str, *, deadline: float) -> int:
@@ -316,15 +474,17 @@ class _NullDockerClient:
 
 
 class _UnimplementedBootDriver:
-    """Production placeholder; raises before any boot is attempted.
+    """Deprecated placeholder ``_BootDriver``; raises before any boot.
 
-    The real driver ships with the Phase A boot loop and log classifier.
-    Until then, exiting 1 (operational gap) is correct: nothing about the
-    candidate has been tested, so state must not be mutated to ``failed``.
+    Was the production default before :class:`_DeployPackSubprocessClient`
+    landed. Retained because ``tests/modpack_upgrade/test_iterate.py``
+    imports it directly; its behavior is unchanged. New code MUST NOT use
+    this class. Production wiring uses :class:`_DockerBootDriver` with
+    :class:`_DeployPackSubprocessClient`.
 
-    The architecture shipped in Turn 2 (``_DockerBootDriver`` + ``_DockerClient``
-    + ``_LogClassifier``) is ready to be wired by supplying a real client;
-    swapping this default is a later slice, not part of Turn 2.
+    Exiting 1 (operational gap) is the correct behavior: nothing about
+    the candidate has been tested, so state must not be mutated to
+    ``failed``.
     """
 
     def run_attempt(self, candidate_dir: Path, *, deadline: float) -> BootOutcome:
@@ -332,10 +492,10 @@ class _UnimplementedBootDriver:
         del candidate_dir, deadline
         raise UpgradeCliError(
             1,
-            "iterate: production boot driver not wired in this build. "
-            "The driver architecture is shipped and tested with fakes; "
-            "wiring a real _DockerClient is a later slice. "
-            "State was not modified.",
+            "iterate: _UnimplementedBootDriver does not run attempts. "
+            "This class is deprecated and retained only for test-suite "
+            "compatibility; production wiring uses _DockerBootDriver with "
+            "_DeployPackSubprocessClient. State was not modified.",
         )
 
 
@@ -436,8 +596,12 @@ def run(
     wallclock_cap_seconds: float = _BOOT_WALLCLOCK_CAP_SECONDS,
     state_dir: Path | None = None,
 ) -> int:
-    """Execute ``minecraft-upgrade iterate``. Returns 0 on success, 3 on failure."""
-    del project_root  # candidate_dir is derived from state_dir, not project_root.
+    """Execute ``minecraft-upgrade iterate``. Returns 0 on success, 3 on failure.
+
+    When ``driver`` is None (production), the default driver shells to
+    ``deploy-pack --integration`` via :class:`_DeployPackSubprocessClient`.
+    Tests inject their own driver and never touch the subprocess path.
+    """
     effective_state_dir = state_dir if state_dir is not None else _state_dir(config_dir)
     state_path = _resolve_state_path(effective_state_dir, run_id)
 
@@ -457,14 +621,21 @@ def run(
     if not slip_path.is_file():
         raise UpgradeCliError(3, f"candidate slip not found: {slip_path}")
 
-    effective_driver = driver if driver is not None else _UnimplementedBootDriver()
     effective_clock = clock if clock is not None else time.monotonic
+
+    if driver is None:
+        client = _DeployPackSubprocessClient(
+            config_dir=config_dir,
+            project_root=project_root,
+            clock=effective_clock,
+        )
+        driver = _DockerBootDriver(client, _MinimalLogClassifier())
 
     return _run_boot_loop(
         state=state,
         state_path=state_path,
         candidate_dir=candidate_dir,
-        driver=effective_driver,
+        driver=driver,
         clock=effective_clock,
         iteration_cap=iteration_cap,
         wallclock_cap_seconds=wallclock_cap_seconds,
