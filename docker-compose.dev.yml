@@ -1,0 +1,82 @@
+# docker-compose.dev.yml
+#
+# DEV-side compose file. Not used by prod. Selected when deploy_pack runs
+# with deploy_mode=dev (from .env deploy_mode=dev or --deploy-mode dev).
+#
+# Three services:
+#   mc-latest         - rapid iteration target; `iterate` deploys candidates here
+#   mc-candidate      - review target; boot a specific candidate for the team
+#   mc-artifact-store - static HTTP server for sync/downloads (placeholder for
+#                       the eventual proper artifact repository store)
+#
+# mc-latest and mc-candidate share ./dev-mods so a single deploy updates both
+# simultaneously. This is the MVP behaviour; per-instance mods_dirs come in a
+# later slice when the "hold candidate while iterating" workflow is needed.
+
+services:
+  mc-latest:
+    image: itzg/minecraft-server:java25
+    container_name: mc-latest
+    environment:
+      VERSION: "1.20.1"
+      TYPE: "FORGE"
+      FORGE_VERSION: "47.4.10"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD_FILE: /run/secrets/rcon_password
+      MEMORY: "6G"
+      JVM_OPTS: "-XX:+UseG1GC -Dfml.maxPacketSize=8388608"
+      EULA: "TRUE"
+    ports:
+      - "25566:25565"
+      - "25576:25575"
+    volumes:
+      - ./latest-data:/data
+      - ./dev-mods:/data/mods
+    secrets:
+      - rcon_password
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+  mc-candidate:
+    image: itzg/minecraft-server:java25
+    container_name: mc-candidate
+    environment:
+      VERSION: "1.20.1"
+      TYPE: "FORGE"
+      FORGE_VERSION: "47.4.10"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD_FILE: /run/secrets/rcon_password
+      MEMORY: "6G"
+      JVM_OPTS: "-XX:+UseG1GC -Dfml.maxPacketSize=8388608"
+      EULA: "TRUE"
+    ports:
+      - "25567:25565"
+      - "25577:25575"
+    volumes:
+      - ./candidate-data:/data
+      - ./dev-mods:/data/mods
+    secrets:
+      - rcon_password
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+  mc-artifact-store:
+    image: nginx:stable
+    container_name: mc-artifact-store
+    ports:
+      - "8280:80"
+    volumes:
+      - ./sync/downloads:/usr/share/nginx/html:ro
+      - ./nginx-artifact-store.conf:/etc/nginx/conf.d/default.conf:ro
+
+secrets:
+  rcon_password:
+    file: ./secrets/rcon_password

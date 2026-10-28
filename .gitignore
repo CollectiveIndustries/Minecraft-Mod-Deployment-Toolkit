@@ -106,3 +106,8 @@ datapacks/*
 
 # Tool Storage
 .ToolCore/
+
+# DEV-side compose data (not prod, not tracked)
+latest-data/
+candidate-data/
+dev-mods/
