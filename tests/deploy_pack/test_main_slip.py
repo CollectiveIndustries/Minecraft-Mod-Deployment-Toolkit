@@ -341,7 +341,7 @@ def test_build_integration_context_git_unavailable(tmp_path: Path, monkeypatch: 
 
 
 def test_load_config_passes_slip_and_requested_instances(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """_load_config forwards slip and requested_instances to load_deployment_config."""
+    """_load_config forwards slip, requested_instances, and deploy_mode_override to load_deployment_config."""
     captured: dict = {}
 
     def fake_load(
@@ -350,10 +350,12 @@ def test_load_config_passes_slip_and_requested_instances(monkeypatch: pytest.Mon
         cli_remaining=None,
         logger=None,
         slip=None,
+        deploy_mode_override=None,
     ):
         """Capture kwargs and return a sentinel."""
         captured["slip"] = slip
         captured["requested_instances"] = requested_instances
+        captured["deploy_mode_override"] = deploy_mode_override
         return "fake-config"
 
     monkeypatch.setattr(main, "load_deployment_config", fake_load)
@@ -362,3 +364,27 @@ def test_load_config_passes_slip_and_requested_instances(monkeypatch: pytest.Mon
     assert result == "fake-config"
     assert captured["slip"] is sentinel
     assert captured["requested_instances"] == {"survival"}
+    # Default from the caller (None) reaches the target unmodified.
+    assert captured["deploy_mode_override"] is None
+
+
+def test_load_config_passes_deploy_mode_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """_load_config forwards deploy_mode_override (Slice 17) to load_deployment_config."""
+    captured: dict = {}
+
+    def fake_load(
+        config_dir: Path,
+        requested_instances=None,
+        cli_remaining=None,
+        logger=None,
+        slip=None,
+        deploy_mode_override=None,
+    ):
+        """Capture the deploy_mode_override kwarg and return a sentinel."""
+        captured["deploy_mode_override"] = deploy_mode_override
+        return "fake-config"
+
+    monkeypatch.setattr(main, "load_deployment_config", fake_load)
+    result = main._load_config(tmp_path, [], deploy_mode_override="dev")
+    assert result == "fake-config"
+    assert captured["deploy_mode_override"] == "dev"

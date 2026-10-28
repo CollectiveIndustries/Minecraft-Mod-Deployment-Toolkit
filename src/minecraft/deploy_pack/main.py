@@ -38,6 +38,16 @@ Slice 15 T3c: notification dispatch now passes ``discord_config`` so
 ``[discord.notify_dispatch]`` is configured. When the bot daemon is not
 configured, the legacy webhook path is used unchanged.
 
+Slice 17 deploy mode
+--------------------
+``--deploy-mode {prod,dev}`` selects which compose file and which
+instance set is active. Precedence: ``--deploy-mode`` CLI > ``deploy_mode``
+in ``config.d/.env`` > ``"prod"``. The mode is passed through to
+:func:`config_model.load_deployment_config` as ``deploy_mode_override``.
+Every config-load path (scoped, ``--audit-mods``, ``--debug-deps``, and
+``--notify``-only) forwards it, so the resolved instance set and compose
+file are consistent across every dispatch branch.
+
 Exit codes (Section 2.4):
   0 success
   1 runtime failure
@@ -145,6 +155,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--non-interactive", action="store_true", help="Skip prompts; unmarked mods not deployed (Section 6.2)")
     parser.add_argument("--config-dir", type=str, default=None, help="Config directory (Section 2.2)")
     parser.add_argument(
+        "--deploy-mode",
+        choices=["prod", "dev"],
+        default=None,
+        help="Deploy mode: selects compose file and instance set (default: from .env deploy_mode, else 'prod')",
+    )
+    parser.add_argument(
         "--release",
         type=str,
         default=None,
@@ -224,6 +240,7 @@ class _Args:
     audit_mods: bool = False
     non_interactive: bool = False
     config_dir: str | None = None
+    deploy_mode: str | None = None  # NEW (Slice 17)
     release: str | None = None
     release_pointer: str | None = None
     integration: bool = False
@@ -494,13 +511,19 @@ def _load_config(
     overrides: list[str],
     slip: SlipContext | None = None,
     requested_instances: set[str] | None = None,
+    deploy_mode_override: str | None = None,
 ) -> DeploymentConfig:
-    """Load the deployment config, forwarding CLI overrides as kwargs."""
+    """Load the deployment config, forwarding CLI overrides as kwargs.
+
+    ``deploy_mode_override`` is threaded through to config_model so the
+    Slice-17 deploy mode selection (CLI > .env > "prod") can resolve.
+    """
     parsed = _parse_overrides(overrides)
     return load_deployment_config(
         config_dir=config_dir,
         requested_instances=requested_instances,
         slip=slip,
+        deploy_mode_override=deploy_mode_override,
         **parsed,
     )
 
@@ -1406,6 +1429,7 @@ def _load_config_or_exit(
     logger: Any,
     slip: SlipContext | None = None,
     requested_instances: set[str] | None = None,
+    deploy_mode_override: str | None = None,
 ) -> DeploymentConfig | None:
     """Load config, logging and swallowing any exception; return None on failure."""
     try:
@@ -1414,6 +1438,7 @@ def _load_config_or_exit(
             remaining,
             slip=slip,
             requested_instances=requested_instances,
+            deploy_mode_override=deploy_mode_override,
         )
     except Exception as exc:
         logger.error(f"config error: {exc}")
@@ -1495,6 +1520,9 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
 
     Slip context is built before config load (spec Section 14.1). A slip failure
     exits 3, matching config/preflight failures.
+
+    ``args.deploy_mode`` is threaded into config load so Slice-17 mode
+    selection (CLI > .env > "prod") resolves before instance filtering.
     """
     config_dir = _resolve_config_dir(args.config_dir)
 
@@ -1510,6 +1538,7 @@ def _run_with_scope(args: _Args, remaining: list[str], logger: Any) -> int:
         logger,
         slip=slip_ctx,
         requested_instances=args.instance,
+        deploy_mode_override=args.deploy_mode,
     )
     if config is None:
         return 3
@@ -1566,6 +1595,7 @@ def _parse_cli(parser: argparse.ArgumentParser, argv: list[str]) -> tuple[_Args 
         audit_mods=ns.audit_mods,
         non_interactive=ns.non_interactive,
         config_dir=ns.config_dir,
+        deploy_mode=ns.deploy_mode,  # NEW (Slice 17)
         release=ns.release,
         release_pointer=ns.release_pointer,
         integration=ns.integration,
@@ -1594,7 +1624,7 @@ def _dispatch_audit_mods(args: _Args, config_dir: Path, remaining: list[str], lo
         _log_cli.error("error: --audit-mods requires the textual package")
         return 1
     try:
-        config = _load_config(config_dir, remaining)
+        config = _load_config(config_dir, remaining, deploy_mode_override=args.deploy_mode)
     except Exception as exc:
         _log_cli.error(f"error: {exc}")
         return 3
@@ -1603,7 +1633,7 @@ def _dispatch_audit_mods(args: _Args, config_dir: Path, remaining: list[str], lo
 
 def _dispatch_debug_deps_only(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
     """Section 2.5: --debug-deps without a scope."""
-    config = _load_config_or_exit(config_dir, remaining, logger)
+    config = _load_config_or_exit(config_dir, remaining, logger, deploy_mode_override=args.deploy_mode)
     if config is None:
         return 3
     _run_debug_deps_safe(config, logger)
@@ -1617,7 +1647,7 @@ def _dispatch_debug_deps_only(args: _Args, config_dir: Path, remaining: list[str
 
 def _dispatch_diagnostic_only(args: _Args, config_dir: Path, remaining: list[str], logger: Any) -> int:
     """Section 2.5: --notify without a scope attempts the diagnostic message."""
-    config = _load_config_or_exit(config_dir, remaining, logger)
+    config = _load_config_or_exit(config_dir, remaining, logger, deploy_mode_override=args.deploy_mode)
     if config is None:
         return 3
     try:
