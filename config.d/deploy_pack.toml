@@ -8,6 +8,21 @@
 # as this file:
 #
 #     webhook_url=https://discord.com/api/webhooks/xxx/yyy
+#     deploy_mode=prod    # or "dev"; defaults to "prod" if absent
+#
+# MODE SELECTION (Slice 17)
+# -------------------------
+# deploy_pack supports two mutually-exclusive modes, selected by
+# `--deploy-mode {prod,dev}` on the CLI, else `deploy_mode` in .env,
+# else defaulting to "prod".
+#
+# Mode affects two things:
+#   1. Which compose file is used ([docker].compose_file_<mode>).
+#   2. Which instances are eligible ([instances.X].mode == deploy_mode).
+#
+# Prod's compose file has survival + creative + velocity + bluemap + nginx.
+# Dev's compose file has mc-latest + mc-candidate + mc-artifact-store.
+# Both files are git-tracked; the mode selector picks which is loaded.
 #
 # LAYOUT NOTE: top-level keys must all appear BEFORE the first [table]
 # header. In TOML, any key that follows a [section] header belongs to
@@ -44,6 +59,11 @@ download_base_url = "http://minecraft/downloads"
 # Shared mods directory, as declared in compose. This key is read only
 # for a drift warning: deploy_pack derives mods_dir from the /data/mods
 # bind mount and logs a warning if the two disagree. Compose wins.
+#
+# On prod, this should match docker-compose.yml's `./mods` bind.
+# On dev, docker-compose.dev.yml binds `./dev-mods`; a drift warning will
+# fire unless this key is overridden via CLI (--mods-dir ./dev-mods) or
+# simply omitted on the dev host. The warning is cosmetic.
 mods_dir = "./mods"
 
 # === Sync mapping ======================================================
@@ -91,12 +111,18 @@ resourcepacks = { resource_pack = "@www/resourcepacks", client = "resourcepacks"
 # === Docker ============================================================
 # Docker lifecycle timing and in-game notices.
 #
+# compose_file_<mode> selects the compose file based on the active
+# deploy_mode. Legacy `compose_file` remains accepted as a fallback if
+# neither mode-specific key is present (backward compat with hosts that
+# haven't migrated yet).
+#
 # rcon_host is optional. When unset, deploy_pack uses the local docker
 # socket and requires the RCON port to be published to localhost. When
 # set, preflight requires exactly one published mapping for that port.
 #
 [docker]
-compose_file = "docker-compose.yml"
+compose_file_prod = "docker-compose.yml"
+compose_file_dev  = "docker-compose.dev.yml"
 restart_wait_seconds = 60
 in_game_notice_required = true
 health_timeout_seconds = 600
@@ -161,30 +187,49 @@ template = """**Deploy diagnostic**
 
 # === Server instances ==================================================
 # Each instance's container name must match a container_name in
-# docker-compose.yml. The instance_root, config path, kubejs path, and
-# server.properties path are derived from the compose service's /data
-# bind mount - there is no separate "path" key in this file.
+# docker-compose.yml (prod mode) or docker-compose.dev.yml (dev mode).
+# The instance_root, config path, kubejs path, and server.properties
+# path are derived from the compose service's /data bind mount - there
+# is no separate "path" key in this file.
 #
+# mode:        "prod" (default) or "dev". Instances whose mode does not
+#              match the active deploy_mode are filtered out of the
+#              partition before resolution. `--instance X` where X is
+#              filtered reports "filtered by mode" rather than "unknown".
 # config_mode: "merge" (default) or "delete" - §7.2 semantics for
 #              <instance_root>/config.
 # kubejs_mode: must be "delete" (the only value the spec defines).
 #
-# The partition is derived from these tables: every instance listed here
-# is deployed. Use --instance to target a subset at runtime.
+# The partition is derived from these tables: every instance whose mode
+# matches the active mode is deployed. Use --instance to target a subset
+# at runtime.
 #
 # These tables are intentionally last. See the layout note at the top.
 #
 [instances.survival]
 container = "mc-survival"
+mode = "prod"
 
 [instances.creative]
 container = "mc-creative"
+mode = "prod"
+
+[instances.latest]
+container = "mc-latest"
+mode = "dev"
+
+[instances.candidate]
+container = "mc-candidate"
+mode = "dev"
 
 # === Resource packs (optional, per instance) ===========================
 # When present, the resource-pack scope publishes the named ZIP from
 # sync_root/<sync_mapping.resourcepacks.client>/ and updates that
 # instance's server.properties with the four managed keys. When absent,
 # the instance is reported in no_pack_members and left untouched.
+#
+# A [resource_pack.X] whose instance is filtered by mode is skipped
+# silently (not an orphan error).
 #
 # [resource_pack.survival]
 # filename = "survival-pack.zip"

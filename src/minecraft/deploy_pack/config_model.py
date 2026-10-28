@@ -14,6 +14,27 @@ Responsibilities (Section 9.2):
     download_base_url (Section 7.5), docker timing keys (Section 3.9)
   * load ``[discord.notify_dispatch]`` and resolve the bot-daemon token
     (Slice 15 T3c)
+  * resolve the active deploy mode (prod|dev) and filter instances by mode
+    (Slice 17)
+
+Mode selection (Slice 17)
+-------------------------
+A single tracked `config.d/deploy_pack.toml` is shared between PROD and DEV.
+The active mode is resolved once at load time from:
+
+  1. ``--deploy-mode`` CLI flag (``"prod"`` or ``"dev"``), OR
+  2. ``deploy_mode`` in ``config.d/.env``, OR
+  3. ``"prod"`` (default)
+
+The mode affects two things:
+
+  * ``[docker].compose_file_<mode>`` selects the compose file. Legacy
+    ``[docker].compose_file`` is still accepted as a fallback for hosts
+    that haven't migrated yet.
+  * ``[instances.X].mode`` gates each instance into the partition. Instances
+    whose mode does not match the active mode are filtered out *before*
+    partition resolution, so ``--instance survival`` on a dev-mode host
+    produces ``"filtered by mode='dev'"`` rather than ``"unknown"``.
 
 Explicit non-responsibilities:
   * No os.environ access (Section 9.2). The environment-variable config source
@@ -121,6 +142,11 @@ _log = get_logger(__name__)
 DEFAULT_RESTART_NOTICE_TEMPLATE = "Server pack updated. Restart in {time}."
 DEFAULT_RESTART_CANCEL_NOTICE_TEMPLATE = "Server restart canceled; the deployment could not safely proceed."
 DEFAULT_STOP_GRACE_SECONDS = 10
+# NEW (Slice 17): valid deploy modes.
+_VALID_DEPLOY_MODES = frozenset({"prod", "dev"})
+# NEW (Slice 17): default deploy mode when neither --deploy-mode nor .env
+# specifies one.
+_DEFAULT_DEPLOY_MODE = "prod"
 
 
 # ===========================================================================
@@ -326,6 +352,14 @@ class DeploymentConfig:
         Redundant with ``requested_instances is not None`` but exposed as
         a stable boolean for callers that only need the flag.
 
+    Slice 17 mode selection:
+      * ``deploy_mode`` - the resolved active mode ("prod" or "dev").
+      * ``filtered_instances`` - instances present in deploy_pack.toml
+        but excluded because their ``mode`` doesn't match. Keys are
+        instance names; values are the instance's declared mode. Used by
+        preflight's unknown-instance error to explain why a name isn't
+        in the partition.
+
     Slip mode (spec v1.3 Section 5.8): ``slip`` carries the verified ``SlipContext``
     when deploy-pack is invoked in release or integration mode. It is None
     in legacy mode and behaves identically to v2.
@@ -355,6 +389,9 @@ class DeploymentConfig:
     compose: ComposeLoadResult = None  # type: ignore[assignment]
     mods_dir_toml: Path | None = None
     slip: SlipContext | None = None
+    # NEW (Slice 17)
+    deploy_mode: str = _DEFAULT_DEPLOY_MODE
+    filtered_instances: dict[str, str] = field(default_factory=dict)
 
 
 # ===========================================================================
@@ -512,6 +549,39 @@ def _validate_docker_timings(docker: DockerConfig) -> None:
     for key in _POSITIVE_KEYS:
         _check_positive(key, getattr(docker, key))
     _log.debug("_validate_docker_timings: all docker timing keys valid")
+
+
+# ===========================================================================
+# Section 2b  Deploy mode resolution (Slice 17)  -- NEW
+# ===========================================================================
+
+
+def _resolve_deploy_mode(raw: dict[str, Any], cli_override: str | None, logger: Any) -> str:
+    """Resolve the active deploy mode.
+
+    Precedence (highest first):
+      1. ``cli_override`` (from ``--deploy-mode``)
+      2. ``deploy_mode`` in ``.env``
+      3. ``"prod"``
+
+    Raises :class:`ConfigError` on any malformed value. The returned string
+    is always one of :data:`_VALID_DEPLOY_MODES`.
+    """
+    if cli_override is not None:
+        if cli_override not in _VALID_DEPLOY_MODES:
+            logger.error(f"config: --deploy-mode must be one of {sorted(_VALID_DEPLOY_MODES)}, got {cli_override!r}")
+            raise ConfigError(f"--deploy-mode must be one of {sorted(_VALID_DEPLOY_MODES)}, got {cli_override!r}")
+        logger.debug(f"config: deploy_mode={cli_override!r} (CLI override)")
+        return cli_override
+    env_value = raw.get("deploy_mode")
+    if env_value is not None:
+        if not isinstance(env_value, str) or env_value not in _VALID_DEPLOY_MODES:
+            logger.error(f"config: deploy_mode from .env must be one of {sorted(_VALID_DEPLOY_MODES)}, got {env_value!r}")
+            raise ConfigError(f"deploy_mode must be one of {sorted(_VALID_DEPLOY_MODES)}, got {env_value!r}")
+        logger.debug(f"config: deploy_mode={env_value!r} (.env)")
+        return env_value
+    logger.debug(f"config: deploy_mode defaulting to {_DEFAULT_DEPLOY_MODE!r}")
+    return _DEFAULT_DEPLOY_MODE
 
 
 # ===========================================================================
@@ -1151,10 +1221,20 @@ def _validate_instance_discovery(raw: dict[str, Any], logger: Any) -> None:
         raise ConfigError(f"instance_discovery must be 'explicit', got {discovery!r}")
 
 
-def _build_docker_config(raw: dict[str, Any], project_root: Path, logger: Any) -> DockerConfig:
-    """Build and validate the ``[docker]`` section (Section 3.9)."""
+def _build_docker_config(raw: dict[str, Any], project_root: Path, deploy_mode: str, logger: Any) -> DockerConfig:
+    """Build and validate the ``[docker]`` section (Section 3.9).
+
+    Slice 17: selects ``compose_file_<deploy_mode>`` when present. Falls
+    back to legacy ``compose_file`` for hosts that haven't migrated.
+    """
     docker_raw = _require_table(raw, "docker", logger=logger)
-    compose_file = _resolve_project_path(docker_raw.get("compose_file"), project_root, "./docker-compose.yml")
+    mode_key = f"compose_file_{deploy_mode}"
+    mode_value = docker_raw.get(mode_key)
+    if mode_value is None:
+        mode_value = docker_raw.get("compose_file")
+        if mode_value is not None:
+            logger.debug(f"config: [docker].{mode_key} not set; falling back to [docker].compose_file")
+    compose_file = _resolve_project_path(mode_value, project_root, "./docker-compose.yml")
     docker = DockerConfig(
         compose_file=compose_file,
         restart_wait_seconds=int(docker_raw.get("restart_wait_seconds", 300)),
@@ -1260,15 +1340,50 @@ def _build_instance_config(name: str, body: Any, compose_result: ComposeLoadResu
     return inst
 
 
-def _build_instances(raw: dict[str, Any], compose_result: ComposeLoadResult, logger: Any) -> dict[str, InstanceConfig]:
-    """Build the ``[instances]`` table (Section 3.2)."""
+def _validate_instance_mode_field(name: str, body: Any, logger: Any) -> str:
+    """Return the instance's declared mode, defaulting to 'prod' if absent.
+
+    Slice 17: raises ConfigError on any value outside {prod, dev}.
+    """
+    if not isinstance(body, dict):
+        return _DEFAULT_DEPLOY_MODE
+    inst_mode = body.get("mode", _DEFAULT_DEPLOY_MODE)
+    if not isinstance(inst_mode, str) or inst_mode not in _VALID_DEPLOY_MODES:
+        logger.error(f"config: [instances.{name}].mode must be one of {sorted(_VALID_DEPLOY_MODES)}, got {inst_mode!r}")
+        raise ConfigError(f"[instances.{name}].mode must be one of {sorted(_VALID_DEPLOY_MODES)}, got {inst_mode!r}")
+    return inst_mode
+
+
+def _build_instances(
+    raw: dict[str, Any],
+    compose_result: ComposeLoadResult,
+    deploy_mode: str,
+    logger: Any,
+) -> tuple[dict[str, InstanceConfig], dict[str, str]]:
+    """Build the ``[instances]`` table, filtered by active deploy_mode.
+
+    Returns ``(active, filtered)``:
+      * ``active`` - instances whose ``mode`` matches ``deploy_mode``.
+      * ``filtered`` - mapping of instance name to its declared mode for
+        instances that were excluded. Used by preflight's unknown-instance
+        error to say *why* a name isn't in the partition.
+
+    Section 3.2, Slice 17.
+    """
     instances_raw = _require_table(raw, "instances", logger=logger)
-    instances: dict[str, InstanceConfig] = {}
+    active: dict[str, InstanceConfig] = {}
+    filtered: dict[str, str] = {}
     for name, body in instances_raw.items():
         name_str = str(name)
-        instances[name_str] = _build_instance_config(name_str, body, compose_result, logger)
-    logger.info(f"config: resolved {len(instances)} instance(s): {sorted(instances)}")
-    return instances
+        inst_mode = _validate_instance_mode_field(name_str, body, logger)
+        if inst_mode != deploy_mode:
+            filtered[name_str] = inst_mode
+            continue
+        active[name_str] = _build_instance_config(name_str, body, compose_result, logger)
+    if filtered:
+        logger.debug(f"config: filtered {len(filtered)} instance(s) not in mode={deploy_mode!r}: {filtered}")
+    logger.info(f"config: resolved {len(active)} {deploy_mode}-mode instance(s): {sorted(active)}")
+    return active, filtered
 
 
 def _validate_resource_pack_required_keys(name: str, body: dict, logger: Any) -> None:
@@ -1288,8 +1403,22 @@ def _validate_resource_pack_orphan(name: str, instances: Mapping[str, InstanceCo
         raise ConfigError(f"[resource_pack.{name}] has no matching [instances.{name}]")
 
 
-def _build_one_resource_pack(name: str, body: Any, instances: Mapping[str, InstanceConfig], logger: Any) -> ResourcePackConfig:
-    """Validate one ``[resource_pack.X]`` block (Section 3.9) and check for an orphan."""
+def _build_one_resource_pack(
+    name: str,
+    body: Any,
+    instances: Mapping[str, InstanceConfig],
+    filtered: Mapping[str, str],
+    logger: Any,
+) -> ResourcePackConfig | None:
+    """Validate one ``[resource_pack.X]`` block (Section 3.9).
+
+    Slice 17: returns ``None`` when the instance exists in deploy_pack.toml
+    but was filtered by mode. A truly-orphan section (no instance at all)
+    still raises.
+    """
+    if name in filtered:
+        logger.debug(f"config: [resource_pack.{name}] skipped (instance in mode={filtered[name]!r})")
+        return None
     if not isinstance(body, dict):
         logger.error(f"config: [resource_pack.{name}] is not a table")
         raise ConfigError(f"[resource_pack.{name}] must be a table")
@@ -1302,13 +1431,20 @@ def _build_one_resource_pack(name: str, body: Any, instances: Mapping[str, Insta
     )
 
 
-def _build_resource_packs(raw: dict[str, Any], instances: Mapping[str, InstanceConfig], logger: Any) -> dict[str, ResourcePackConfig]:
+def _build_resource_packs(
+    raw: dict[str, Any],
+    instances: Mapping[str, InstanceConfig],
+    filtered: Mapping[str, str],
+    logger: Any,
+) -> dict[str, ResourcePackConfig]:
     """Build the ``[resource_pack]`` table and enforce Section 7.9 orphan rules."""
     rp_raw = _require_table(raw, "resource_pack", logger=logger)
     resource_packs: dict[str, ResourcePackConfig] = {}
     for name, body in rp_raw.items():
         name_str = str(name)
-        resource_packs[name_str] = _build_one_resource_pack(name_str, body, instances, logger)
+        cfg = _build_one_resource_pack(name_str, body, instances, filtered, logger)
+        if cfg is not None:
+            resource_packs[name_str] = cfg
     logger.debug(f"config: resolved {len(resource_packs)} resource pack(s): {sorted(resource_packs)}")
     return resource_packs
 
@@ -1522,6 +1658,8 @@ def _build_all_sections(
     config_dir: Path,
     project_root: Path,
     instances: dict[str, InstanceConfig],
+    filtered: dict[str, str],
+    deploy_mode: str,
     logger: Any,
 ) -> tuple[
     DockerConfig,
@@ -1537,9 +1675,9 @@ def _build_all_sections(
 
     Returns the tuple of section results; the caller assembles them.
     """
-    docker = _build_docker_config(raw, project_root, logger)
+    docker = _build_docker_config(raw, project_root, deploy_mode, logger)
     compose_result = _load_compose_or_warn(docker.compose_file, logger)
-    resource_packs = _build_resource_packs(raw, instances, logger)
+    resource_packs = _build_resource_packs(raw, instances, filtered, logger)
     sync_mapping = _build_sync_mapping(raw, logger)
     restart_policy = _build_restart_policy(raw, logger)
     discord = _build_discord_config(raw, logger, config_dir)
@@ -1562,6 +1700,8 @@ def _assemble_config(
     partition_unknown: list[str],
     requested_instances: Iterable[str] | None,
     sections: tuple,
+    deploy_mode: str,
+    filtered: dict[str, str],
     slip: SlipContext | None = None,
 ) -> DeploymentConfig:
     """Assemble the final DeploymentConfig from the resolved parts."""
@@ -1600,6 +1740,8 @@ def _assemble_config(
         compose=compose_result,
         mods_dir_toml=mods_dir_toml,
         slip=slip,
+        deploy_mode=deploy_mode,
+        filtered_instances=filtered,
     )
 
 
@@ -1609,6 +1751,7 @@ def load_deployment_config(
     cli_remaining: list[str] | None = None,
     logger: Any = None,
     slip: SlipContext | None = None,
+    deploy_mode_override: str | None = None,
 ) -> DeploymentConfig:
     """Load, merge, and validate configuration.
 
@@ -1622,6 +1765,10 @@ def load_deployment_config(
     or integration mode (spec v1.3 Section 5.8). When None, behavior is identical
     to legacy v2.
 
+    ``deploy_mode_override`` is the ``--deploy-mode`` CLI value. It takes
+    precedence over ``deploy_mode`` in ``.env`` and the ``"prod"`` default.
+    Slice 17.
+
     This function performs no os.environ access (Section 9.2).
 
     A broken compose file does NOT raise. The DeploymentConfig.compose field carries the diagnostic; preflight applies Section 3.5.
@@ -1629,7 +1776,8 @@ def load_deployment_config(
     if logger is None:
         logger = _log
     logger.info(
-        f"config load: config_dir={config_dir} requested_instances={sorted(requested_instances) if requested_instances is not None else None} slip_mode={slip.mode if slip is not None else None}"
+        f"config load: config_dir={config_dir} requested_instances={sorted(requested_instances) if requested_instances is not None else None} "
+        f"slip_mode={slip.mode if slip is not None else None} deploy_mode_override={deploy_mode_override!r}"
     )
     config_dir = config_dir.resolve()
     project_root = config_dir.parent
@@ -1642,6 +1790,7 @@ def load_deployment_config(
         requested_instances=requested_instances,
         logger=logger,
         slip=slip,
+        deploy_mode_override=deploy_mode_override,
     )
 
 
@@ -1652,13 +1801,14 @@ def _build_deployment_config(
     requested_instances: Iterable[str] | None,
     logger: Any = None,
     slip: SlipContext | None = None,
+    deploy_mode_override: str | None = None,
 ) -> DeploymentConfig:
     """Turn the merged raw dict into a typed DeploymentConfig.
 
-    Walks the schema in spec order: top-level scalars and paths,
-    ``[docker]`` + compose, ``[instances]`` + partition, then every
-    remaining section via :func:`_build_all_sections`. Assembly is a
-    separate step so the orchestrator reads as a linear sequence of
+    Walks the schema in spec order: deploy mode resolution, top-level
+    scalars and paths, ``[docker]`` + compose, ``[instances]`` + partition,
+    then every remaining section via :func:`_build_all_sections`. Assembly
+    is a separate step so the orchestrator reads as a linear sequence of
     "resolve X, resolve Y, assemble."
     """
     if logger is None:
@@ -1666,16 +1816,18 @@ def _build_deployment_config(
 
     _validate_instance_discovery(raw, logger)
 
+    deploy_mode = _resolve_deploy_mode(raw, deploy_mode_override, logger)
+
     sync_root, modpack_dir, mods_dir_toml = _resolve_top_level_paths(raw, project_root, logger)
     scalars = _resolve_top_level_scalars(raw)
 
-    docker = _build_docker_config(raw, project_root, logger)
+    docker = _build_docker_config(raw, project_root, deploy_mode, logger)
     compose_result = _load_compose_or_warn(docker.compose_file, logger)
 
-    instances = _build_instances(raw, compose_result, logger)
+    instances, filtered = _build_instances(raw, compose_result, deploy_mode, logger)
     partition, partition_unknown = resolve_partition(instances, requested_instances)
 
-    sections = _build_all_sections(raw, config_dir, project_root, instances, logger)
+    sections = _build_all_sections(raw, config_dir, project_root, instances, filtered, deploy_mode, logger)
     # docker and compose_result are rebuilt inside _build_all_sections; drop
     # the earlier copies so only one set flows to assembly.
     docker, compose_result = sections[0], sections[1]
@@ -1696,9 +1848,11 @@ def _build_deployment_config(
         partition_unknown=partition_unknown,
         requested_instances=requested_instances,
         sections=sections,
+        deploy_mode=deploy_mode,
+        filtered=filtered,
         slip=slip,
     )
-    logger.info(f"config: built; partition={partition} compose_ok={compose_result.ok} www_dir={result.www_dir}")
+    logger.info(f"config: built; deploy_mode={deploy_mode} partition={partition} compose_ok={compose_result.ok} www_dir={result.www_dir}")
     return result
 
 
