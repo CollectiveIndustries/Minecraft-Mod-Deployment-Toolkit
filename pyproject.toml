@@ -28,6 +28,9 @@ license = { text = "MIT" }
 deploy-pack = "minecraft.deploy_pack.deploy_pack:cli"
 lookup-assets = "minecraft.lookup:main"
 minecraft-upgrade = "minecraft.modpack_upgrade.cli.main:main"
+install-prod = "minecraft.installer.cli:install_prod"
+install-dev = "minecraft.installer.cli:install_dev"
+rotate-secrets = "minecraft.installer.cli:rotate_secrets"
 
 [project.optional-dependencies]
 dev = [
