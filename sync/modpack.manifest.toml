@@ -1,0 +1,17 @@
+# Target runtime for the dev upgrade pipeline.
+# Read by `minecraft-upgrade update`; `loader_version` must match
+# FORGE_VERSION in docker-compose.dev.yml so the compose file can boot
+# what the resolver produces.
+
+[minecraft]
+version = "1.21.1"
+loader = "forge"
+loader_version = "52.1.20"
+
+# release_then_beta: prefer stable releases, fall back to beta if no release
+# exists for the target runtime. ask: on losses (mods with no 1.21.1 build),
+# exit 6 and wait for acknowledge rather than silently dropping.
+#
+[policy]
+selection = "release_then_beta"
+no_version = "ask"
