@@ -7,8 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import LoggingCore.sync_logger as sync_module
-
+from minecraft.common import cli_logging
 from minecraft.deploy_pack import logging_setup
 from minecraft.deploy_pack import main as main_mod
 from minecraft.deploy_pack.preflight import states as states_mod
@@ -205,23 +204,18 @@ def test_classify_state_unknown_status_fails():
 def test_configure_clears_module_logger_cache() -> None:
     """Configure() must clear the module-level logger cache.
 
-    Regression: configure() replaced ``_logging_core`` but not
+    Regression: configure() replaced the global core but not the
     ``_logger_cache``, so module loggers captured at import time kept
     speaking to the old (default-level) core. ``--debug`` set the new
     core's level to DEBUG, but those loggers never used it, and their
     DEBUG output was silently dropped.
 
-    The test captures a logger against whatever core is currently
-    installed, forces configure to run fresh, then captures a same-name
-    logger again. If configure cleared the cache, the second lookup
-    returns a different object bound to the new core. If it did not,
-    the cached pre-configure logger is returned and the assertion
-    fails.
+    LoggingCore 0.12.x extracted the cache to ``_state``; the reset goes
+    through ``cli_logging.reset()``, which is the public contract.
     """
-    sync_module._logger_cache.clear()
+    cli_logging.reset()
     pre = logging_setup.get_logger("test.cache_probe")
 
-    logging_setup._configured = False
     logging_setup.configure(debug=True)
 
     post = logging_setup.get_logger("test.cache_probe")

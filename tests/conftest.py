@@ -6,21 +6,26 @@ Logging contract for tests
 
 Application modules emit exclusively through :mod:`LoggingCore`. They never
 call :mod:`logging` directly. To make those events observable from pytest,
-this conftest installs a :class:`PytestLoggingCoreSink` on a per-test
-:class:`LoggingCore` instance. The sink has two jobs:
+this conftest installs two sinks on a per-test :class:`LoggingCore`:
 
-1. **Native capture.** ``sink.events`` records every :class:`LogEvent` in
-   emission order. Tests that want structured access use the
-   ``log_events`` fixture.
+1. **CLI/stream sink.** :class:`RoutingConsoleSink` splits CLI loggers
+   (prefix-matched) to stdout/stderr verbatim and routes everything else to
+   stderr with a ``[LEVEL] name: msg`` prefix. Tests that assert on
+   ``capsys.readouterr()`` observe this sink's output.
 
-2. **``caplog`` bridge.** Each event is re-emitted through stdlib logging
-   under the same logger name at the matching level. pytest's ``caplog``
-   fixture observes stdlib records, so ``caplog.records`` and
-   ``caplog.text`` keep working for tests written against them. The bridge
-   is test-only; it does not exist in the application.
+2. **Recording + stdlib bridge.** :class:`PytestLoggingCoreSink` records
+   every :class:`LogEvent` in ``sink.events`` and re-emits it through stdlib
+   logging under the same logger name. Tests that assert on
+   ``caplog.records`` / ``caplog.text`` observe this side.
 
-Each application module chooses its own logger name (usually its
-``__name__``); the fixture does not constrain the name.
+Both sinks implement ``write_sync``. LoggingCore 0.12.x's
+``SyncLogger._emit`` dispatches through ``LoggingCore.emit_sync``, which
+skips any sink that only provides ``async def write``; a sink without
+``write_sync`` is invisible to every sync log call.
+
+State is manipulated through :mod:`LoggingCore._state`'s public accessors
+rather than the underscored ``_logging_core`` / ``_logger_cache``
+attributes that prior LoggingCore versions kept on ``sync_logger``.
 """
 
 from __future__ import annotations
@@ -33,11 +38,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from LoggingCore import LogEvent, LoggingCore
-from LoggingCore import sync_logger as logging_core_sync
+from LoggingCore import LogEvent, LoggingCore, _state
+from LoggingCore.sinks import RoutingConsoleSink
+
+from minecraft.common.cli_logging import CLI_PREFIXES
 
 # ---------------------------------------------------------------------------
-# LoggingCore test sink
+# LoggingCore test sinks
 # ---------------------------------------------------------------------------
 
 _STDLIB_LEVELS: dict[str, int] = {
@@ -52,43 +59,57 @@ _STDLIB_LEVELS: dict[str, int] = {
 class PytestLoggingCoreSink:
     """LoggingCore sink that records events and bridges them to stdlib logging.
 
-    Application code never sees this class; it exists only inside the pytest process. See the module docstring for rationale.
+    Application code never sees this class; it exists only inside the pytest
+    process. ``write_sync`` is required so ``emit_sync`` dispatches to this
+    sink; ``write`` is the async counterpart for ``emit``.
     """
 
     def __init__(self) -> None:
         self.events: list[LogEvent] = []
 
-    async def write(self, event: LogEvent) -> None:
+    def write_sync(self, event: LogEvent) -> None:
         """Record the event, then re-emit it through stdlib logging."""
         self.events.append(event)
         stdlib_logger = logging.getLogger(event.logger)
         level = _STDLIB_LEVELS.get(event.level.upper(), logging.INFO)
         stdlib_logger.log(level, event.message)
 
+    async def write(self, event: LogEvent) -> None:
+        """Record the event, then re-emit it through stdlib logging (async)."""
+        self.write_sync(event)
+
 
 @pytest.fixture(autouse=True)
 def logging_core_sink() -> Iterator[PytestLoggingCoreSink]:
-    """Install a fresh LoggingCore test sink for every test.
+    """Install a fresh LoggingCore test stack for every test.
 
-    The global LoggingCore is swapped out so each test sees a clean sink and a clean event list. The previous core (and its logger cache) is restored on
-    teardown.
+    Replaces the global core with one that has:
+
+      * a :class:`RoutingConsoleSink` for CLI prefixes (writes to
+        stdout/stderr, visible to ``capsys``)
+      * a :class:`PytestLoggingCoreSink` that records events and bridges
+        them to stdlib logging (visible to ``caplog``)
+
+    Both sinks implement ``write_sync`` because LoggingCore 0.12.x's
+    ``SyncLogger._emit`` dispatches through ``emit_sync``.
     """
     sink = PytestLoggingCoreSink()
     core = LoggingCore()
     core.add_sink(sink)
+    core.add_sink(RoutingConsoleSink(cli_prefixes=CLI_PREFIXES, color=False))
     core.set_level(logging.DEBUG)
 
-    previous_core = logging_core_sync._logging_core
-    previous_cache = dict(logging_core_sync._logger_cache)
-    logging_core_sync._logging_core = core
-    logging_core_sync._logger_cache.clear()
+    previous_core = _state.get_core()
+    previous_cache = dict(_state.get_logger_cache())
+    _state.set_core(core)
+    _state.get_logger_cache().clear()
 
     try:
         yield sink
     finally:
-        logging_core_sync._logging_core = previous_core
-        logging_core_sync._logger_cache.clear()
-        logging_core_sync._logger_cache.update(previous_cache)
+        _state.set_core(previous_core)
+        _state.get_logger_cache().clear()
+        _state.get_logger_cache().update(previous_cache)
 
 
 @pytest.fixture
