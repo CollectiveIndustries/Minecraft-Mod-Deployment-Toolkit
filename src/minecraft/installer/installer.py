@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .compose import bring_up, derive_instance_roots
+from .compose import bring_up, derive_instance_roots, ensure_mods_dirs
 from .config import InstallerConfig, load_installer_config
 from .errors import ComposeError, InstallerError
 from .rcon import configure_rcon, configure_server_properties
@@ -62,7 +62,10 @@ def install(
     else:
         log.debug("Velocity not configured; skipping velocity secrets")
 
-    # 5. Bring the stack up
+    # 5. Ensure every bind-mount host directory exists (mods dirs)
+    ensure_mods_dirs(compose_path, log=log)
+
+    # 6. Bring the stack up
     if up:
         bring_up(compose_path, log=log)
     else:

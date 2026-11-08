@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from minecraft.installer import compose as compose_mod
-from minecraft.installer.compose import bring_up, derive_instance_roots
+from minecraft.installer.compose import bring_up, derive_instance_roots, ensure_mods_dirs
 from minecraft.installer.errors import ComposeError
 
 _LOG = logging.getLogger("test_installer_compose")
@@ -68,6 +68,45 @@ def test_derive_instance_roots_no_data_bind(tmp_path: Path) -> None:
     assert roots == []
 
 
+def test_ensure_mods_dirs_creates_missing(tmp_path: Path) -> None:
+    """A missing ./dev-mods directory is created."""
+    compose = _write_dev_compose(tmp_path)
+    assert not (tmp_path / "dev-mods").exists()
+
+    created = ensure_mods_dirs(compose, log=_LOG)
+
+    assert (tmp_path / "dev-mods").is_dir()
+    assert len(created) == 1
+    assert created[0] == (tmp_path / "dev-mods").resolve()
+
+
+def test_ensure_mods_dirs_idempotent(tmp_path: Path) -> None:
+    """A second call with the mods dir already present creates nothing."""
+    compose = _write_dev_compose(tmp_path)
+    first = ensure_mods_dirs(compose, log=_LOG)
+    assert len(first) == 1
+
+    second = ensure_mods_dirs(compose, log=_LOG)
+    assert second == []
+
+
+def test_ensure_mods_dirs_no_mods_bind(tmp_path: Path) -> None:
+    """Compose with no /data/mods bind creates nothing."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n  mc:\n    container_name: mc\n    volumes:\n      - ./data/mc:/data\n",
+        encoding="utf-8",
+    )
+    created = ensure_mods_dirs(compose, log=_LOG)
+    assert created == []
+
+
+def test_ensure_mods_dirs_missing_compose(tmp_path: Path) -> None:
+    """A missing compose file raises ComposeError."""
+    with pytest.raises(ComposeError, match="could not load"):
+        ensure_mods_dirs(tmp_path / "nope.yml", log=_LOG)
+
+
 def test_bring_up_runs_docker_compose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """bring_up invokes docker compose with the expected args."""
     compose = tmp_path / "docker-compose.dev.yml"
@@ -87,13 +126,7 @@ def test_bring_up_runs_docker_compose(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
     bring_up(compose, log=_LOG)
     assert len(calls) == 1
-    assert calls[0][:5] == [
-        "docker",
-        "compose",
-        "-f",
-        str(compose),
-        "up",
-    ]
+    assert calls[0][:5] == ["docker", "compose", "-f", str(compose), "up"]
     assert "-d" in calls[0]
 
 

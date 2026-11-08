@@ -43,12 +43,12 @@ def _write_prod_compose(tmp_path: Path) -> None:
         "    container_name: mc-survival\n"
         "    volumes:\n"
         "      - ./data/survival:/data\n"
-        "      - ./shared/mods:/data/mods\n"
+        "      - ./mods:/data/mods\n"
         "  creative:\n"
         "    container_name: mc-creative\n"
         "    volumes:\n"
         "      - ./data/creative:/data\n"
-        "      - ./shared/mods:/data/mods\n",
+        "      - ./mods:/data/mods\n",
         encoding="utf-8",
     )
 
@@ -73,6 +73,18 @@ def test_install_dev_creates_secrets_and_props(tmp_path: Path, monkeypatch: pyte
 
     assert (tmp_path / "latest-data" / "server.properties").is_file()
     assert (tmp_path / "candidate-data" / "server.properties").is_file()
+
+
+def test_install_dev_creates_dev_mods_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """install-dev creates the ./dev-mods directory before bring_up."""
+    _write_dev_compose(tmp_path)
+    monkeypatch.setattr(installer_mod, "bring_up", lambda *a, **k: None)
+
+    assert not (tmp_path / "dev-mods").exists()
+
+    install("dev", tmp_path, tmp_path / "config.d", up=False, log=_LOG)
+
+    assert (tmp_path / "dev-mods").is_dir()
 
 
 def test_install_dev_calls_bring_up_when_up_true(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,6 +130,18 @@ def test_install_prod_writes_props(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert "enable-rcon=true" in props.read_text(encoding="utf-8")
     creative = tmp_path / "data" / "creative" / "server.properties"
     assert creative.is_file()
+
+
+def test_install_prod_creates_mods_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """install-prod creates the ./mods directory before bring_up."""
+    _write_prod_compose(tmp_path)
+    monkeypatch.setattr(installer_mod, "bring_up", lambda *a, **k: None)
+
+    assert not (tmp_path / "mods").exists()
+
+    install("prod", tmp_path, tmp_path / "config.d", up=False, log=_LOG)
+
+    assert (tmp_path / "mods").is_dir()
 
 
 def test_install_uses_existing_secret(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
