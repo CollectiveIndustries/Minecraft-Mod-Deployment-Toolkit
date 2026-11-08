@@ -31,6 +31,17 @@ becomes the ``.pw.toml``'s ``side`` field; ``name`` becomes ``name``;
 This is the only staging path. Mods that generate their own ``.pw.toml``
 must delete that step from their build script; the tool's generated
 ``.pw.toml`` is what the resolver sees.
+
+Environment inheritance
+-----------------------
+The build script runs in a subprocess whose environment is the caller's
+environment merged with ``spec.env``. This is the child's environment,
+not ours: ``git``, ``gradle``, ``bash``, and the mod's entrypoint all
+require ``PATH``, ``HOME``, ``LANG``, and similar to function. The
+``os.environ`` ban (TID251) is about using the environment as the
+config source for *our* code. Inheriting the caller's environment for
+a child process is the one legitimate exception; it is annotated with
+``# noqa: TID251`` on the single line where the merge happens.
 """
 
 from __future__ import annotations
@@ -153,7 +164,11 @@ def _run_script(spec: BuildSpec, clone_dir: Path) -> tuple[bool, str | None, str
     if not work_dir.is_dir():
         return (False, f"working directory does not exist: {work_dir}", "", "")
     argv = [spec.entrypoint, spec.script, *spec.args]
-    env = {**os.environ, **spec.env}
+    # Subprocess environment inheritance: the child needs the caller's
+    # PATH/HOME/LANG to find git, gradle, and the entrypoint. This is the
+    # child process's environment, not ours -- TID251's ban is about
+    # config sources for *our* code, not subprocess inheritance.
+    env = {**os.environ, **spec.env}  # noqa: TID251
     try:
         result = subprocess.run(
             argv,
@@ -232,10 +247,7 @@ def _write_generated_pw_toml(jar: Path, spec: BuildSpec, dest: Path) -> str | No
         filename=jar.name,
         side=spec.side,
         name=spec.mod_name,
-        dependencies=tuple(
-            PwTomlDependencyEntry(addon_id=d.addon_id, type=d.type)
-            for d in spec.dependencies
-        ),
+        dependencies=tuple(PwTomlDependencyEntry(addon_id=d.addon_id, type=d.type) for d in spec.dependencies),
     )
     try:
         write_pw_toml(entry, dest)

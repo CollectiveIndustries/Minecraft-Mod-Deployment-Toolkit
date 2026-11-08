@@ -58,12 +58,16 @@ from minecraft.modpack_upgrade.state import (
 def _offline_docker(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force docker-inspect disabled unless a test opts in.
 
-    Prevents CI/local-environment Docker state from influencing slip
-    contents. Tests that exercise docker-inspect paths monkeypatch
-    ``materialize_mod._run_docker_inspect`` directly (which replaces the
-    whole function including the env check) or delete this env var.
+    ``_docker_inspect_enabled`` now reads from ``config_dir/.env`` via
+    ConfigCore's flat-file loader, not ``os.environ``. Patching the
+    function to return False gives every test the old
+    ``MINECRAFT_UPGRADE_NO_DOCKER=1`` behavior without needing a
+    ``.env`` file in each temp config dir. Tests that exercise the real
+    docker-inspect path (``test_run_docker_inspect_returns_stdout``,
+    ``_returns_none_on_nonzero_exit``, ``_returns_none_on_file_not_found``)
+    override this fixture with ``lambda _cfg: True``.
     """
-    monkeypatch.setenv("MINECRAFT_UPGRADE_NO_DOCKER", "1")
+    monkeypatch.setattr(materialize_mod, "_docker_inspect_enabled", lambda _cfg: False)
 
 
 def _hex(ch: str) -> str:
@@ -927,9 +931,17 @@ def test_in_house_expected_hashes_verified(tmp_path: Path, monkeypatch: pytest.M
 # ---------------------------------------------------------------------------
 
 
-def test_run_docker_inspect_skips_when_env_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MINECRAFT_UPGRADE_NO_DOCKER short-circuits before subprocess.run."""
-    monkeypatch.setenv("MINECRAFT_UPGRADE_NO_DOCKER", "1")
+def test_run_docker_inspect_skips_when_env_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """_docker_inspect_enabled returning False short-circuits before subprocess.run.
+
+    The autouse ``_offline_docker`` fixture patches
+    ``_docker_inspect_enabled`` to return False, which is exactly the
+    condition this test verifies. (Previously this was driven by the
+    ``MINECRAFT_UPGRADE_NO_DOCKER=1`` process env var; that mechanism is
+    gone in favor of ``config_dir/.env``.)
+    """
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     called: list[bool] = []
 
     def _fake_run(*args: object, **kwargs: object) -> object:
@@ -937,13 +949,16 @@ def test_run_docker_inspect_skips_when_env_disabled(monkeypatch: pytest.MonkeyPa
         raise AssertionError("subprocess.run must not be called")
 
     monkeypatch.setattr(materialize_mod.subprocess, "run", _fake_run)
-    assert materialize_mod._run_docker_inspect("any/image", "{{...}}") is None
+    assert materialize_mod._run_docker_inspect("any/image", "{{...}}", config_dir) is None
     assert called == []
 
 
-def test_run_docker_inspect_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_docker_inspect_returns_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """subprocess.run's stdout is returned when the call succeeds."""
-    monkeypatch.delenv("MINECRAFT_UPGRADE_NO_DOCKER", raising=False)
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    # Override the autouse fixture to enable docker.
+    monkeypatch.setattr(materialize_mod, "_docker_inspect_enabled", lambda _cfg: True)
 
     class _FakeResult:
         returncode = 0
@@ -951,12 +966,14 @@ def test_run_docker_inspect_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> N
         stderr = ""
 
     monkeypatch.setattr(materialize_mod.subprocess, "run", lambda *a, **kw: _FakeResult())
-    assert materialize_mod._run_docker_inspect("x", "{{.Foo}}") == "sha256:abc"
+    assert materialize_mod._run_docker_inspect("x", "{{.Foo}}", config_dir) == "sha256:abc"
 
 
-def test_run_docker_inspect_returns_none_on_nonzero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_docker_inspect_returns_none_on_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-zero docker exit yields None."""
-    monkeypatch.delenv("MINECRAFT_UPGRADE_NO_DOCKER", raising=False)
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    monkeypatch.setattr(materialize_mod, "_docker_inspect_enabled", lambda _cfg: True)
 
     class _FakeResult:
         returncode = 1
@@ -964,18 +981,20 @@ def test_run_docker_inspect_returns_none_on_nonzero_exit(monkeypatch: pytest.Mon
         stderr = "no such image"
 
     monkeypatch.setattr(materialize_mod.subprocess, "run", lambda *a, **kw: _FakeResult())
-    assert materialize_mod._run_docker_inspect("missing/image", "{{.Foo}}") is None
+    assert materialize_mod._run_docker_inspect("missing/image", "{{.Foo}}", config_dir) is None
 
 
-def test_run_docker_inspect_returns_none_on_file_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_docker_inspect_returns_none_on_file_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing docker binary yields None."""
-    monkeypatch.delenv("MINECRAFT_UPGRADE_NO_DOCKER", raising=False)
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
+    monkeypatch.setattr(materialize_mod, "_docker_inspect_enabled", lambda _cfg: True)
 
     def _raise(*args: object, **kwargs: object) -> object:
         raise FileNotFoundError("docker not on PATH")
 
     monkeypatch.setattr(materialize_mod.subprocess, "run", _raise)
-    assert materialize_mod._run_docker_inspect("x", "{{.Foo}}") is None
+    assert materialize_mod._run_docker_inspect("x", "{{.Foo}}", config_dir) is None
 
 
 # ---------------------------------------------------------------------------
@@ -983,34 +1002,42 @@ def test_run_docker_inspect_returns_none_on_file_not_found(monkeypatch: pytest.M
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_image_digest_from_repo_at_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_image_digest_from_repo_at_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A ``<repo>@sha256:<hex>`` RepoDigest is parsed to ``sha256:<hex>``."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     hex64 = "a" * 64
     monkeypatch.setattr(
         materialize_mod,
         "_run_docker_inspect",
         lambda *a, **kw: f"itzg/minecraft-server@sha256:{hex64}",
     )
-    assert materialize_mod._resolve_image_digest("itzg/minecraft-server:java25") == f"sha256:{hex64}"
+    assert materialize_mod._resolve_image_digest("itzg/minecraft-server:java25", config_dir) == f"sha256:{hex64}"
 
 
-def test_resolve_image_digest_from_bare_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_image_digest_from_bare_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A bare ``sha256:<hex>`` value is accepted as-is."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     hex64 = "b" * 64
     monkeypatch.setattr(materialize_mod, "_run_docker_inspect", lambda *a, **kw: f"sha256:{hex64}")
-    assert materialize_mod._resolve_image_digest("x") == f"sha256:{hex64}"
+    assert materialize_mod._resolve_image_digest("x", config_dir) == f"sha256:{hex64}"
 
 
-def test_resolve_image_digest_rejects_malformed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_image_digest_rejects_malformed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-digest output (e.g. ``<no value>``) is rejected."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     monkeypatch.setattr(materialize_mod, "_run_docker_inspect", lambda *a, **kw: "<no value>")
-    assert materialize_mod._resolve_image_digest("x") is None
+    assert materialize_mod._resolve_image_digest("x", config_dir) is None
 
 
-def test_resolve_image_digest_none_when_docker_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_image_digest_none_when_docker_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """None in -> None out (binary missing, offline, etc.)."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     monkeypatch.setattr(materialize_mod, "_run_docker_inspect", lambda *a, **kw: None)
-    assert materialize_mod._resolve_image_digest("x") is None
+    assert materialize_mod._resolve_image_digest("x", config_dir) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1018,24 +1045,30 @@ def test_resolve_image_digest_none_when_docker_unavailable(monkeypatch: pytest.M
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_java_version_extracts_value(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_java_version_extracts_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """JAVA_VERSION=<value> in the env output is extracted."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     env_output = "PATH=/usr/bin\nJAVA_VERSION=21.0.5\nHOME=/root\n"
     monkeypatch.setattr(materialize_mod, "_run_docker_inspect", lambda *a, **kw: env_output)
-    assert materialize_mod._resolve_java_version("x") == "21.0.5"
+    assert materialize_mod._resolve_java_version("x", config_dir) == "21.0.5"
 
 
-def test_resolve_java_version_none_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_java_version_none_when_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Absent JAVA_VERSION yields None."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     env_output = "PATH=/usr/bin\nHOME=/root\n"
     monkeypatch.setattr(materialize_mod, "_run_docker_inspect", lambda *a, **kw: env_output)
-    assert materialize_mod._resolve_java_version("x") is None
+    assert materialize_mod._resolve_java_version("x", config_dir) is None
 
 
-def test_resolve_java_version_none_when_docker_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_java_version_none_when_docker_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """None in -> None out."""
+    config_dir = tmp_path / "config.d"
+    config_dir.mkdir()
     monkeypatch.setattr(materialize_mod, "_run_docker_inspect", lambda *a, **kw: None)
-    assert materialize_mod._resolve_java_version("x") is None
+    assert materialize_mod._resolve_java_version("x", config_dir) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1050,7 +1083,7 @@ def test_resolve_runtime_uses_docker_values(tmp_path: Path, monkeypatch: pytest.
     (tmp_path / "docker-compose.yml").write_text("services:\n  mc-survival:\n    image: itzg/minecraft-server:java25\n    platform: linux/amd64\n")
     hex64 = "c" * 64
 
-    def _fake_inspect(image: str, template: str) -> str | None:
+    def _fake_inspect(image: str, template: str, _config_dir: Path) -> str | None:
         if "RepoDigests" in template:
             return f"itzg/minecraft-server@sha256:{hex64}"
         return "JAVA_VERSION=21.0.5\n"
@@ -1100,7 +1133,7 @@ def test_happy_path_slip_records_resolved_digest(tmp_path: Path, monkeypatch: py
 
     hex64 = "d" * 64
 
-    def _fake_inspect(image: str, template: str) -> str | None:
+    def _fake_inspect(image: str, template: str, _config_dir: Path) -> str | None:
         if "RepoDigests" in template:
             return f"itzg/minecraft-server@sha256:{hex64}"
         return "JAVA_VERSION=21\n"

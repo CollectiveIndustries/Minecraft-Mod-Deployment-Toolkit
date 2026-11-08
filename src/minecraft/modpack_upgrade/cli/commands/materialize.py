@@ -8,6 +8,13 @@ When ``[budget]`` is configured in ``upgrade.toml``, provider calls and
 downloads are cap-enforced via the shared JSONL usage log. Cap
 exhaustion surfaces as ``UpgradeCliError(6)``; an unreadable log as
 ``UpgradeCliError(3)``.
+
+Config-source policy
+--------------------
+This module reads no ``os.environ``. Every toggle that used to come from
+process env (``MINECRAFT_UPGRADE_NO_DOCKER``) is read from
+``config.d/.env`` via ConfigCore's flat-file loader, matching the
+project's Section 3.12 rule.
 """
 
 from __future__ import annotations
@@ -15,7 +22,6 @@ from __future__ import annotations
 import contextlib
 import datetime
 import hashlib
-import os
 import subprocess
 import tomllib
 from collections.abc import Mapping
@@ -23,6 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import tomli_w
+from ConfigCore.loader import load_env
 from LoggingCore import get_logger
 from PlatformCore.git import path_object_id
 
@@ -368,16 +375,28 @@ _PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
 _DOCKER_TIMEOUT_SECONDS = 10
 
 
-def _docker_inspect_enabled() -> bool:
-    """Return False when ``MINECRAFT_UPGRADE_NO_DOCKER`` requests offline mode."""
-    value = os.environ.get("MINECRAFT_UPGRADE_NO_DOCKER", "").strip().lower()
+def _docker_inspect_enabled(config_dir: Path) -> bool:
+    """Return False when ``MINECRAFT_UPGRADE_NO_DOCKER`` requests offline mode.
+
+    Reads ``config.d/.env`` via ConfigCore's flat-file loader (Section 3.12).
+    ``os.environ`` is not consulted -- the ``.env`` file is the sole
+    config source for materialize's toggles, matching ``providers/config.py``.
+    """
+    env_path = config_dir / ".env"
+    if not env_path.is_file():
+        return True
+    try:
+        env = load_env(env_path)
+    except OSError:
+        return True
+    value = env.get("MINECRAFT_UPGRADE_NO_DOCKER", "").strip().lower()
     return value not in ("1", "true", "yes")
 
 
-def _run_docker_inspect(image: str, format_template: str) -> str | None:
+def _run_docker_inspect(image: str, format_template: str, config_dir: Path) -> str | None:
     """Run ``docker image inspect --format <template> <image>``; return stdout or None."""
-    if not _docker_inspect_enabled():
-        _log.debug(f"materialize: docker inspect skipped for {image!r} (MINECRAFT_UPGRADE_NO_DOCKER)")
+    if not _docker_inspect_enabled(config_dir):
+        _log.debug(f"materialize: docker inspect skipped for {image!r} (MINECRAFT_UPGRADE_NO_DOCKER in .env)")
         return None
     try:
         result = subprocess.run(
@@ -395,9 +414,9 @@ def _run_docker_inspect(image: str, format_template: str) -> str | None:
     return result.stdout.strip() or None
 
 
-def _resolve_image_digest(image: str) -> str | None:
+def _resolve_image_digest(image: str, config_dir: Path) -> str | None:
     """Return ``sha256:<hex>`` for ``image``, or None when unresolvable."""
-    raw = _run_docker_inspect(image, "{{index .RepoDigests 0}}")
+    raw = _run_docker_inspect(image, "{{index .RepoDigests 0}}", config_dir)
     if raw is None:
         return None
     if "@" in raw:
@@ -408,9 +427,9 @@ def _resolve_image_digest(image: str) -> str | None:
     return None
 
 
-def _resolve_java_version(image: str) -> str | None:
+def _resolve_java_version(image: str, config_dir: Path) -> str | None:
     """Return ``JAVA_VERSION`` from the image's env, or None when absent."""
-    raw = _run_docker_inspect(image, "{{range .Config.Env}}{{println .}}{{end}}")
+    raw = _run_docker_inspect(image, "{{range .Config.Env}}{{println .}}{{end}}", config_dir)
     if raw is None:
         return None
     for line in raw.splitlines():
@@ -435,12 +454,12 @@ def _resolve_runtime(config_dir: Path, project_root: Path, report: ResolutionRep
     else:
         _log.warning(f"materialize: compose unavailable ({result.error}); using default image/platform")
 
-    image_digest = _resolve_image_digest(image_ref)
+    image_digest = _resolve_image_digest(image_ref, config_dir)
     if image_digest is None:
         _log.warning(f"materialize: could not resolve image digest for {image_ref!r}; using placeholder {_PLACEHOLDER_DIGEST}. Slip is not prod-deployable.")
         image_digest = _PLACEHOLDER_DIGEST
 
-    java_version = _resolve_java_version(image_ref)
+    java_version = _resolve_java_version(image_ref, config_dir)
     if java_version is None:
         _log.warning(f"materialize: could not resolve java_version for {image_ref!r}; recording 'unknown'. Slip is not prod-deployable.")
         java_version = "unknown"

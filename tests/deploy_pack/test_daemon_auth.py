@@ -58,33 +58,6 @@ def test_bearer_wrong_token():
         auth.authenticate(_make_request("10.0.0.1", "Bearer wrong"))
 
 
-def test_bearer_token_env(monkeypatch: pytest.MonkeyPatch):
-    """The env-var path is used when token_env is provided."""
-    monkeypatch.setenv("TEST_DAEMON_TOKEN", "from-env")
-    auth = BearerAuth(token_env="TEST_DAEMON_TOKEN")
-    identity = auth.authenticate(_make_request("10.0.0.1", "Bearer from-env"))
-    assert identity.principal.startswith("bearer:")
-
-
-def test_bearer_token_env_missing(monkeypatch: pytest.MonkeyPatch):
-    """An unset env var raises at construction time."""
-    monkeypatch.delenv("TEST_DAEMON_TOKEN", raising=False)
-    with pytest.raises(ValueError, match="environment variable"):
-        BearerAuth(token_env="TEST_DAEMON_TOKEN")
-
-
-def test_bearer_requires_source():
-    """Constructing without token or token_env raises."""
-    with pytest.raises(ValueError):
-        BearerAuth()
-
-
-def test_bearer_rejects_both_sources():
-    """Constructing with both token and token_env raises."""
-    with pytest.raises(ValueError):
-        BearerAuth(token="x", token_env="Y")
-
-
 def test_tailscale_accepts_in_range():
     """A client IP in range authenticates."""
     auth = TailscaleAuth(cidrs=("100.64.0.0/10",))

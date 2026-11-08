@@ -8,7 +8,7 @@ Upgrade_System_specifications Section 6.4 (signed manifest) and Section 7.5
 
 Three concerns, kept separate:
 
-  * **Key loading** -- from the DEV signing key env var (release-time) and
+  * **Key loading** -- from the configured signing key (release-time) and
     from a pinned trusted-keys TOML (verify-time). Both raise
     :class:`SigningError` on config problems.
   * **Signing** -- Ed25519 over a caller-supplied payload. Raises
@@ -35,12 +35,18 @@ Trade-off: key rotation always changes ``key_id``. Spec Section 7.5
 already requires this ("Key rotation requires a new ``key_id``"), so the
 two designs agree.
 
-Env-var convention
-------------------
+Config source (Section 3.12)
+----------------------------
 
-``RELEASE_SIGNING_KEY`` (name configurable via
-``[publication].signing_key_env`` in ``config.d/upgrade.toml``) may
-contain either:
+``load_signing_key`` resolves the signing key from one of, in order:
+
+  1. The explicit ``env`` mapping supplied by the caller (tests, or
+     callers that already hold the environment).
+  2. ``config_dir / ".env"`` via ConfigCore's flat-file loader.
+
+``os.environ`` is never consulted (TID251). ``env_name`` (the key,
+configurable via ``[publication].signing_key_env`` in
+``config.d/upgrade.toml``) may contain either:
 
   * A filesystem path to a PEM-encoded Ed25519 private key.
   * Inline PEM text (value starts with ``-----BEGIN``).
@@ -78,7 +84,6 @@ format.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import tomllib
 from collections.abc import Mapping
@@ -86,6 +91,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
+from ConfigCore.loader import load_env
 from LoggingCore import get_logger
 
 try:
@@ -182,6 +188,37 @@ def derive_key_id(public_key: Ed25519PublicKey) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Resolving the config mapping
+# ---------------------------------------------------------------------------
+
+
+def _resolve_env(
+    env: Mapping[str, str] | None,
+    config_dir: Path | None,
+    env_name: str,
+) -> Mapping[str, str]:
+    """Return the mapping to read ``env_name`` from.
+
+    Priority: explicit ``env`` > ``config_dir / ".env"``. Never reads
+    ``os.environ`` (TID251, Section 3.12).
+
+    Raises :class:`SigningError` when neither source is supplied, or when
+    the ``.env`` file is missing or unreadable.
+    """
+    if env is not None:
+        return env
+    if config_dir is None:
+        raise SigningError(f"signing key {env_name!r} requires either env= or config_dir=; os.environ is not consulted (Section 3.12)")
+    env_path = config_dir / ".env"
+    if not env_path.is_file():
+        raise SigningError(f"signing key {env_name!r} requires {env_path} (file not found)")
+    try:
+        return load_env(env_path)
+    except OSError as exc:
+        raise SigningError(f"could not read {env_path}: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
 # Loading the signing key
 # ---------------------------------------------------------------------------
 
@@ -209,7 +246,7 @@ def _resolve_env_value_to_pem_bytes(value: str, env_name: str) -> bytes:
         return value.encode("utf-8")
     path = Path(value)
     if not path.is_file():
-        raise SigningError(f"signing key path from env var {env_name} does not exist: {path}")
+        raise SigningError(f"signing key path from {env_name!r} does not exist: {path}")
     try:
         return path.read_bytes()
     except OSError as exc:
@@ -220,29 +257,39 @@ def load_signing_key(
     env_name: str = "RELEASE_SIGNING_KEY",
     *,
     env: Mapping[str, str] | None = None,
+    config_dir: Path | None = None,
 ) -> SigningKey:
-    """Load the DEV signing key from the environment.
+    """Load the DEV signing key.
 
-    ``env_name`` is the env-var name (per
+    The key value is resolved from, in priority order:
+
+      1. ``env`` when supplied -- an explicit mapping. Used by tests and
+         by callers that already hold the environment.
+      2. ``config_dir / ".env"`` via ConfigCore's flat-file loader
+         (Section 3.12). ``os.environ`` is never consulted.
+
+    ``env_name`` is the key name (per
     ``[publication].signing_key_env`` in ``config.d/upgrade.toml``). The
-    env-var value must be either a filesystem path to a PEM-encoded
-    Ed25519 private key or inline PEM text.
+    value must be either a filesystem path to a PEM-encoded Ed25519
+    private key or inline PEM text.
 
     Raises :class:`SigningError` when:
 
-      * the env var is unset or empty;
+      * neither ``env`` nor ``config_dir`` is supplied;
+      * ``config_dir / ".env"`` is missing or unreadable;
+      * the key is unset or empty;
       * the referenced path does not exist or cannot be read;
       * the PEM does not parse;
       * the parsed key is not Ed25519.
     """
-    effective_env = env if env is not None else os.environ
+    effective_env = _resolve_env(env, config_dir, env_name)
     value = effective_env.get(env_name, "").strip()
     if not value:
-        raise SigningError(f"signing key env var {env_name} is unset or empty; set it to a PEM path or inline PEM text before publishing")
+        raise SigningError(f"signing key {env_name!r} is unset or empty; set it to a PEM path or inline PEM text before publishing")
     pem_bytes = _resolve_env_value_to_pem_bytes(value, env_name)
     private_key = _load_pem_private_key(pem_bytes)
     signing_key = SigningKey.from_private_key(private_key)
-    _log.debug(f"signing: loaded Ed25519 key from env var {env_name} (key_id={signing_key.key_id[:12]}...)")
+    _log.debug(f"signing: loaded Ed25519 key {env_name!r} (key_id={signing_key.key_id[:12]}...)")
     return signing_key
 
 

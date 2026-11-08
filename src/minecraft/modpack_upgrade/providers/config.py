@@ -7,9 +7,12 @@ optional -- every key has a default -- so an operator who never touches
 the provider section gets working Modrinth plus a CurseForge adapter
 that raises a clear error only if actually used.
 
-The CurseForge API key is *never* stored in the config file. The config
-holds an environment variable name (``curseforge_api_key_env``), and
-this module reads that variable at construction time (Section 18.1).
+The CurseForge API key is *never* stored in ``upgrade.toml``. The TOML
+holds the **name** of a key (``curseforge_api_key_env``); the value is
+resolved from ``config.d/.env`` via ConfigCore's flat-file loader
+(Section 3.12, Section 18.1). ``os.environ`` is not consulted -- the
+``.env`` file is the sole config source for secrets, matching the rule
+``config_model`` follows.
 
 Usage tracking
 --------------
@@ -21,11 +24,12 @@ is ignored -- the caller owns the transport.
 
 from __future__ import annotations
 
-import os
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from ConfigCore.loader import load_env
 
 from minecraft.modpack_upgrade.usage import UsageTracker
 
@@ -50,7 +54,7 @@ _DEFAULT_MAX_ARTIFACT_BYTES = 500 * 1024 * 1024  # 500 MiB
 class ProviderConfig:
     """Fully-resolved provider configuration.
 
-    ``curseforge_api_key`` is populated from the environment at load
+    ``curseforge_api_key`` is resolved from ``config.d/.env`` at load
     time and never written back to disk. Its presence in this dataclass
     is intentional and safe -- the dataclass is not logged, serialized,
     or persisted by any code in this package.
@@ -100,13 +104,29 @@ def _get_int(section: Mapping[str, object], key: str, default: int) -> int:
     return default
 
 
-def _resolve_api_key(env_var_name: str, env: Mapping[str, str]) -> str | None:
-    """Return the API key from the environment, or ``None``.
+def _load_env_file(config_dir: Path) -> Mapping[str, str]:
+    """Load ``config.d/.env`` via ConfigCore; return ``{}`` if absent.
 
-    An empty or missing variable is treated as unset; the key must not
-    be an empty string (Section 18.1 - no ambiguous "set to nothing" state).
+    An absent or unreadable ``.env`` is not an error: any provider key
+    that requires a secret will report its own missing-secret diagnostic
+    at the point of use, matching the ``deploy_pack`` pattern.
     """
-    value = env.get(env_var_name, "")
+    env_path = config_dir / ".env"
+    if not env_path.is_file():
+        return {}
+    try:
+        return load_env(env_path)
+    except OSError:
+        return {}
+
+
+def _resolve_api_key(key_name: str, env: Mapping[str, str]) -> str | None:
+    """Return the API key from ``env``, or ``None``.
+
+    An empty value is treated as unset; the key must not be an empty
+    string (Section 18.1 - no ambiguous "set to nothing" state).
+    """
+    value = env.get(key_name, "")
     return value if value else None
 
 
@@ -117,14 +137,15 @@ def load_provider_config(
 ) -> ProviderConfig:
     """Read provider configuration from ``config_dir/upgrade.toml``.
 
-    ``env`` defaults to ``os.environ``. Tests pass a fake mapping.
+    ``env`` defaults to ``config.d/.env``, loaded via ConfigCore's flat-
+    file loader. Tests pass a fake mapping to bypass the file.
 
     Missing file, missing section, or missing keys all fall back to
-    defaults. ``curseforge_api_key`` is ``None`` when the env var named
-    by ``curseforge_api_key_env`` is unset or empty.
+    defaults. ``curseforge_api_key`` is ``None`` when the key named by
+    ``curseforge_api_key_env`` is absent from ``.env`` or is empty.
     """
     section = _read_providers_section(config_dir)
-    effective_env = env if env is not None else os.environ
+    effective_env = env if env is not None else _load_env_file(config_dir)
 
     api_key_env_name = _get_str(section, "curseforge_api_key_env", _DEFAULT_CURSEFORGE_API_KEY_ENV)
 

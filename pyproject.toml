@@ -104,7 +104,6 @@ line-length = 160
 exclude = [
     ".venv",
     "__pycache__",
-    "build",
     "dist",
     "data",
     "debug",
@@ -192,8 +191,7 @@ ban-relative-imports = "parents"
 "rich.print" = { msg = "Use LoggingCore instead of rich.print()." }
 "sys.stdout" = { msg = "Use LoggingCore instead of writing directly to sys.stdout." }
 "sys.stderr" = { msg = "Use LoggingCore instead of writing directly to sys.stderr." }
-
-
+"os.environ" = { msg = "Direct environment access is prohibited. Use the application configuration API instead." }
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

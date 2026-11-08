@@ -7,13 +7,20 @@ module provides BearerAuth, TailscaleAuth, and CombinedAuth for the
 Minecraft plugin's use. If another application needs the same, its
 author decides whether to copy this file, import it from minecraft, or
 extract it into a shared package.
+
+Config-source policy (Section 3.12, Section 9.2)
+-----------------------------------------------
+No authenticator reads ``os.environ`` or the filesystem. The bearer
+token is resolved by the caller (typically :func:`build_daemon` via
+``ConfigCore.loader.load_env(config.d/.env)``) and passed in directly.
+``BearerAuth`` performs a constant-time comparison against the supplied
+string and nothing else.
 """
 
 from __future__ import annotations
 
 import hmac
 import ipaddress
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -78,32 +85,24 @@ def _extract_bearer(authorization: str | None) -> str:
 class BearerAuth:
     """Static bearer-token authentication.
 
-    The token may be supplied directly or read from an environment
-    variable at construction time (recommended so it never lands in
-    tracked configuration).
+    The token is supplied by the caller. It is not read from
+    ``os.environ`` or from any file - the resolution from
+    ``config.d/.env`` happens in :func:`build_daemon` so this class
+    remains a pure credential check with no I/O surface.
     """
 
-    token_env: str | None = None
-    token: str | None = None
+    token: str
 
     def __post_init__(self) -> None:
-        """Validate that exactly one token source was provided and non-empty."""
-        if self.token is None and self.token_env is None:
-            raise ValueError("BearerAuth requires either token or token_env")
-        if self.token is not None and self.token_env is not None:
-            raise ValueError("BearerAuth accepts only one of token or token_env")
-        if self.token_env is not None:
-            resolved = os.environ.get(self.token_env, "")
-            if not resolved:
-                raise ValueError(f"BearerAuth: environment variable {self.token_env!r} is not set or empty")
-            object.__setattr__(self, "token", resolved)
+        """Reject an empty token."""
+        if not self.token:
+            raise ValueError("BearerAuth requires a non-empty token")
 
     def authenticate(self, request: object) -> AuthIdentity:
         """Validate the bearer token; raise on any mismatch."""
         headers = getattr(request, "headers", {})
-        token = _extract_bearer(headers.get("authorization"))
-        assert self.token is not None
-        if not hmac.compare_digest(token, self.token):
+        provided = _extract_bearer(headers.get("authorization"))
+        if not hmac.compare_digest(provided, self.token):
             raise AuthFailedError("bearer token is invalid")
         token_hash = hmac.new(self.token.encode(), b"minecraft-daemon", "sha256").hexdigest()[:16]
         return AuthIdentity(principal=f"bearer:{token_hash}")

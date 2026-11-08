@@ -14,6 +14,14 @@ Slice 13: when ``config_dir`` is supplied (production), the plugin is
 also given a ``deploy_callable`` so ``/deploy`` performs real
 deployments. Without ``config_dir`` (tests, or a daemon built for
 verification only), ``/deploy`` falls back to 501.
+
+Config-source policy (Section 3.12, Section 9.2)
+-----------------------------------------------
+The bearer token and any other daemon secrets are resolved from
+``config.d/.env`` via ConfigCore's flat-file loader. ``os.environ`` is
+not consulted. ``config_dir`` is therefore required for any non-trivial
+daemon build; the earlier ``config_dir=None`` path (used only by slice-11
+tests) is gone.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from ConfigCore.loader import load_env
 from DaemonCore import Daemon, DaemonError
 from DaemonCore.resources import (
     EnvSecrets,
@@ -79,6 +88,30 @@ def _build_deploy_callable(
         return None
 
 
+def _resolve_bearer_token(config: MinecraftDaemonConfig, config_dir: Path | None) -> str:
+    """Resolve the bearer token from ``config.d/.env``.
+
+    ``config.bearer_token_env`` names the key. The value is loaded via
+    ConfigCore's flat-file loader, matching Section 3.12. Any missing
+    piece raises ``ValueError`` with a diagnostic naming the file and
+    key, so an operator sees exactly what to fix at startup.
+    """
+    env_name = config.bearer_token_env
+    if config_dir is None:
+        raise ValueError(f"build_daemon requires config_dir to resolve bearer token {env_name!r}")
+    env_path = config_dir / ".env"
+    if not env_path.is_file():
+        raise ValueError(f"bearer token {env_name!r} requires {env_path} (file not found)")
+    try:
+        env = load_env(env_path)
+    except OSError as exc:
+        raise ValueError(f"could not read {env_path}: {exc}") from exc
+    value = env.get(env_name, "").strip()
+    if not value:
+        raise ValueError(f"bearer token {env_name!r} has no value in {env_path}")
+    return value
+
+
 def build_daemon(
     config: MinecraftDaemonConfig,
     *,
@@ -87,17 +120,20 @@ def build_daemon(
     """Construct a fully wired ``Daemon`` from ``config``.
 
     Does not start anything. Call ``await daemon.run()`` to serve.
-    Raises ``ValueError`` if the bearer token env var is unset.
+    Raises ``ValueError`` if the bearer token is not resolvable from
+    ``config.d/.env``.
 
-    ``config_dir`` is optional. When supplied (production), the
-    deployment orchestrator is wired up so ``/deploy`` performs real
-    deployments. When omitted (default for tests), ``/deploy`` returns
-    501 after verification.
+    ``config_dir`` is the directory containing ``.env``. It is required
+    for production builds (bearer-token resolution) and for the deploy
+    orchestrator wiring. Tests that only exercise verification /
+    plugin-shape paths may still pass a temp config_dir with a written
+    ``.env``.
     """
+    bearer_token = _resolve_bearer_token(config, config_dir)
     auth = CombinedAuth(
         (
             TailscaleAuth(cidrs=config.tailscale_cidrs),
-            BearerAuth(token_env=config.bearer_token_env),
+            BearerAuth(token=bearer_token),
         )
     )
     idempotency = SQLiteIdempotency(config.idempotency_path)

@@ -32,6 +32,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -227,11 +228,25 @@ def _setup_publish_env(
 
     Returns ``(config_dir, project_root, slip_path)``.
 
-    Note: the autouse ``signing_key`` fixture provides the signing env
-    var; this helper does not need to do anything related to signing.
+    The autouse ``signing_key`` fixture sets ``RELEASE_SIGNING_KEY`` in
+    ``os.environ`` to a valid PEM path. ``load_signing_key`` no longer
+    reads ``os.environ`` (TID251, Section 3.12) -- it reads
+    ``config_dir / ".env"``. This helper bridges the fixture into the
+    file: if ``RELEASE_SIGNING_KEY`` is set in the process env, it is
+    written into ``config.d/.env``. Tests that want to exercise the
+    missing-key or invalid-key paths delete/replace the env var BEFORE
+    calling this helper; the bridge then propagates the missing/invalid
+    value into ``.env`` (or skips writing when absent).
     """
     config_dir = tmp_path / "config.d"
     config_dir.mkdir()
+
+    # Bridge the `signing_key` fixture (and any test-local env mutation)
+    # into config.d/.env. Absent env var -> no .env file (missing-key test).
+    signing_pem_path = os.environ.get("RELEASE_SIGNING_KEY")
+    if signing_pem_path:
+        (config_dir / ".env").write_text(f"RELEASE_SIGNING_KEY={signing_pem_path}\n", encoding="utf-8")
+
     state_dir = tmp_path / "state"
     (config_dir / "deploy_pack.toml").write_text(
         f'[daemon]\nstate_dir = "{state_dir}"\n',
@@ -286,7 +301,13 @@ def _setup_publish_env(
 
 @pytest.fixture(autouse=True)
 def signing_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ed25519PrivateKey:
-    """Provide a valid Ed25519 signing key via the ``RELEASE_SIGNING_KEY`` env var."""
+    """Provide a valid Ed25519 signing key via the ``RELEASE_SIGNING_KEY`` env var.
+
+    The env var is the bridge to ``_setup_publish_env``, which copies
+    this value into ``config.d/.env``. ``load_signing_key`` reads
+    ``.env``, not ``os.environ`` -- so the fixture's job is to populate
+    the process env so the helper can copy it.
+    """
     key = Ed25519PrivateKey.generate()
     pem_path = tmp_path / "signing-key.pem"
     pem_path.write_bytes(
@@ -961,7 +982,13 @@ def test_registry_chain_links_two_entries(tmp_path: Path, signing_key: Ed25519Pr
 
 
 def test_run_missing_signing_env_raises_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No signing key -> exit 3 before any staging."""
+    """No signing key -> exit 3 before any staging.
+
+    ``_setup_publish_env`` bridges ``RELEASE_SIGNING_KEY`` from the process
+    env into ``config.d/.env``. Deleting the env var first means no
+    ``.env`` is written; ``load_signing_key`` then fails on the missing
+    file. The error message still names the key.
+    """
     monkeypatch.delenv("RELEASE_SIGNING_KEY", raising=False)
     config_dir, project_root, _ = _setup_publish_env(tmp_path)
 

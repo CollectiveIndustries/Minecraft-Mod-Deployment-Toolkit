@@ -58,9 +58,9 @@ The preconditions run in this order:
   1. Slip loads and verifies; ``release_id`` matches the argument.
      These are cheap and per-release, so a wrong-tag invocation fails
      with the most actionable message.
-  2. Signing key loads. Cheap (env-var or single-file read); the point
-     of loading it here is to fail on missing key BEFORE the expensive
-     artifact hashing below.
+  2. Signing key loads. Cheap (single-file read from ``config.d/.env``);
+     the point of loading it here is to fail on missing key BEFORE the
+     expensive artifact hashing below.
   3. Every artifact verified against its slip-recorded SHA-256.
      This is the only expensive step (hashing every jar).
   4. Bundle directory is absent.
@@ -102,8 +102,11 @@ Signing key (publish only)
 --------------------------
 
 Loaded from ``[publication].signing_key_env`` in ``config.d/upgrade.toml``
-(default env-var name: ``RELEASE_SIGNING_KEY``). Env var may contain a
-path to a PEM-encoded Ed25519 private key or the PEM text inline. See
+(default key name: ``RELEASE_SIGNING_KEY``). The value is read from
+``config.d/.env`` via ConfigCore's flat-file loader (or from an explicit
+``env=`` mapping, for tests). ``os.environ`` is never consulted -- this
+matches Section 3.12 and TID251. The value may contain a path to a
+PEM-encoded Ed25519 private key or the PEM text inline. See
 :mod:`minecraft.modpack_upgrade.signing`.
 
 **A valid key must be present before publish runs.** Signing is not
@@ -302,12 +305,16 @@ def _registry_path(project_root: Path) -> Path:
 
 
 def _resolve_signing_key_env_name(config_dir: Path) -> str:
-    """Return the env-var name that holds the signing key.
+    """Return the key name that holds the signing key.
 
     Reads ``[publication].signing_key_env`` from ``config.d/upgrade.toml``.
     Missing file, missing section, or malformed value all fall back to
     ``RELEASE_SIGNING_KEY`` -- consistent with how other config defaults
     are resolved in this codebase (see ``providers.config``).
+
+    Note: despite the historical "env var" name, the value is looked up
+    in ``config.d/.env`` (or an explicit ``env=`` mapping), not
+    ``os.environ``.
     """
     toml_path = config_dir / "upgrade.toml"
     if not toml_path.is_file():
@@ -1103,9 +1110,12 @@ def run(
     # Precondition 2: signing key (cheap, one-time config). Loaded here
     # -- after slip validation but BEFORE artifact hashing -- so a
     # missing key fails fast without 100MB of unnecessary file I/O.
+    # Value is read from config.d/.env via ConfigCore's flat-file loader
+    # (or the caller-injected `env` mapping, for tests). os.environ is
+    # never consulted (TID251, Section 3.12).
     signing_env_name = _resolve_signing_key_env_name(config_dir)
     try:
-        signing_key = load_signing_key(signing_env_name, env=env)
+        signing_key = load_signing_key(signing_env_name, env=env, config_dir=config_dir)
     except SigningError as exc:
         raise UpgradeCliError(3, str(exc)) from exc
 
