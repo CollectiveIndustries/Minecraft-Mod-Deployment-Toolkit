@@ -235,3 +235,12 @@ mode = "dev"
 # filename = "survival-pack.zip"
 # required = true
 # prompt = "This pack is required to play on this server."
+
+[daemon]
+# === Daemon / pipeline state ==========================================
+# Shared state directory for the update → acknowledge → materialize
+# pipeline. Runs land at <state_dir>/runs/<run-id>/report.toml.
+# Without this, `acknowledge` and `materialize` fall back to
+# /var/lib/minecraft-deploy which doesn't exist on the dev box.
+#
+state_dir = "./state"
